@@ -18,13 +18,17 @@ def setup_logging() -> None:
         return
     s = get_settings()
     logger.remove()
-    logger.add(
-        sys.stderr,
-        level=s.log_level,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | "
-        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - {message}",
-        enqueue=True,
-    )
+    # PyInstaller --noconsole leaves sys.stderr as None; loguru would crash
+    # on add(None, ...). Skip the console sink in that case — the file sink
+    # below still captures everything.
+    if sys.stderr is not None:
+        logger.add(
+            sys.stderr,
+            level=s.log_level,
+            format="<green>{time:HH:mm:ss}</green> | <level>{level:<8}</level> | "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - {message}",
+            enqueue=True,
+        )
     Path(s.logs_path).mkdir(parents=True, exist_ok=True)
     logger.add(
         s.logs_path / "localdoc.log",

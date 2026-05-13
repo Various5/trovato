@@ -5,6 +5,9 @@ Spins up FastAPI + NiceGUI under one uvicorn process.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,9 +76,26 @@ def create_app() -> FastAPI:
     return app
 
 
+def _ensure_console_streams() -> None:
+    """When PyInstaller is built with ``--noconsole`` (our default for the
+    Windows desktop bundle), ``sys.stdout`` / ``sys.stderr`` are ``None``.
+    uvicorn's default colour formatter calls ``sys.stdout.isatty()`` during
+    configuration and crashes. Wire null sinks in before uvicorn starts."""
+    devnull = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = devnull
+    if sys.stderr is None:
+        sys.stderr = devnull
+
+
 def run() -> None:
+    _ensure_console_streams()
     s = get_settings()
     host = s.host if not s.allow_lan else "0.0.0.0"
+    # log_config=None disables uvicorn's own logging dictConfig (which uses
+    # colour formatters that don't tolerate detached streams). We have loguru
+    # set up via setup_logging() inside create_app() — that's the source of
+    # truth for app logs.
     uvicorn.run(
         "app.main:create_app",
         host=host,
@@ -83,6 +103,7 @@ def run() -> None:
         factory=True,
         reload=False,
         log_level=s.log_level.lower(),
+        log_config=None,
     )
 
 
