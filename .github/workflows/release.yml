@@ -1,0 +1,89 @@
+name: Build Windows Installer
+
+# Triggered on:
+#   - pushing a tag like v0.1.0 → builds and attaches the installer to a GitHub Release
+#   - manually via the Actions tab (workflow_dispatch) → uploads only the artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create / update a Release
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[build]"
+
+      - name: Freeze app with PyInstaller
+        shell: pwsh
+        run: |
+          python installer/build.py
+          if (-not (Test-Path "dist/LocalDocIntelligence")) {
+            Write-Error "PyInstaller output missing"
+            exit 1
+          }
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version -or $version -eq "main" -or $version -eq "master") {
+            $version = "dev-$($env:GITHUB_SHA.Substring(0,7))"
+          }
+          $zip = "LocalDocIntelligence-$version-portable-win64.zip"
+          Compress-Archive -Path "dist/LocalDocIntelligence/*" -DestinationPath "dist/$zip"
+          echo "ARTIFACT_ZIP=dist/$zip" >> $env:GITHUB_ENV
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\localdoc.iss
+          $exe = Get-ChildItem installer\Output\*.exe | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Inno Setup produced no .exe"
+            exit 1
+          }
+          echo "INSTALLER_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Upload build artifacts (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalDocIntelligence-${{ env.VERSION }}
+          path: |
+            ${{ env.ARTIFACT_ZIP }}
+            ${{ env.INSTALLER_EXE }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ARTIFACT_ZIP }}
+            ${{ env.INSTALLER_EXE }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

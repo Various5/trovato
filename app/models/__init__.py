@@ -1,0 +1,27 @@
+"""Database models — SQLModel-based."""
+
+from app.models.entities import (  # noqa: F401
+    AppSetting,
+    AuditEvent,
+    Backup,
+    Chat,
+    ChatContextItem,
+    ChatMessage,
+    Document,
+    DocumentChunk,
+    DocumentImage,
+    DocumentPage,
+    DocumentSource,
+    DocumentStatus,
+    DocumentTagLink,
+    ModelConfig,
+    ScanJob,
+    ScanJobItem,
+    SourceType,
+    Tag,
+    User,
+    UserMemory,
+    UserRole,
+    UserSetting,
+    Visibility,
+)

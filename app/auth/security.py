@@ -1,0 +1,162 @@
+"""Authentication: Argon2 hashing, session-cookie helpers, FastAPI deps."""
+
+from __future__ import annotations
+
+import secrets
+from typing import Optional
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from fastapi import Depends, HTTPException, Request, status
+from sqlmodel import Session, select
+
+from app.config import get_settings
+from app.database import get_session
+from app.models import User, UserRole, UserSetting
+from app.utils.logging import logger
+
+
+_ph = PasswordHasher()
+SESSION_USER_KEY = "uid"
+
+
+# ---------------------------------------------------------------------------
+# Password hashing
+# ---------------------------------------------------------------------------
+
+
+def hash_password(plain: str) -> str:
+    return _ph.hash(plain)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return _ph.verify(hashed, plain)
+    except VerifyMismatchError:
+        return False
+    except Exception as e:  # malformed hash etc.
+        logger.warning("verify_password failed: {}", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# User lifecycle
+# ---------------------------------------------------------------------------
+
+
+def has_users(session: Session) -> bool:
+    return session.exec(select(User).limit(1)).first() is not None
+
+
+def create_user(
+    session: Session,
+    *,
+    username: str,
+    password: str,
+    role: UserRole = UserRole.admin,
+) -> User:
+    if session.exec(select(User).where(User.username == username)).first():
+        raise ValueError(f"user '{username}' already exists")
+    user = User(
+        username=username.strip(),
+        password_hash=hash_password(password),
+        role=role,
+        recovery_key_hash=hash_password(secrets.token_urlsafe(24)),
+    )
+    session.add(user)
+    session.flush()
+    session.add(UserSetting(user_id=user.id))
+    return user
+
+
+def set_password(session: Session, user: User, new_password: str) -> None:
+    user.password_hash = hash_password(new_password)
+    session.add(user)
+
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+
+def login_session(request: Request, user: User) -> None:
+    request.session[SESSION_USER_KEY] = user.id
+
+
+def logout_session(request: Request) -> None:
+    request.session.pop(SESSION_USER_KEY, None)
+
+
+def current_user_id(request: Request) -> Optional[int]:
+    try:
+        return request.session.get(SESSION_USER_KEY)
+    except Exception:
+        return None
+
+
+def get_current_user(
+    request: Request, session: Session = Depends(get_session)
+) -> User:
+    uid = current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="login required")
+    user = session.get(User, uid)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found")
+    return user
+
+
+def login_required(request: Request, session: Session = Depends(get_session)) -> User:
+    return get_current_user(request, session)
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != UserRole.admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Recovery
+# ---------------------------------------------------------------------------
+
+
+def make_recovery_key() -> str:
+    """Return a one-shot recovery key (caller must show this to the user once)."""
+    return secrets.token_urlsafe(24)
+
+
+def reset_password_with_recovery(
+    session: Session, *, username: str, recovery_key: str, new_password: str
+) -> bool:
+    user = session.exec(select(User).where(User.username == username)).first()
+    if not user or not user.recovery_key_hash:
+        return False
+    if not verify_password(recovery_key, user.recovery_key_hash):
+        return False
+    user.password_hash = hash_password(new_password)
+    user.recovery_key_hash = hash_password(make_recovery_key())
+    session.add(user)
+    return True
+
+
+__all__ = [
+    "SESSION_USER_KEY",
+    "create_user",
+    "current_user_id",
+    "get_current_user",
+    "has_users",
+    "hash_password",
+    "login_required",
+    "login_session",
+    "logout_session",
+    "make_recovery_key",
+    "require_admin",
+    "reset_password_with_recovery",
+    "set_password",
+    "verify_password",
+]
+
+
+# settings reference to silence linter if unused above
+_ = get_settings

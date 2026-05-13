@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data — must NOT be committed
+data/
+app_data/
+backups/
+chroma/
+cache/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# PDFs and indexed content
+documents/
+pdfs/
+samples/*.pdf
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+secrets/
+
+# Installer / build artifacts
+*.spec
+installer/build/
+installer/dist/
+installer/Output/
+*.exe.tmp
+
+# Test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
