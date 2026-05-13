@@ -6,7 +6,7 @@
 
 #define MyAppName      "LocalDoc Intelligence"
 #define MyAppShort     "LocalDocIntelligence"
-#define MyAppVersion   "0.1.3"
+#define MyAppVersion   "0.1.4"
 #define MyAppPublisher "Varous 555"
 #define MyAppURL       "https://github.com/varous555/localdoc-intelligence"
 #define MyAppExeName   "LocalDocIntelligence.exe"

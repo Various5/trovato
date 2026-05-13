@@ -52,9 +52,29 @@ jobs:
           $env:LDI_PORT       = "18765"
           $env:LDI_DATA_DIR   = "$env:RUNNER_TEMP\ldi-smoke"
           $env:LDI_LOG_LEVEL  = "WARNING"
-          $exe = (Resolve-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe").Path
+          $base = "http://127.0.0.1:18765"
+          $exe  = (Resolve-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe").Path
           Write-Host "Launching $exe …"
           $proc = Start-Process -PassThru -FilePath $exe
+
+          function Dump-Logs {
+              $globs = @(
+                  "$env:APPDATA\LocalDocIntelligence\crash-*.log",
+                  "$env:RUNNER_TEMP\ldi-smoke\crash-*.log",
+                  "$env:RUNNER_TEMP\ldi-smoke\logs\*.log",
+                  "$env:USERPROFILE\.localdoc-intelligence\crash-*.log",
+                  "$env:RUNNER_TEMP\LocalDocIntelligence\crash-*.log"
+              )
+              Get-ChildItem -Path $globs -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 5 |
+                  ForEach-Object {
+                      Write-Host "=== Log: $($_.FullName) ==="
+                      Get-Content -Path $_.FullName -Raw | Write-Host
+                  }
+          }
+
+          # 1) Wait for the ping endpoint.
           $deadline = [DateTime]::UtcNow.AddSeconds(120)
           $up = $false
           $lastError = ""
@@ -64,44 +84,63 @@ jobs:
                   break
               }
               try {
-                  $r = Invoke-WebRequest -Uri "http://127.0.0.1:18765/api/health/ping" `
-                                          -UseBasicParsing -TimeoutSec 3
+                  $r = Invoke-WebRequest -Uri "$base/api/health/ping" -UseBasicParsing -TimeoutSec 3
                   if ($r.StatusCode -eq 200) {
                       Write-Host "Ping OK: $($r.Content)"
-                      $up = $true
-                      break
+                      $up = $true; break
                   }
-              } catch {
-                  $lastError = $_.Exception.Message
-              }
+              } catch { $lastError = $_.Exception.Message }
               Start-Sleep -Milliseconds 800
           }
-
-          # Clean shutdown so the crash-dump (if any) is flushed.
-          if (-not $proc.HasExited) {
-              Write-Host "Terminating server …"
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-              try { $proc.WaitForExit(8000) | Out-Null } catch {}
+          if (-not $up) {
+              Dump-Logs
+              if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+              Write-Error "Smoke test failed — server didn't answer ping within 120s. Last error: $lastError"
+              exit 1
           }
 
-          # Dump any crash-log we can find so the job log shows what happened.
-          $crashGlobs = @(
-              "$env:APPDATA\LocalDocIntelligence\crash-*.log",
-              "$env:RUNNER_TEMP\ldi-smoke\crash-*.log",
-              "$env:USERPROFILE\.localdoc-intelligence\crash-*.log",
-              "$env:RUNNER_TEMP\LocalDocIntelligence\crash-*.log"
-          )
-          Get-ChildItem -Path $crashGlobs -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 3 |
-              ForEach-Object {
-                  Write-Host "=== Crash dump: $($_.FullName) ==="
-                  Get-Content -Path $_.FullName -Raw | Write-Host
-              }
-
-          if (-not $up) {
-              Write-Error "Smoke test failed — server didn't answer /api/health/ping within 120s. Last error: $lastError"
+          # 2) First-run + login. This is the path that crashed v0.1.3 with
+          #    DetachedInstanceError on /api/auth/me.
+          $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+          try {
+              $body = @{ username = "ci"; password = "smoketest1234" } | ConvertTo-Json
+              Invoke-RestMethod -Uri "$base/api/auth/first-run" -Method POST -Body $body `
+                                -ContentType "application/json" -WebSession $session | Out-Null
+              Write-Host "✓ /api/auth/first-run OK"
+              Invoke-RestMethod -Uri "$base/api/auth/login" -Method POST -Body $body `
+                                -ContentType "application/json" -WebSession $session | Out-Null
+              $me = Invoke-RestMethod -Uri "$base/api/auth/me" -WebSession $session
+              if ($me.username -ne "ci") { throw "unexpected /me payload" }
+              Write-Host "✓ /api/auth/me OK ($($me.username))"
+          } catch {
+              Dump-Logs
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              Write-Error "auth flow failed: $($_.Exception.Message)"
               exit 1
+          }
+
+          # 3) Every authenticated UI page must render. Used to crash with
+          #    DetachedInstanceError before expire_on_commit=False.
+          $pages = @("/", "/documents", "/search", "/chat", "/sources", "/tags",
+                     "/backup", "/settings", "/diagnostics", "/logs", "/about", "/compare")
+          $failed = @()
+          foreach ($p in $pages) {
+              try {
+                  $r = Invoke-WebRequest -Uri "$base$p" -UseBasicParsing -WebSession $session -TimeoutSec 10
+                  if ($r.StatusCode -ne 200) { $failed += "$p ($($r.StatusCode))" }
+              } catch { $failed += "$p ($($_.Exception.Message))" }
+          }
+          if ($failed.Count -gt 0) {
+              Dump-Logs
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              Write-Error "UI pages failed: $($failed -join ', ')"
+              exit 1
+          }
+          Write-Host "✓ All $($pages.Count) UI pages returned 200"
+
+          if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              try { $proc.WaitForExit(8000) | Out-Null } catch {}
           }
           Write-Host "✓ Smoke test passed"
 

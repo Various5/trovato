@@ -70,8 +70,16 @@ def _ensure_fts5(engine: Engine) -> None:
 
 @contextmanager
 def session_scope() -> Iterator[Session]:
-    """Context-managed session with commit/rollback."""
-    session = Session(get_engine())
+    """Context-managed session with commit/rollback.
+
+    ``expire_on_commit=False`` is intentional: this app routinely returns ORM
+    objects from a ``with session_scope():`` block and keeps using them
+    afterwards (UI handlers, audit logging, etc.). With the SQLAlchemy default
+    those reads would all raise ``DetachedInstanceError`` because every commit
+    expires every attribute. We're a local single-user app — no concurrent
+    writers — so the freshness penalty is irrelevant.
+    """
+    session = Session(get_engine(), expire_on_commit=False)
     try:
         yield session
         session.commit()
