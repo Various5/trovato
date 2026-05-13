@@ -63,6 +63,7 @@ secrets/
 
 # Installer / build artifacts
 *.spec
+!installer/localdoc.spec
 installer/build/
 installer/dist/
 installer/Output/
