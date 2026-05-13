@@ -7,9 +7,10 @@ serves chat completions, embeddings, and vision (via image_url content parts).
 from __future__ import annotations
 
 import base64
+from collections.abc import AsyncIterator, Iterable
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -25,8 +26,8 @@ class LMStudioError(RuntimeError):
 class LMStudioClient:
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 120.0,
     ) -> None:
         s = get_settings()
@@ -71,7 +72,7 @@ class LMStudioClient:
         self,
         messages: list[dict[str, Any]],
         *,
-        model: Optional[str] = None,
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int = 1024,
         stream: bool = False,
@@ -97,7 +98,7 @@ class LMStudioClient:
         self,
         messages: list[dict[str, Any]],
         *,
-        model: Optional[str] = None,
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int = 1024,
     ) -> AsyncIterator[str]:
@@ -135,7 +136,7 @@ class LMStudioClient:
     # ---- embeddings -------------------------------------------------------
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=4))
-    async def embed(self, texts: Iterable[str], *, model: Optional[str] = None) -> list[list[float]]:
+    async def embed(self, texts: Iterable[str], *, model: str | None = None) -> list[list[float]]:
         model = model or get_settings().embedding_model
         if not model:
             raise LMStudioError("no embedding model configured (Settings → Embedding model)")
@@ -156,7 +157,7 @@ class LMStudioClient:
         image_path: str | Path,
         *,
         prompt: str = "Describe this image precisely. If it contains text, transcribe it.",
-        model: Optional[str] = None,
+        model: str | None = None,
         max_tokens: int = 400,
     ) -> str:
         model = model or get_settings().vision_model or get_settings().chat_model

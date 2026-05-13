@@ -13,7 +13,6 @@ from app.database import get_session
 from app.models import User, UserRole
 from app.services import audit
 
-
 router = APIRouter()
 
 
@@ -55,9 +54,7 @@ def add_user(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     try:
-        user = create_user(
-            session, username=body.username, password=body.password, role=body.role
-        )
+        user = create_user(session, username=body.username, password=body.password, role=body.role)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     audit.log("user.created", user_id=admin.id, payload={"new_user": user.id})

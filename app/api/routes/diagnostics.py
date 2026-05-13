@@ -17,7 +17,6 @@ from app.services.diagnostics import (
     storage_overview,
 )
 
-
 router = APIRouter()
 
 

@@ -13,7 +13,6 @@ from typing import Optional
 from app.config import get_settings
 from app.utils.logging import logger
 
-
 _OCR: object | None = None
 _INIT_FAILED = False
 

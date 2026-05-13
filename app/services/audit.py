@@ -16,7 +16,6 @@ from app.database import session_scope
 from app.models import AuditEvent
 from app.utils.logging import logger
 
-
 _SENSITIVE_KEYS = {"password", "old_password", "new_password", "recovery_key", "secret_key"}
 
 
@@ -38,9 +37,7 @@ def log(event: str, *, user_id: int | None = None, payload: dict[str, Any] | Non
     """Best-effort write of an audit event."""
     try:
         with session_scope() as session:
-            session.add(
-                AuditEvent(user_id=user_id, event=event, payload=_redact(payload or {}))
-            )
+            session.add(AuditEvent(user_id=user_id, event=event, payload=_redact(payload or {})))
     except Exception as e:
         logger.debug("audit write failed for {}: {}", event, e)
 

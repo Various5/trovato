@@ -6,7 +6,7 @@ HTTP roundtrips). Session-cookie auth is shared with the API.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import FastAPI
 from nicegui import app as nicegui_app
@@ -19,7 +19,6 @@ from app.auth.security import (
     create_user,
     has_users,
     hash_password,
-    login_session,
     make_recovery_key,
     verify_password,
 )
@@ -40,7 +39,7 @@ from app.ui.themes import THEMES, theme_css
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
 
 
-def _current_user() -> Optional[User]:
+def _current_user() -> User | None:
     try:
         uid = nicegui_app.storage.user.get(SESSION_USER_KEY)
         if uid is None:
@@ -51,7 +50,7 @@ def _current_user() -> Optional[User]:
         return None
 
 
-def _require_login() -> Optional[User]:
+def _require_login() -> User | None:
     u = _current_user()
     if not u:
         ui.navigate.to("/login")
@@ -114,34 +113,32 @@ def _render_update_banner(lang: str) -> None:
     if dismissed:
         return
 
-    with ui.card().classes("w-full p-3 q-mb-md ldi-border").style(
-        "border: 1px solid; background: rgba(255,193,7,0.08)"
+    with (
+        ui.card()
+        .classes("w-full p-3 q-mb-md ldi-border")
+        .style("border: 1px solid; background: rgba(255,193,7,0.08)"),
+        ui.row().classes("items-center w-full no-wrap gap-3"),
     ):
-        with ui.row().classes("items-center w-full no-wrap gap-3"):
-            ui.icon("system_update").classes("text-2xl ldi-accent")
-            with ui.column().classes("flex-1 gap-0"):
-                ui.label(
-                    t("update.available", lang).format(latest=info.latest)
-                ).classes("text-body1")
-                if info.notes:
-                    ui.label(info.notes[:300] + ("…" if len(info.notes) > 300 else "")).classes(
-                        "text-caption opacity-70"
-                    )
-            with ui.row().classes("gap-1"):
-                if info.url:
-                    ui.button(
-                        t("update.download", lang),
-                        icon="download",
-                        on_click=lambda u=info.url: ui.run_javascript(
-                            f"window.open({u!r}, '_blank')"
-                        ),
-                    ).props("color=primary dense")
+        ui.icon("system_update").classes("text-2xl ldi-accent")
+        with ui.column().classes("flex-1 gap-0"):
+            ui.label(t("update.available", lang).format(latest=info.latest)).classes("text-body1")
+            if info.notes:
+                ui.label(info.notes[:300] + ("…" if len(info.notes) > 300 else "")).classes(
+                    "text-caption opacity-70"
+                )
+        with ui.row().classes("gap-1"):
+            if info.url:
+                ui.button(
+                    t("update.download", lang),
+                    icon="download",
+                    on_click=lambda u=info.url: ui.run_javascript(f"window.open({u!r}, '_blank')"),
+                ).props("color=primary dense")
 
-                def _dismiss(k=dismiss_key) -> None:
-                    nicegui_app.storage.user[k] = True
-                    ui.navigate.reload()
+            def _dismiss(k=dismiss_key) -> None:
+                nicegui_app.storage.user[k] = True
+                ui.navigate.reload()
 
-                ui.button(t("update.dismiss", lang), on_click=_dismiss).props("flat dense")
+            ui.button(t("update.dismiss", lang), on_click=_dismiss).props("flat dense")
 
 
 def _render_citation(c: dict) -> None:
@@ -177,7 +174,7 @@ def _apply_theme(theme_name: str = "dark") -> None:
 def _user_theme(user: User) -> str:
     with session_scope() as session:
         s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
-        return (s.theme if s and s.theme in THEMES else "dark")
+        return s.theme if s and s.theme in THEMES else "dark"
 
 
 def _user_lang(user: User) -> str:
@@ -295,15 +292,15 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(t("common.welcome", wl)).classes("text-h5 ldi-primary")
             ui.label(t("wizard.intro", wl)).classes("q-mb-md opacity-80")
             username = ui.input(t("wizard.admin_user", wl), value="admin").classes("w-full")
-            password = ui.input(
-                t("common.password", wl), password=True, password_toggle_button=True
-            ).classes("w-full")
+            password = ui.input(t("common.password", wl), password=True, password_toggle_button=True).classes(
+                "w-full"
+            )
             confirm = ui.input(
                 t("common.confirm_password", wl), password=True, password_toggle_button=True
             ).classes("w-full")
-            lm_url = ui.input(
-                t("wizard.lm_url", wl), value=get_settings().lmstudio_base_url
-            ).classes("w-full")
+            lm_url = ui.input(t("wizard.lm_url", wl), value=get_settings().lmstudio_base_url).classes(
+                "w-full"
+            )
             source_path = ui.input(t("wizard.initial_folder", wl)).classes("w-full")
             err = ui.label("").classes("text-negative")
             recovery_box = ui.label("").classes("text-positive break-words")
@@ -318,9 +315,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 save_user_settings({"lmstudio_base_url": lm_url.value or "http://localhost:1234/v1"})
                 get_settings.cache_clear()
                 with session_scope() as session:
-                    user = create_user(
-                        session, username=username.value, password=password.value
-                    )
+                    user = create_user(session, username=username.value, password=password.value)
                     rk = make_recovery_key()
                     user.recovery_key_hash = hash_password(rk)
                     session.add(user)
@@ -339,9 +334,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     "color=primary"
                 )
 
-            ui.button(t("wizard.create_admin", wl), on_click=_create).props(
-                "color=primary"
-            ).classes("w-full q-mt-md")
+            ui.button(t("wizard.create_admin", wl), on_click=_create).props("color=primary").classes(
+                "w-full q-mt-md"
+            )
 
     @ui.page("/recover")
     def page_recover() -> None:
@@ -406,7 +401,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
         ui.label(t("dash.quick_actions", lang)).classes("text-h6 q-mt-md")
         with ui.row().classes("gap-2"):
             ui.button(t("dash.add_source", lang), icon="add", on_click=lambda: ui.navigate.to("/sources"))
-            ui.button(t("dash.start_scan", lang), icon="play_arrow", on_click=lambda: ui.navigate.to("/sources"))
+            ui.button(
+                t("dash.start_scan", lang), icon="play_arrow", on_click=lambda: ui.navigate.to("/sources")
+            )
             ui.button(t("dash.new_chat", lang), icon="forum", on_click=lambda: ui.navigate.to("/chat"))
 
     @ui.page("/sources")
@@ -429,9 +426,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         with ui.row().classes("justify-between items-center w-full"):
                             with ui.column().classes("gap-0"):
                                 ui.label(f"{s.name}  ").classes("text-h6")
-                                ui.label(f"{s.type.value} — {s.path}").classes(
-                                    "opacity-70 text-caption"
-                                )
+                                ui.label(f"{s.type.value} — {s.path}").classes("opacity-70 text-caption")
                                 if s.last_scan_at:
                                     ui.label(f"{t('sources.last_scan', lang)} {s.last_scan_at}").classes(
                                         "text-caption opacity-60"
@@ -440,27 +435,43 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ui.button(
                                     t("sources.scan", lang),
                                     icon="play_arrow",
-                                    on_click=lambda sid=s.id: (start_scan_in_background(sid), ui.notify(t("sources.scan_started", lang))),
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid),
+                                        ui.notify(t("sources.scan_started", lang)),
+                                    ),
                                 ).props("color=primary dense")
                                 ui.button(
                                     t("sources.force_ocr", lang),
                                     icon="text_fields",
-                                    on_click=lambda sid=s.id: (start_scan_in_background(sid, force_ocr=True), ui.notify(t("sources.ocr_started", lang))),
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, force_ocr=True),
+                                        ui.notify(t("sources.ocr_started", lang)),
+                                    ),
                                 ).props("dense")
                                 ui.button(
                                     t("sources.vision", lang),
                                     icon="image",
-                                    on_click=lambda sid=s.id: (start_scan_in_background(sid, force_vision=True), ui.notify(t("sources.vision_started", lang))),
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, force_vision=True),
+                                        ui.notify(t("sources.vision_started", lang)),
+                                    ),
                                 ).props("dense")
                                 ui.button(
                                     t("sources.dry_run", lang),
                                     icon="science",
-                                    on_click=lambda sid=s.id: (start_scan_in_background(sid, dry_run=True), ui.notify(t("sources.dryrun_started", lang))),
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, dry_run=True),
+                                        ui.notify(t("sources.dryrun_started", lang)),
+                                    ),
                                 ).props("dense")
 
                                 from app.services.watcher import (
                                     is_watching as _is_watching,
+                                )
+                                from app.services.watcher import (
                                     start_watcher as _start_watch,
+                                )
+                                from app.services.watcher import (
                                     stop_watcher as _stop_watch,
                                 )
 
@@ -530,9 +541,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.services.similar import find_similar
 
             with ui.dialog() as dialog, ui.card().classes("w-[640px] p-4"):
-                ui.label(f"{t('docs.similar_to', lang)} {fname}").classes(
-                    "text-h6 ldi-primary"
-                )
+                ui.label(f"{t('docs.similar_to', lang)} {fname}").classes("text-h6 ldi-primary")
                 spinner = ui.spinner(size="lg")
                 content = ui.column().classes("w-full gap-2")
                 dialog.open()
@@ -547,8 +556,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         with ui.card().classes("w-full p-2"):
                             ui.label(h.filename).classes("text-body1")
                             ui.label(
-                                f"{t('search.score', lang)}: {h.score:.3f} · "
-                                f"matches: {h.matched_chunks}"
+                                f"{t('search.score', lang)}: {h.score:.3f} · " f"matches: {h.matched_chunks}"
                             ).classes("text-caption opacity-70")
                             ui.label(h.path).classes("text-caption opacity-60 break-all")
                             with ui.row().classes("gap-1"):
@@ -570,9 +578,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.chat.rag import summarize_document
 
             with ui.dialog() as dialog, ui.card().classes("w-[640px] p-4"):
-                ui.label(f"{t('docs.summary_of', lang)} {fname}").classes(
-                    "text-h6 ldi-primary"
-                )
+                ui.label(f"{t('docs.summary_of', lang)} {fname}").classes("text-h6 ldi-primary")
                 spinner = ui.spinner(size="lg")
                 md = ui.markdown("")
                 dialog.open()
@@ -655,12 +661,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ui.label(f"{h.filename} (p.{h.page_from})").classes("text-h6")
                         ui.label(h.snippet).classes("text-body2")
                         with ui.row().classes("gap-2 q-mt-xs"):
-                            ui.label(
-                                f"{t('search.score', lang)}: {h.score:.3f}"
-                            ).classes("text-caption opacity-70")
-                            ui.label(
-                                f"{t('search.source', lang)}: {h.source}"
-                            ).classes("text-caption opacity-70")
+                            ui.label(f"{t('search.score', lang)}: {h.score:.3f}").classes(
+                                "text-caption opacity-70"
+                            )
+                            ui.label(f"{t('search.source', lang)}: {h.source}").classes(
+                                "text-caption opacity-70"
+                            )
                             ui.button(
                                 t("search.btn_view", lang),
                                 icon="visibility",
@@ -671,9 +677,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             ui.button(
                                 t("search.btn_pdf", lang),
                                 icon="picture_as_pdf",
-                                on_click=lambda did=h.document_id, pg=h.page_from: open_pdf(
-                                    did, pg
-                                ),
+                                on_click=lambda did=h.document_id, pg=h.page_from: open_pdf(did, pg),
                             ).props("dense flat")
 
         with ui.row().classes("gap-2"):
@@ -691,8 +695,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     media_type=f"text/{fmt}",
                 )
 
-            ui.button(t("search.btn_csv", lang), icon="download", on_click=lambda: _export("csv")).props("dense")
-            ui.button(t("search.btn_json", lang), icon="download", on_click=lambda: _export("json")).props("dense")
+            ui.button(t("search.btn_csv", lang), icon="download", on_click=lambda: _export("csv")).props(
+                "dense"
+            )
+            ui.button(t("search.btn_json", lang), icon="download", on_click=lambda: _export("json")).props(
+                "dense"
+            )
         q.on("keydown.enter", lambda _: _go())
 
     @ui.page("/chat")
@@ -732,10 +740,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             return
                         from app.services.exports import chat_to_pdf
 
-                        ui.download(chat_to_pdf(cid), filename=f"chat-{cid}.pdf", media_type="application/pdf")
+                        ui.download(
+                            chat_to_pdf(cid), filename=f"chat-{cid}.pdf", media_type="application/pdf"
+                        )
 
-                    ui.button(t("chat.btn_md", lang), icon="download", on_click=_export_chat_md).props("dense")
-                    ui.button(t("chat.btn_pdf", lang), icon="picture_as_pdf", on_click=_export_chat_pdf).props("dense")
+                    ui.button(t("chat.btn_md", lang), icon="download", on_click=_export_chat_md).props(
+                        "dense"
+                    )
+                    ui.button(
+                        t("chat.btn_pdf", lang), icon="picture_as_pdf", on_click=_export_chat_pdf
+                    ).props("dense")
                 chat_list = ui.column().classes("gap-1")
 
                 def _refresh_chats() -> None:
@@ -751,7 +765,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ui.button(
                                     c.title[:30],
                                     on_click=lambda cid=c.id: _open_chat(cid),
-                                ).props("flat dense").classes("flex-1 justify-start")
+                                ).props(
+                                    "flat dense"
+                                ).classes("flex-1 justify-start")
                                 ui.button(
                                     icon="delete",
                                     on_click=lambda cid=c.id: _delete_chat(cid),
@@ -773,9 +789,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 def _delete_chat(cid: int) -> None:
                     with session_scope() as session:
-                        for m in session.exec(
-                            select(ChatMessage).where(ChatMessage.chat_id == cid)
-                        ).all():
+                        for m in session.exec(select(ChatMessage).where(ChatMessage.chat_id == cid)).all():
                             session.delete(m)
                         for c in session.exec(
                             select(ChatContextItem).where(ChatContextItem.chat_id == cid)
@@ -791,8 +805,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             # Right: messages
             with ui.column().classes("flex-1 gap-2").style("min-width: 0"):
-                msg_area = ui.column().classes("w-full gap-2 q-pa-sm overflow-auto").style(
-                    "flex: 1; min-height: 0"
+                msg_area = (
+                    ui.column().classes("w-full gap-2 q-pa-sm overflow-auto").style("flex: 1; min-height: 0")
                 )
                 input_row = ui.row().classes("w-full no-wrap")
                 with input_row:
@@ -805,10 +819,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         if not question:
                             return
                         inp.value = ""
-                        with msg_area:
-                            with ui.card().classes("w-full p-3 ldi-border"):
-                                ui.label(t("chat.you", lang)).classes("text-caption opacity-70")
-                                ui.label(question)
+                        with msg_area, ui.card().classes("w-full p-3 ldi-border"):
+                            ui.label(t("chat.you", lang)).classes("text-caption opacity-70")
+                            ui.label(question)
 
                         # Streaming answer
                         from app.chat.rag import stream_answer
@@ -828,9 +841,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 with msg_area:
                                     answer_card = ui.card().classes("w-full p-3")
                                     with answer_card:
-                                        ui.label(t("chat.assistant", lang)).classes(
-                                            "text-caption ldi-accent"
-                                        )
+                                        ui.label(t("chat.assistant", lang)).classes("text-caption ldi-accent")
                                         answer_md = ui.markdown("")
                             elif ev_t == "token":
                                 buffer.append(ev.get("text", ""))
@@ -855,15 +866,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         return
                     with msg_area, session_scope() as session:
                         msgs = session.exec(
-                            select(ChatMessage)
-                            .where(ChatMessage.chat_id == cid)
-                            .order_by(ChatMessage.id)
+                            select(ChatMessage).where(ChatMessage.chat_id == cid).order_by(ChatMessage.id)
                         ).all()
                         for m in msgs:
                             role_label = (
-                                t("chat.you", lang) if m.role == "user"
-                                else t("chat.assistant", lang) if m.role == "assistant"
-                                else m.role.capitalize()
+                                t("chat.you", lang)
+                                if m.role == "user"
+                                else (
+                                    t("chat.assistant", lang)
+                                    if m.role == "assistant"
+                                    else m.role.capitalize()
+                                )
                             )
                             with ui.card().classes("w-full p-3"):
                                 ui.label(role_label).classes(
@@ -898,9 +911,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 for tag in tags:
                     with ui.row().classes("items-center gap-2 w-full"):
                         ui.label(tag.name).classes("flex-1")
-                        ui.label(t("tags.auto", lang) if tag.auto else "").classes(
-                            "opacity-50 text-caption"
-                        )
+                        ui.label(t("tags.auto", lang) if tag.auto else "").classes("opacity-50 text-caption")
                         ui.button(
                             icon="delete",
                             on_click=lambda tid=tag.id: _delete(tid),
@@ -910,9 +921,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.models import DocumentTagLink
 
             with session_scope() as session:
-                for link in session.exec(
-                    select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)
-                ).all():
+                for link in session.exec(select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)).all():
                     session.delete(link)
                 t = session.get(Tag, tid)
                 if t:
@@ -940,9 +949,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     checks[comp] = ui.checkbox(
                         comp, value=comp in ("db", "vector", "chats", "memory", "settings")
                     )
-            pw = ui.input(
-                t("backup.password_enc", lang), password=True, password_toggle_button=True
-            ).classes("w-full")
+            pw = ui.input(t("backup.password_enc", lang), password=True, password_toggle_button=True).classes(
+                "w-full"
+            )
 
             def _do_backup() -> None:
                 comps = [k for k, c in checks.items() if c.value]
@@ -953,9 +962,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.notify(f"{t('backup.written_to', lang)} {res.path}", color="positive")
                 _refresh()
 
-            ui.button(
-                t("backup.create_btn", lang), icon="save", on_click=_do_backup
-            ).props("color=primary").classes("q-mt-md")
+            ui.button(t("backup.create_btn", lang), icon="save", on_click=_do_backup).props(
+                "color=primary"
+            ).classes("q-mt-md")
 
         listing = ui.column().classes("w-full gap-2 q-mt-md")
 
@@ -1059,9 +1068,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.notify(t("settings.saved_reload", lang), color="positive")
             ui.navigate.reload()
 
-        ui.button(t("settings.save", lang), icon="save", on_click=_save).props(
-            "color=primary"
-        ).classes("q-mt-md")
+        ui.button(t("settings.save", lang), icon="save", on_click=_save).props("color=primary").classes(
+            "q-mt-md"
+        )
 
         with ui.card().classes("w-full p-3 q-mt-md"):
             ui.label(t("settings.change_pw", lang)).classes("text-h6")
@@ -1142,20 +1151,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.label(t("compare.narrative", lang)).classes("text-h6")
                     ui.markdown(result.narrative)
                 with ui.card().classes("w-full p-3"):
-                    ui.label(
-                        f"{t('compare.shared_ratio', lang)} {result.shared_ratio:.1%}"
-                    ).classes("text-body1")
+                    ui.label(f"{t('compare.shared_ratio', lang)} {result.shared_ratio:.1%}").classes(
+                        "text-body1"
+                    )
                 with ui.row().classes("w-full gap-2"):
                     with ui.card().classes("flex-1 p-3"):
-                        ui.label(
-                            f"{t('compare.only_in', lang)} {result.doc_a.get('filename')}"
-                        ).classes("text-h6")
+                        ui.label(f"{t('compare.only_in', lang)} {result.doc_a.get('filename')}").classes(
+                            "text-h6"
+                        )
                         for ln in result.only_in_a_sample:
                             ui.label(ln).classes("text-caption opacity-80")
                     with ui.card().classes("flex-1 p-3"):
-                        ui.label(
-                            f"{t('compare.only_in', lang)} {result.doc_b.get('filename')}"
-                        ).classes("text-h6")
+                        ui.label(f"{t('compare.only_in', lang)} {result.doc_b.get('filename')}").classes(
+                            "text-h6"
+                        )
                         for ln in result.only_in_b_sample:
                             ui.label(ln).classes("text-caption opacity-80")
 
@@ -1170,6 +1179,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         ui.label(t("diag.title", lang)).classes("text-h4 q-mb-md ldi-primary")
 
+        import humanize
+
         from app.services.diagnostics import (
             cleanup_orphan_caches,
             find_duplicates,
@@ -1178,7 +1189,6 @@ def register_ui(fastapi_app: FastAPI) -> None:
             orphan_caches,
             storage_overview,
         )
-        import humanize
 
         async def _refresh() -> None:
             storage_card.clear()
@@ -1190,9 +1200,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with storage_card:
                 ui.label(t("diag.storage", lang)).classes("text-h6")
                 for name, info in storage_overview().items():
-                    ui.label(
-                        f"{name}: {humanize.naturalsize(info['size_bytes'])} — {info['path']}"
-                    ).classes("text-caption")
+                    ui.label(f"{name}: {humanize.naturalsize(info['size_bytes'])} — {info['path']}").classes(
+                        "text-caption"
+                    )
 
             with idx_card:
                 ui.label(t("diag.index", lang)).classes("text-h6")
@@ -1208,7 +1218,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ).classes(f"text-caption {colour}")
                 if status.get("models"):
                     ui.label(
-                        f"{t('diag.models', lang)} " + ", ".join(status["models"][:10])
+                        f"{t('diag.models', lang)} "
+                        + ", ".join(status["models"][:10])
                         + (" …" if len(status["models"]) > 10 else "")
                     ).classes("text-caption opacity-70")
 
@@ -1218,9 +1229,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 if not dups:
                     ui.label(t("diag.dup_none", lang)).classes("text-caption opacity-70")
                 for grp in dups[:50]:
-                    with ui.expansion(
-                        f"{len(grp['documents'])} docs share hash {grp['content_hash'][:12]}…"
-                    ):
+                    with ui.expansion(f"{len(grp['documents'])} docs share hash {grp['content_hash'][:12]}…"):
                         for d in grp["documents"]:
                             ui.label(f"#{d['id']}  {d['filename']}").classes("text-caption")
                             ui.label(d["path"]).classes("text-caption opacity-60 break-all")
@@ -1264,9 +1273,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.label(t("diag.near_dup_none", lang)).classes("text-caption opacity-70")
                 for p in pairs[:30]:
                     with ui.row().classes("items-center w-full"):
-                        ui.label(
-                            f"{p.a_filename}  ⇔  {p.b_filename}  ({p.similarity:.0%})"
-                        ).classes("text-caption flex-1")
+                        ui.label(f"{p.a_filename}  ⇔  {p.b_filename}  ({p.similarity:.0%})").classes(
+                            "text-caption flex-1"
+                        )
                         ui.button(
                             t("diag.compare", lang),
                             icon="compare_arrows",
@@ -1281,6 +1290,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 total = len(orph["pages"]) + len(orph["images"])
                 ui.label(t("diag.orphans_found", lang).format(n=total)).classes("text-caption")
                 if total:
+
                     def _cleanup() -> None:
                         counts = cleanup_orphan_caches()
                         ui.notify(
@@ -1327,9 +1337,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ).first()
             page_text = (page_row.native_text or page_row.ocr_text or "") if page_row else ""
 
-        ui.label(
-            f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}"
-        ).classes("text-h5 ldi-primary")
+        ui.label(f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}").classes(
+            "text-h5 ldi-primary"
+        )
         with ui.row().classes("gap-2 q-mb-md"):
             ui.button(
                 t("docs.viewer.prev", lang),
@@ -1339,9 +1349,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.button(
                 t("docs.viewer.next", lang),
                 icon="navigate_next",
-                on_click=lambda: ui.navigate.to(
-                    f"/viewer?doc={doc}&page={min(total_pages, page + 1)}&q={q}"
-                ),
+                on_click=lambda: ui.navigate.to(f"/viewer?doc={doc}&page={min(total_pages, page + 1)}&q={q}"),
             ).props("dense")
             ui.button(
                 t("docs.viewer.open_pdf", lang),
@@ -1351,9 +1359,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         with ui.row().classes("w-full gap-4 no-wrap"):
             with ui.column().classes("gap-2").style("min-width: 0; flex: 2"):
-                ui.image(f"/api/documents/{doc}/page/{page}/image").classes(
-                    "w-full ldi-border"
-                ).style("border: 1px solid; max-height: 80vh; object-fit: contain")
+                ui.image(f"/api/documents/{doc}/page/{page}/image").classes("w-full ldi-border").style(
+                    "border: 1px solid; max-height: 80vh; object-fit: contain"
+                )
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
                 ui.label(t("docs.viewer.page_text", lang)).classes("text-h6")
                 snippet = page_text
@@ -1366,9 +1374,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         + "**"
                         + snippet[idx + len(q) : idx + len(q) + 200]
                     )
-                ui.markdown(snippet or f"_{t('docs.viewer.no_text', lang)}_").classes(
-                    "text-body2"
-                )
+                ui.markdown(snippet or f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
 
     @ui.page("/about")
     def page_about() -> None:
@@ -1379,7 +1385,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         ui.label(t("about.title", lang)).classes("text-h4 q-mb-md ldi-primary")
         from app import __app_name__ as N
-        from app import __author__, __contact__, __handle__, __version__ as V
+        from app import __author__, __contact__, __handle__
+        from app import __version__ as V
 
         with ui.card().classes("w-full p-4"):
             ui.label(N).classes("text-h5")
@@ -1389,7 +1396,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(f"{t('about.author', lang)}: {__author__}")
             ui.label(f"{t('about.contact', lang)}: {__contact__}")
             ui.label(f"{t('about.handle', lang)}: {__handle__}")
-            ui.link(t("about.github", lang), "https://github.com/varous555/localdoc-intelligence", new_tab=True)
+            ui.link(
+                t("about.github", lang), "https://github.com/varous555/localdoc-intelligence", new_tab=True
+            )
             ui.separator().classes("q-my-md")
             ui.label(t("about.license", lang)).classes("text-caption")
             ui.label(t("about.privacy_note", lang)).classes("text-caption opacity-70")
@@ -1410,9 +1419,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 else:
                     ui.notify(t("update.up_to_date", lang), color="positive")
 
-            ui.button(t("update.check_now", lang), icon="system_update", on_click=_check_now).props(
-                "outline"
-            )
+            ui.button(t("update.check_now", lang), icon="system_update", on_click=_check_now).props("outline")
 
     # Finally bind NiceGUI to the FastAPI app
     ui.run_with(

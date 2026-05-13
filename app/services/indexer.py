@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sqlmodel import select
 
@@ -45,7 +45,7 @@ from app.vectorstore import add_chunks, delete_for_document
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +97,8 @@ async def index_document(
     force_ocr: bool = False,
     force_vision: bool = False,
     force_embed: bool = False,
-    controller: Optional[JobController] = None,
-) -> Optional[int]:
+    controller: JobController | None = None,
+) -> int | None:
     """Index a single file. Returns document_id or None on failure/skip."""
     s = get_settings()
     client = get_client()
@@ -113,11 +113,11 @@ async def index_document(
     # intact until the new ones are ready, so a crash mid-process leaves the
     # previous index usable).
     with session_scope() as session:
-        doc = session.exec(
-            select(Document).where(Document.path == str(path))
-        ).first()
-        unchanged = doc is not None and doc.content_hash == content_hash and not (
-            force_ocr or force_vision or force_embed
+        doc = session.exec(select(Document).where(Document.path == str(path))).first()
+        unchanged = (
+            doc is not None
+            and doc.content_hash == content_hash
+            and not (force_ocr or force_vision or force_embed)
         )
         if unchanged:
             return doc.id  # type: ignore[return-value]
@@ -138,14 +138,14 @@ async def index_document(
                 extension=path.suffix.lower().lstrip("."),
                 size_bytes=stat.st_size,
                 content_hash=content_hash,
-                created_at_fs=datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc),
-                modified_at_fs=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                created_at_fs=datetime.fromtimestamp(stat.st_ctime, tz=UTC),
+                modified_at_fs=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
                 status=DocumentStatus.processing,
             )
         else:
             # Don't yet overwrite content_hash — only after the new index is in.
             doc.size_bytes = stat.st_size
-            doc.modified_at_fs = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            doc.modified_at_fs = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
             doc.status = DocumentStatus.processing
         session.add(doc)
         session.flush()
@@ -155,11 +155,7 @@ async def index_document(
     # rebuild. If embeddings already exist and only force_embed is set, we can
     # short-circuit text extraction by re-using stored chunk text.
     reuse_text_only = (
-        not force_ocr
-        and not force_vision
-        and force_embed
-        and doc is not None
-        and doc_id is not None
+        not force_ocr and not force_vision and force_embed and doc is not None and doc_id is not None
     )
 
     # Extract pages + images
@@ -220,7 +216,8 @@ async def index_document(
 
     try:
         extract_iter = (
-            iter(()) if skip_extract
+            iter(())
+            if skip_extract
             else extract_pdf(path, doc_id_for_cache=doc_id or content_hash[:10], force_ocr=force_ocr)
         )
         for pc in extract_iter:
@@ -359,9 +356,7 @@ async def index_document(
 
     # If embeddings failed completely we abort — keep the old index intact.
     if chunk_records and not embeddings:
-        logger.error(
-            "no embeddings produced for {} — aborting; old index preserved", path.name
-        )
+        logger.error("no embeddings produced for {} — aborting; old index preserved", path.name)
         with session_scope() as session:
             d = session.get(Document, doc_id)
             if d:
@@ -397,7 +392,7 @@ async def index_document(
             ids: list[str] = []
             docs_for_chroma: list[str] = []
             metas: list[dict[str, Any]] = []
-            for rec, vec in zip(chunk_records, embeddings):
+            for rec, vec in zip(chunk_records, embeddings, strict=False):
                 rec.embedding_id = str(rec.id)
                 ids.append(str(rec.id))
                 docs_for_chroma.append(rec.text)
@@ -428,9 +423,7 @@ async def index_document(
 
         # Auto-tagging on aggregated text + vision descriptions
         agg_text = "\n".join(t for _, t in all_pages_text)[:50_000]
-        vision_text = "\n".join(
-            (img.vision_description or "") for img in image_rows
-        )[:20_000]
+        vision_text = "\n".join((img.vision_description or "") for img in image_rows)[:20_000]
         tags = auto_tags(agg_text, vision_text=vision_text)
         for tag_name in tags:
             tag_obj = session.exec(select(Tag).where(Tag.name == tag_name)).first()
@@ -477,8 +470,7 @@ async def resume_scan_job(job_id: int) -> int:
         source = session.get(DocumentSource, job.source_id) if job.source_id else None
         source_snapshot = DocumentSource(**source.model_dump()) if source else None
         items = session.exec(
-            select(ScanJobItem)
-            .where(
+            select(ScanJobItem).where(
                 ScanJobItem.job_id == job_id,
                 ScanJobItem.status.in_(  # type: ignore[attr-defined]
                     [DocumentStatus.pending, DocumentStatus.processing]
@@ -524,9 +516,7 @@ async def resume_scan_job(job_id: int) -> int:
                 item = session.get(ScanJobItem, item_id)
                 if item:
                     item.document_id = doc_id
-                    item.status = (
-                        DocumentStatus.indexed if doc_id else DocumentStatus.error
-                    )
+                    item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
                     item.ended_at = utcnow()
                     session.add(item)
                 j = session.get(ScanJob, job_id)
@@ -551,9 +541,7 @@ async def resume_scan_job(job_id: int) -> int:
 async def recover_unfinished_jobs() -> int:
     """Mark ``running`` jobs as ``paused`` on startup and queue resume tasks."""
     with session_scope() as session:
-        unfinished = session.exec(
-            select(ScanJob).where(ScanJob.status == ScanJobStatus.running)
-        ).all()
+        unfinished = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
         ids = [j.id for j in unfinished if j.id is not None]
         for j in unfinished:
             j.status = ScanJobStatus.paused
@@ -653,9 +641,7 @@ async def run_scan_job(
                 item = session.get(ScanJobItem, item_id)
                 if item:
                     item.document_id = doc_id
-                    item.status = (
-                        DocumentStatus.indexed if doc_id else DocumentStatus.error
-                    )
+                    item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
                     item.ended_at = utcnow()
                     session.add(item)
                 j = session.get(ScanJob, job_id)

@@ -77,9 +77,7 @@ async def compare_documents(doc_a: int, doc_b: int) -> CompareResult:
 
     client = get_client()
     try:
-        narrative = await client.chat(
-            [{"role": "user", "content": prompt}], temperature=0.1, max_tokens=900
-        )
+        narrative = await client.chat([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=900)
     except LMStudioError as e:
         narrative = f"_LM Studio unavailable: {e}_"
     except Exception as e:

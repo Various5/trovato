@@ -18,7 +18,6 @@ from sqlmodel import select
 from app.database import session_scope
 from app.models import Document, DocumentChunk
 
-
 _WORD_RX = re.compile(r"\w+", re.UNICODE)
 
 

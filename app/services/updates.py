@@ -12,7 +12,6 @@ Endpoint schema:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -41,7 +40,7 @@ class UpdateInfo:
     error: str | None = None
 
 
-def _endpoint() -> Optional[str]:
+def _endpoint() -> str | None:
     return load_user_settings().get("update_check_url") or None
 
 

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any
 
 from app.config import get_settings
 from app.utils.logging import logger
-
 
 COLLECTION_NAME = "documents"
 
@@ -27,9 +26,7 @@ def get_chroma():
 
 def _get_or_create_collection():
     client = get_chroma()
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
-    )
+    return client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
 
 
 def add_chunks(
@@ -59,7 +56,7 @@ def similarity_search(
     query_embedding: list[float],
     *,
     top_k: int = 10,
-    where: Optional[dict[str, Any]] = None,
+    where: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     col = _get_or_create_collection()
     try:

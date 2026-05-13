@@ -7,7 +7,6 @@ text and a logged warning, never an exception.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -32,7 +31,7 @@ def _configure_tesseract() -> bool:
         return False
 
 
-_AVAILABLE: Optional[bool] = None
+_AVAILABLE: bool | None = None
 
 
 def tesseract_available() -> bool:
@@ -42,7 +41,7 @@ def tesseract_available() -> bool:
     return _AVAILABLE
 
 
-def preprocess_for_ocr(img: "np.ndarray") -> "np.ndarray":
+def preprocess_for_ocr(img: np.ndarray) -> np.ndarray:
     """Light OpenCV pipeline: grayscale, denoise, adaptive threshold."""
     try:
         import cv2  # type: ignore
@@ -53,13 +52,11 @@ def preprocess_for_ocr(img: "np.ndarray") -> "np.ndarray":
     else:
         gray = img
     gray = cv2.fastNlMeansDenoising(gray, h=10)
-    gray = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-    )
+    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
     return gray
 
 
-def ocr_image(path: str | Path, lang: Optional[str] = None) -> str:
+def ocr_image(path: str | Path, lang: str | None = None) -> str:
     if not tesseract_available():
         return ""
     import pytesseract  # type: ignore
@@ -75,7 +72,7 @@ def ocr_image(path: str | Path, lang: Optional[str] = None) -> str:
         return ""
 
 
-def ocr_image_bytes(data: bytes, lang: Optional[str] = None) -> str:
+def ocr_image_bytes(data: bytes, lang: str | None = None) -> str:
     if not tesseract_available():
         return ""
     import io

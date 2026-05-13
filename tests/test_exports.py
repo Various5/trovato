@@ -14,10 +14,15 @@ def test_chat_to_markdown_handles_missing_metadata() -> None:
         u = User(username="tester_export", password_hash="x", role=UserRole.user)
         session.add(u)
         session.flush()
-        c = Chat(user_id=u.id, title=None)  # type: ignore[arg-type]
+        # Chat.title has a non-null default ("New chat"); to exercise the
+        # `chat.title or "Untitled chat"` fallback we set falsy values after
+        # the insert.
+        c = Chat(user_id=u.id, title="placeholder")
         session.add(c)
         session.flush()
         cid = c.id
+        c.title = ""
+        session.add(c)
         session.add(ChatMessage(chat_id=cid, role="user", content="hi"))
         session.add(ChatMessage(chat_id=cid, role="assistant", content="hello"))
 

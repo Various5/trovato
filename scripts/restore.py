@@ -19,9 +19,7 @@ def main() -> int:
     p.add_argument("--components", default=None, help="Comma-separated components to restore")
     args = p.parse_args()
 
-    components = (
-        [c.strip() for c in args.components.split(",") if c.strip()] if args.components else None
-    )
+    components = [c.strip() for c in args.components.split(",") if c.strip()] if args.components else None
     res = restore_backup(Path(args.input), components=components, password=args.password)
     print(f"Restored: {res['restored']}")
     if res["errors"]:

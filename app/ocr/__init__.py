@@ -15,7 +15,11 @@ from pathlib import Path
 from app.config import get_settings
 from app.ocr.tesseract import (  # noqa: F401
     ocr_image as _tess_image,
+)
+from app.ocr.tesseract import (
     ocr_image_bytes as _tess_bytes,
+)
+from app.ocr.tesseract import (
     preprocess_for_ocr,
     tesseract_available,
 )

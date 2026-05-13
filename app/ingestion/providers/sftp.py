@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import fnmatch
 import stat as stat_mod
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from app.config import get_settings
 from app.ingestion.providers.base import LocalisedFile
@@ -104,7 +104,12 @@ class SFTPProvider:
             if stat_mod.S_ISDIR(attr.st_mode):
                 if recursive:
                     yield from self._walk(
-                        sftp, full, cache_root, include, exclude, max_bytes,
+                        sftp,
+                        full,
+                        cache_root,
+                        include,
+                        exclude,
+                        max_bytes,
                         recursive=recursive,
                     )
                 continue

@@ -12,8 +12,8 @@ re-downloaded.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
-from typing import Iterator
 
 from app.config import get_settings
 from app.ingestion.providers.base import LocalisedFile
@@ -28,9 +28,7 @@ class WebDAVProvider:
         try:
             from webdav3.client import Client as WebDAVClient  # type: ignore
         except ImportError:
-            logger.warning(
-                "webdavclient3 not installed — `pip install webdavclient3` to use WebDAV sources"
-            )
+            logger.warning("webdavclient3 not installed — `pip install webdavclient3` to use WebDAV sources")
             return
 
         creds = get_secret(source.credentials_ref) if source.credentials_ref else None
@@ -96,7 +94,12 @@ class WebDAVProvider:
                     PurePosixPath(remote_dir).as_posix().rstrip("/"),
                 ):
                     yield from self._walk(
-                        client, path, cache_root, include, exclude, max_bytes,
+                        client,
+                        path,
+                        cache_root,
+                        include,
+                        exclude,
+                        max_bytes,
                         recursive=recursive,
                     )
                 continue

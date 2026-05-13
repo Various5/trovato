@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from sqlmodel import select
 
@@ -48,12 +48,12 @@ async def hybrid_search(
     query: str,
     *,
     top_k: int = 15,
-    document_ids: Optional[list[int]] = None,
-    source_ids: Optional[list[int]] = None,
-    tags: Optional[list[str]] = None,
+    document_ids: list[int] | None = None,
+    source_ids: list[int] | None = None,
+    tags: list[str] | None = None,
     alpha: float = 0.55,  # weight on vector score vs. FTS
     rerank: bool = False,
-    user: Optional["User"] = None,  # noqa: F821 — forward ref to avoid circular
+    user: User | None = None,  # noqa: F821 — forward ref to avoid circular
 ) -> list[SearchHit]:
     """Run vector + FTS search and merge the results."""
     query = (query or "").strip()

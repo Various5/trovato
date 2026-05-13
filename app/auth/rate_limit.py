@@ -24,8 +24,8 @@ class _Entry:
 _STATE: dict[tuple[str, str], _Entry] = defaultdict(lambda: _Entry(deque(maxlen=20)))
 
 MAX_ATTEMPTS = 5
-WINDOW_SECONDS = 5 * 60       # 5 min
-LOCKOUT_SECONDS = 15 * 60     # 15 min
+WINDOW_SECONDS = 5 * 60  # 5 min
+LOCKOUT_SECONDS = 15 * 60  # 15 min
 
 
 def _key(ip: str, username: str) -> tuple[str, str]:

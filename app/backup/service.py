@@ -16,10 +16,11 @@ import json
 import os
 import shutil
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -32,7 +33,6 @@ from app.database import session_scope
 from app.models import Backup, Chat, ChatMessage, Document, DocumentChunk, UserMemory
 from app.utils.logging import logger
 from app.utils.paths import safe_filename
-
 
 BACKUP_COMPONENTS = ["db", "vector", "chats", "memory", "settings", "logs", "cache", "originals"]
 
@@ -64,8 +64,8 @@ def _zip_dir(zf: zipfile.ZipFile, src: Path, arcprefix: str) -> int:
 def create_backup(
     components: Iterable[str],
     *,
-    output_path: Optional[Path] = None,
-    encrypt_password: Optional[str] = None,
+    output_path: Path | None = None,
+    encrypt_password: str | None = None,
     include_originals: bool = False,
 ) -> BackupResult:
     s = get_settings()
@@ -77,13 +77,16 @@ def create_backup(
     if include_originals:
         components.add("originals")
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     archive_name = safe_filename(f"localdoc-backup-{ts}.zip")
     output_path = output_path or (s.backups_path / archive_name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    buf = io.BytesIO() if encrypt_password else None
-    sink: Any = buf if buf is not None else open(output_path, "wb")
+    # When encryption is requested, we build the ZIP in memory and encrypt the
+    # bytes afterwards; otherwise we stream it straight to disk via the path
+    # (lets zipfile manage the file handle).
+    buf: io.BytesIO | None = io.BytesIO() if encrypt_password else None
+    sink: Any = buf if buf is not None else output_path
 
     with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
         manifest: dict[str, Any] = {
@@ -156,8 +159,6 @@ def create_backup(
             out.write(b"LDIENC1")  # magic header
             out.write(salt)
             out.write(encrypted)
-    elif buf is None:
-        sink.close()  # type: ignore[union-attr]
 
     size = output_path.stat().st_size
 
@@ -188,7 +189,7 @@ def list_backups() -> list[dict[str, Any]]:
         return [r.model_dump(mode="json") for r in rows]
 
 
-def _decrypt_if_needed(path: Path, password: Optional[str]) -> bytes:
+def _decrypt_if_needed(path: Path, password: str | None) -> bytes:
     data = path.read_bytes()
     if not data.startswith(b"LDIENC1"):
         return data
@@ -203,8 +204,8 @@ def _decrypt_if_needed(path: Path, password: Optional[str]) -> bytes:
 def restore_backup(
     archive_path: str | Path,
     *,
-    components: Optional[Iterable[str]] = None,
-    password: Optional[str] = None,
+    components: Iterable[str] | None = None,
+    password: str | None = None,
     make_safety_copy: bool = True,
 ) -> dict[str, Any]:
     s = get_settings()

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,7 +14,6 @@ from app.auth.security import login_required
 from app.chat.rag import answer_question, stream_answer, summarize_document
 from app.database import get_session
 from app.models import Chat, ChatContextItem, ChatMessage, User
-
 
 router = APIRouter()
 
@@ -56,7 +54,7 @@ def create_chat(
 
 @router.get("")
 def list_chats(
-    q: Optional[str] = None,
+    q: str | None = None,
     user: User = Depends(login_required),
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
@@ -80,9 +78,7 @@ def get_chat(
     msgs = session.exec(
         select(ChatMessage).where(ChatMessage.chat_id == chat_id).order_by(ChatMessage.id)
     ).all()
-    ctx = session.exec(
-        select(ChatContextItem).where(ChatContextItem.chat_id == chat_id)
-    ).all()
+    ctx = session.exec(select(ChatContextItem).where(ChatContextItem.chat_id == chat_id)).all()
     return {
         "chat": chat.model_dump(mode="json"),
         "messages": [m.model_dump(mode="json") for m in msgs],
@@ -96,9 +92,7 @@ async def send_message(
     body: MessageBody,
     user: User = Depends(login_required),
 ) -> dict[str, Any]:
-    result = await answer_question(
-        chat_id=chat_id, user=user, question=body.content, top_k=body.top_k
-    )
+    result = await answer_question(chat_id=chat_id, user=user, question=body.content, top_k=body.top_k)
     return {
         "answer": result.answer,
         "citations": [c.__dict__ for c in result.citations],
@@ -112,9 +106,7 @@ async def stream_message(
     user: User = Depends(login_required),
 ) -> StreamingResponse:
     async def _gen():
-        async for ev in stream_answer(
-            chat_id=chat_id, user=user, question=body.content, top_k=body.top_k
-        ):
+        async for ev in stream_answer(chat_id=chat_id, user=user, question=body.content, top_k=body.top_k):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
         yield "event: end\ndata: {}\n\n"
 

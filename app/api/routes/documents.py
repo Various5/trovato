@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -14,15 +14,14 @@ from app.auth.security import login_required
 from app.database import get_session
 from app.models import Document, DocumentImage, DocumentPage, User
 
-
 router = APIRouter()
 
 
 @router.get("")
 def list_documents(
-    q: Optional[str] = None,
-    source_id: Optional[int] = None,
-    status: Optional[str] = None,
+    q: str | None = None,
+    source_id: int | None = None,
+    status: str | None = None,
     limit: int = 100,
     offset: int = 0,
     user: User = Depends(login_required),
@@ -59,9 +58,7 @@ def get_document(
     pages = session.exec(
         select(DocumentPage).where(DocumentPage.document_id == doc_id).order_by(DocumentPage.page_number)
     ).all()
-    images = session.exec(
-        select(DocumentImage).where(DocumentImage.document_id == doc_id)
-    ).all()
+    images = session.exec(select(DocumentImage).where(DocumentImage.document_id == doc_id)).all()
     return {
         "document": d.model_dump(mode="json"),
         "pages": [p.model_dump(mode="json") for p in pages],
@@ -77,6 +74,7 @@ def download_document(
     session: Session = Depends(get_session),
 ) -> FileResponse:
     from app.auth.acl import can_see_document
+
     """Serve the original PDF.
 
     By default the response is ``inline`` so the browser's PDF viewer renders
@@ -137,9 +135,7 @@ def get_page_image(
     session: Session = Depends(get_session),
 ) -> FileResponse:
     page = session.exec(
-        select(DocumentPage).where(
-            DocumentPage.document_id == doc_id, DocumentPage.page_number == page_no
-        )
+        select(DocumentPage).where(DocumentPage.document_id == doc_id, DocumentPage.page_number == page_no)
     ).first()
     if page and page.rendered_image_path and Path(page.rendered_image_path).exists():
         return FileResponse(page.rendered_image_path, media_type="image/png")

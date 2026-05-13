@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -12,16 +12,15 @@ from app.auth.security import login_required
 from app.models import User
 from app.services.search_service import hybrid_search
 
-
 router = APIRouter()
 
 
 class SearchBody(BaseModel):
     query: str
     top_k: int = 15
-    document_ids: Optional[list[int]] = None
-    source_ids: Optional[list[int]] = None
-    tags: Optional[list[str]] = None
+    document_ids: list[int] | None = None
+    source_ids: list[int] | None = None
+    tags: list[str] | None = None
     rerank: bool = False
 
 

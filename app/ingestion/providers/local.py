@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from app.ingestion.providers.base import LocalisedFile
 from app.ingestion.scanner import discover_files

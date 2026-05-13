@@ -8,7 +8,6 @@ fallback. The UI looks up the active user's preferred language from
 
 from __future__ import annotations
 
-
 _DICT: dict[str, dict[str, str]] = {
     "en": {
         # generic
@@ -38,7 +37,6 @@ _DICT: dict[str, dict[str, str]] = {
         "common.save": "Save",
         "common.update": "Update",
         "common.test": "Test",
-
         # login / wizard
         "login.title": "Sign in",
         "login.invalid": "Invalid credentials",
@@ -57,7 +55,6 @@ _DICT: dict[str, dict[str, str]] = {
         "recover.invalid": "Invalid username or recovery key.",
         "recover.success": "Password reset. Please log in.",
         "recover.btn": "Reset password",
-
         # dashboard
         "dash.title": "Dashboard",
         "dash.documents": "Documents",
@@ -68,7 +65,6 @@ _DICT: dict[str, dict[str, str]] = {
         "dash.add_source": "Add a source",
         "dash.start_scan": "Start a scan",
         "dash.new_chat": "New chat",
-
         # documents
         "docs.title": "Documents",
         "docs.filter": "Filter by name/path",
@@ -90,7 +86,6 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.prev": "Prev",
         "docs.viewer.next": "Next",
         "docs.viewer.page_of": "page",
-
         # search
         "search.title": "Search",
         "search.placeholder": "Search across content, OCR, image descriptions, tags",
@@ -103,7 +98,6 @@ _DICT: dict[str, dict[str, str]] = {
         "search.btn_json": "Export JSON",
         "search.score": "score",
         "search.source": "source",
-
         # chat
         "chat.title": "Chat with your documents",
         "chat.list_title": "Chats",
@@ -116,7 +110,6 @@ _DICT: dict[str, dict[str, str]] = {
         "chat.btn_md": "MD",
         "chat.btn_pdf": "PDF",
         "chat.open_first": "Open a chat first",
-
         # sources
         "sources.title": "Sources",
         "sources.add_new": "Add new source",
@@ -134,11 +127,9 @@ _DICT: dict[str, dict[str, str]] = {
         "sources.ocr_started": "OCR scan started",
         "sources.vision_started": "Vision scan started",
         "sources.dryrun_started": "Dry run started",
-
         # tags
         "tags.title": "Tags",
         "tags.auto": "(auto)",
-
         # backup
         "backup.title": "Backup & Restore",
         "backup.create": "Create backup",
@@ -150,7 +141,6 @@ _DICT: dict[str, dict[str, str]] = {
         "backup.restore": "Restore",
         "backup.restored": "Restored",
         "backup.errors": "errors",
-
         # settings
         "settings.title": "Settings",
         "settings.lmstudio": "LM Studio",
@@ -173,11 +163,9 @@ _DICT: dict[str, dict[str, str]] = {
         "settings.update_pw": "Update password",
         "settings.pw_wrong": "Current password incorrect",
         "settings.pw_updated": "Password updated",
-
         # logs
         "logs.title": "Logs",
         "logs.empty": "(no log file yet)",
-
         # diagnostics
         "diag.title": "Diagnostics",
         "diag.storage": "Storage",
@@ -196,7 +184,6 @@ _DICT: dict[str, dict[str, str]] = {
         "diag.models": "Models:",
         "diag.compare": "Compare",
         "diag.refresh": "Refresh",
-
         # compare
         "compare.title": "Compare two documents",
         "compare.index_first": "Index some PDFs first.",
@@ -207,7 +194,6 @@ _DICT: dict[str, dict[str, str]] = {
         "compare.btn": "Compare",
         "compare.doc_a": "Document A",
         "compare.doc_b": "Document B",
-
         # about
         "about.title": "About",
         "about.version": "Version",
@@ -228,14 +214,12 @@ _DICT: dict[str, dict[str, str]] = {
             "Local PDF intelligence: indexing, OCR, image analysis, semantic search and chat "
             "— all running on your machine."
         ),
-
         # update banner
         "update.available": "Update available: v{latest}",
         "update.download": "Download",
         "update.dismiss": "Dismiss",
         "update.up_to_date": "You're on the latest version.",
         "update.check_now": "Check for updates",
-
         # navigation
         "nav.dashboard": "Dashboard",
         "nav.documents": "Documents",
@@ -249,7 +233,6 @@ _DICT: dict[str, dict[str, str]] = {
         "nav.diagnostics": "Diagnostics",
         "nav.logs": "Logs",
         "nav.about": "About",
-
         # buttons
         "btn.login": "Sign in",
         "btn.logout": "Logout",
@@ -262,7 +245,6 @@ _DICT: dict[str, dict[str, str]] = {
         "btn.refresh": "Refresh",
         "btn.delete": "Delete",
         "btn.save": "Save",
-
         # placeholders
         "ph.search": "Search across content, OCR, image descriptions, tags",
         "ph.ask": "Ask a question…",
@@ -295,7 +277,6 @@ _DICT: dict[str, dict[str, str]] = {
         "common.save": "Speichern",
         "common.update": "Aktualisieren",
         "common.test": "Testen",
-
         # login / wizard
         "login.title": "Anmelden",
         "login.invalid": "Ungültige Zugangsdaten",
@@ -314,7 +295,6 @@ _DICT: dict[str, dict[str, str]] = {
         "recover.invalid": "Ungültiger Benutzername oder Wiederherstellungs-Key.",
         "recover.success": "Passwort zurückgesetzt. Bitte anmelden.",
         "recover.btn": "Passwort zurücksetzen",
-
         # dashboard
         "dash.title": "Übersicht",
         "dash.documents": "Dokumente",
@@ -325,7 +305,6 @@ _DICT: dict[str, dict[str, str]] = {
         "dash.add_source": "Quelle hinzufügen",
         "dash.start_scan": "Scan starten",
         "dash.new_chat": "Neuer Chat",
-
         # documents
         "docs.title": "Dokumente",
         "docs.filter": "Nach Name/Pfad filtern",
@@ -347,7 +326,6 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.prev": "Zurück",
         "docs.viewer.next": "Weiter",
         "docs.viewer.page_of": "Seite",
-
         # search
         "search.title": "Suche",
         "search.placeholder": "In Inhalt, OCR, Bildbeschreibungen und Tags suchen",
@@ -360,7 +338,6 @@ _DICT: dict[str, dict[str, str]] = {
         "search.btn_json": "JSON-Export",
         "search.score": "Score",
         "search.source": "Quelle",
-
         # chat
         "chat.title": "Mit deinen Dokumenten chatten",
         "chat.list_title": "Chats",
@@ -373,7 +350,6 @@ _DICT: dict[str, dict[str, str]] = {
         "chat.btn_md": "MD",
         "chat.btn_pdf": "PDF",
         "chat.open_first": "Öffne zuerst einen Chat",
-
         # sources
         "sources.title": "Quellen",
         "sources.add_new": "Neue Quelle hinzufügen",
@@ -391,11 +367,9 @@ _DICT: dict[str, dict[str, str]] = {
         "sources.ocr_started": "OCR-Scan gestartet",
         "sources.vision_started": "Vision-Scan gestartet",
         "sources.dryrun_started": "Probelauf gestartet",
-
         # tags
         "tags.title": "Tags",
         "tags.auto": "(auto)",
-
         # backup
         "backup.title": "Sicherung & Wiederherstellung",
         "backup.create": "Sicherung erstellen",
@@ -407,7 +381,6 @@ _DICT: dict[str, dict[str, str]] = {
         "backup.restore": "Wiederherstellen",
         "backup.restored": "Wiederhergestellt",
         "backup.errors": "Fehler",
-
         # settings
         "settings.title": "Einstellungen",
         "settings.lmstudio": "LM Studio",
@@ -430,11 +403,9 @@ _DICT: dict[str, dict[str, str]] = {
         "settings.update_pw": "Passwort aktualisieren",
         "settings.pw_wrong": "Aktuelles Passwort falsch",
         "settings.pw_updated": "Passwort aktualisiert",
-
         # logs
         "logs.title": "Protokoll",
         "logs.empty": "(noch keine Logdatei)",
-
         # diagnostics
         "diag.title": "Diagnose",
         "diag.storage": "Speicher",
@@ -453,7 +424,6 @@ _DICT: dict[str, dict[str, str]] = {
         "diag.models": "Modelle:",
         "diag.compare": "Vergleichen",
         "diag.refresh": "Aktualisieren",
-
         # compare
         "compare.title": "Zwei Dokumente vergleichen",
         "compare.index_first": "Indexiere zuerst einige PDFs.",
@@ -464,7 +434,6 @@ _DICT: dict[str, dict[str, str]] = {
         "compare.btn": "Vergleichen",
         "compare.doc_a": "Dokument A",
         "compare.doc_b": "Dokument B",
-
         # about
         "about.title": "Über",
         "about.version": "Version",
@@ -485,14 +454,12 @@ _DICT: dict[str, dict[str, str]] = {
             "Lokale PDF-Intelligenz: Indexierung, OCR, Bildanalyse, semantische Suche und Chat "
             "— alles auf deinem Rechner."
         ),
-
         # update banner
         "update.available": "Update verfügbar: v{latest}",
         "update.download": "Herunterladen",
         "update.dismiss": "Ausblenden",
         "update.up_to_date": "Du nutzt die aktuelle Version.",
         "update.check_now": "Nach Updates suchen",
-
         # navigation
         "nav.dashboard": "Übersicht",
         "nav.documents": "Dokumente",
@@ -506,7 +473,6 @@ _DICT: dict[str, dict[str, str]] = {
         "nav.diagnostics": "Diagnose",
         "nav.logs": "Protokoll",
         "nav.about": "Über",
-
         # buttons
         "btn.login": "Anmelden",
         "btn.logout": "Abmelden",
@@ -519,7 +485,6 @@ _DICT: dict[str, dict[str, str]] = {
         "btn.refresh": "Aktualisieren",
         "btn.delete": "Löschen",
         "btn.save": "Speichern",
-
         # placeholders
         "ph.search": "In Inhalt, OCR, Bildbeschreibungen und Tags suchen",
         "ph.ask": "Stelle eine Frage…",

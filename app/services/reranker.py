@@ -13,16 +13,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List
 
 from app.llm import LMStudioError, get_client
 from app.services.search_service import SearchHit
 from app.utils.logging import logger
 
-
 _SYS = (
     "You are a search reranker. For each NUMBERED snippet, output a JSON array "
-    "of objects: [{\"n\": <number>, \"score\": <0-10>}]. Higher is better. "
+    'of objects: [{"n": <number>, "score": <0-10>}]. Higher is better. '
     "Do not output anything else."
 )
 
@@ -30,7 +28,7 @@ _SYS = (
 _JSON_BLOCK_RX = re.compile(r"\[.*\]", re.S)
 
 
-async def rerank(query: str, hits: List[SearchHit], *, max_candidates: int = 12) -> List[SearchHit]:
+async def rerank(query: str, hits: list[SearchHit], *, max_candidates: int = 12) -> list[SearchHit]:
     if not hits or len(hits) < 2:
         return hits
     candidates = hits[:max_candidates]

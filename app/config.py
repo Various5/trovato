@@ -14,9 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 APP_NAME = "LocalDocIntelligence"
 APP_DISPLAY_NAME = "LocalDoc Intelligence"
@@ -132,10 +130,23 @@ class Settings(BaseSettings):
         self.secret_key = key
 
 
+def _settings_json_path() -> Path:
+    """Resolve the settings.json path without triggering cached get_settings().
+
+    Called from load_user_settings during the *first* get_settings() call —
+    so it must not loop back through get_settings().
+    """
+    s = Settings()
+    return s.settings_json_path
+
+
 def load_user_settings() -> dict[str, Any]:
-    """Read the user-editable settings.json (created lazily)."""
-    s = get_settings()
-    p = s.settings_json_path
+    """Read the user-editable settings.json (created lazily).
+
+    Must not call get_settings() — it is itself invoked from get_settings()'s
+    first run, which would recurse forever.
+    """
+    p = _settings_json_path()
     if not p.exists():
         return {}
     try:
@@ -145,13 +156,11 @@ def load_user_settings() -> dict[str, Any]:
 
 
 def save_user_settings(updates: dict[str, Any]) -> dict[str, Any]:
-    s = get_settings()
-    s.ensure_dirs()
+    p = _settings_json_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     current = load_user_settings()
     current.update(updates)
-    s.settings_json_path.write_text(
-        json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    p.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
     return current
 
 

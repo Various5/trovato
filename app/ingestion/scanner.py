@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from app.models import DocumentSource
 

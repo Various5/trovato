@@ -12,7 +12,6 @@ from app.auth.security import login_required
 from app.backup import BACKUP_COMPONENTS, create_backup, list_backups, restore_backup
 from app.models import User
 
-
 router = APIRouter()
 
 

@@ -12,7 +12,6 @@ from app.database import session_scope
 from app.models import Chat, Document, DocumentChunk
 from app.vectorstore import collection_size
 
-
 router = APIRouter()
 
 

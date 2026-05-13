@@ -13,7 +13,6 @@ from app.database import get_session
 from app.models import DocumentSource, SourceType, User
 from app.services.watcher import is_watching, start_watcher, stop_watcher
 
-
 router = APIRouter()
 
 

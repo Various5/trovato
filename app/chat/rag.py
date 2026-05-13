@@ -8,8 +8,10 @@ The system prompt instructs the model to:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Optional
+from datetime import UTC
+from typing import Any
 
 from sqlmodel import select
 
@@ -27,7 +29,6 @@ from app.models import (
 )
 from app.services.search_service import SearchHit, hybrid_search
 from app.utils.logging import logger
-
 
 SYSTEM_PROMPT = """You are LocalDoc Intelligence, a careful local assistant that answers \
 questions strictly using the provided document context.
@@ -98,9 +99,7 @@ def _gather_user_memory(user_id: int, session) -> str:
 
 
 def _chat_context_filters(chat_id: int, session) -> dict[str, Any]:
-    items = session.exec(
-        select(ChatContextItem).where(ChatContextItem.chat_id == chat_id)
-    ).all()
+    items = session.exec(select(ChatContextItem).where(ChatContextItem.chat_id == chat_id)).all()
     out: dict[str, list] = {"document_ids": [], "source_ids": [], "tags": []}
     for it in items:
         if it.kind == "document" and it.ref_id:
@@ -139,9 +138,9 @@ async def answer_question(
         user_msg = ChatMessage(chat_id=chat_id, role="user", content=question)
         session.add(user_msg)
         # Update chat timestamps
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        chat.updated_at = datetime.now(timezone.utc)
+        chat.updated_at = datetime.now(UTC)
         session.add(chat)
 
     hits = await hybrid_search(
@@ -166,8 +165,11 @@ async def answer_question(
 
     if context_block:
         prompt_user = (
-            "SOURCES:\n" + context_block + "\n\nQUESTION:\n" + question +
-            "\n\nAnswer using the SOURCES above. Cite with [#]."
+            "SOURCES:\n"
+            + context_block
+            + "\n\nQUESTION:\n"
+            + question
+            + "\n\nAnswer using the SOURCES above. Cite with [#]."
         )
     else:
         prompt_user = (
@@ -200,9 +202,7 @@ async def answer_question(
             }
             for c in citations
         ]
-        msg = ChatMessage(
-            chat_id=chat_id, role="assistant", content=answer_text, sources=sources
-        )
+        msg = ChatMessage(chat_id=chat_id, role="assistant", content=answer_text, sources=sources)
         session.add(msg)
 
     return RAGResult(answer=answer_text, citations=citations)
@@ -239,9 +239,9 @@ async def stream_answer(
         ).all()
         history.reverse()
         session.add(ChatMessage(chat_id=chat_id, role="user", content=question))
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        chat.updated_at = datetime.now(timezone.utc)
+        chat.updated_at = datetime.now(UTC)
         session.add(chat)
 
     hits = await hybrid_search(
@@ -266,7 +266,10 @@ async def stream_answer(
         messages.append(
             {
                 "role": "user",
-                "content": "SOURCES:\n" + context_block + "\n\nQUESTION:\n" + question
+                "content": "SOURCES:\n"
+                + context_block
+                + "\n\nQUESTION:\n"
+                + question
                 + "\n\nAnswer using the SOURCES above. Cite with [#].",
             }
         )
@@ -274,8 +277,7 @@ async def stream_answer(
         messages.append(
             {
                 "role": "user",
-                "content": "No documents are indexed for this question. Be honest about it.\n\n"
-                + question,
+                "content": "No documents are indexed for this question. Be honest about it.\n\n" + question,
             }
         )
 
@@ -303,9 +305,7 @@ async def stream_answer(
     answer_text = "".join(full)
     with session_scope() as session:
         sources = [c.__dict__ for c in citations]
-        session.add(
-            ChatMessage(chat_id=chat_id, role="assistant", content=answer_text, sources=sources)
-        )
+        session.add(ChatMessage(chat_id=chat_id, role="assistant", content=answer_text, sources=sources))
 
     yield {"type": "done", "answer": answer_text}
 

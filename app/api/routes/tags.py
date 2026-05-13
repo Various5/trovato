@@ -12,7 +12,6 @@ from app.auth.security import login_required
 from app.database import get_session
 from app.models import DocumentTagLink, Tag, User
 
-
 router = APIRouter()
 
 

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import JSON, Column, Index, Text
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -69,20 +69,20 @@ class ScanJobStatus(str, enum.Enum):
 class User(SQLModel, table=True):
     __tablename__ = "users"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True, max_length=80)
     password_hash: str
     role: UserRole = Field(default=UserRole.admin)
     is_active: bool = True
-    recovery_key_hash: Optional[str] = None
+    recovery_key_hash: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
-    last_login_at: Optional[datetime] = None
+    last_login_at: datetime | None = None
 
 
 class UserSetting(SQLModel, table=True):
     __tablename__ = "user_settings"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     theme: str = "dark"
     language: str = "en"
@@ -96,7 +96,7 @@ class UserSetting(SQLModel, table=True):
 class UserMemory(SQLModel, table=True):
     __tablename__ = "user_memory"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     key: str
     value: str = Field(sa_column=Column(Text))
@@ -119,22 +119,22 @@ class Visibility(str, enum.Enum):
 class DocumentSource(SQLModel, table=True):
     __tablename__ = "document_sources"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    owner_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    id: int | None = Field(default=None, primary_key=True)
+    owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     visibility: Visibility = Field(default=Visibility.shared)
     name: str = Field(index=True, max_length=200)
     type: SourceType = SourceType.local
     path: str
     active: bool = True
-    scan_interval_minutes: Optional[int] = None
-    last_scan_at: Optional[datetime] = None
+    scan_interval_minutes: int | None = None
+    last_scan_at: datetime | None = None
     include_patterns: list[str] = Field(default_factory=lambda: ["*.pdf"], sa_column=Column(JSON))
     exclude_patterns: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     file_types: list[str] = Field(default_factory=lambda: ["pdf"], sa_column=Column(JSON))
     recursive: bool = True
     ignore_hidden: bool = True
-    max_file_size_mb: Optional[int] = None
-    credentials_ref: Optional[str] = None  # opaque reference, never stored in cleartext
+    max_file_size_mb: int | None = None
+    credentials_ref: str | None = None  # opaque reference, never stored in cleartext
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -145,8 +145,8 @@ class Document(SQLModel, table=True):
         Index("ix_documents_path", "path"),
     )
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    owner_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
+    id: int | None = Field(default=None, primary_key=True)
+    owner_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     visibility: Visibility = Field(default=Visibility.shared)
     source_id: int = Field(foreign_key="document_sources.id", index=True)
     path: str
@@ -155,13 +155,13 @@ class Document(SQLModel, table=True):
     size_bytes: int = 0
     content_hash: str = Field(index=True, max_length=64)
     page_count: int = 0
-    created_at_fs: Optional[datetime] = None
-    modified_at_fs: Optional[datetime] = None
-    indexed_at: Optional[datetime] = None
+    created_at_fs: datetime | None = None
+    modified_at_fs: datetime | None = None
+    indexed_at: datetime | None = None
     status: DocumentStatus = DocumentStatus.new
-    error: Optional[str] = None
-    language: Optional[str] = None
-    doc_type: Optional[str] = None  # rechnung, vertrag, ...
+    error: str | None = None
+    language: str | None = None
+    doc_type: str | None = None  # rechnung, vertrag, ...
     extra: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
@@ -169,14 +169,14 @@ class DocumentPage(SQLModel, table=True):
     __tablename__ = "document_pages"
     __table_args__ = (Index("ix_document_pages_doc_page", "document_id", "page_number", unique=True),)
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     document_id: int = Field(foreign_key="documents.id", index=True)
     page_number: int
     native_text: str = Field(default="", sa_column=Column(Text))
     ocr_text: str = Field(default="", sa_column=Column(Text))
     has_images: bool = False
     has_tables: bool = False
-    rendered_image_path: Optional[str] = None
+    rendered_image_path: str | None = None
     width: int = 0
     height: int = 0
 
@@ -184,7 +184,7 @@ class DocumentPage(SQLModel, table=True):
 class DocumentImage(SQLModel, table=True):
     __tablename__ = "document_images"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     document_id: int = Field(foreign_key="documents.id", index=True)
     page_number: int
     image_index: int
@@ -200,14 +200,14 @@ class DocumentImage(SQLModel, table=True):
 class DocumentChunk(SQLModel, table=True):
     __tablename__ = "document_chunks"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     document_id: int = Field(foreign_key="documents.id", index=True)
     page_from: int = 1
     page_to: int = 1
     text: str = Field(sa_column=Column(Text))
     source: ChunkSource = ChunkSource.native_text
     token_count: int = 0
-    embedding_id: Optional[str] = Field(default=None, index=True)
+    embedding_id: str | None = Field(default=None, index=True)
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
 
@@ -220,11 +220,11 @@ class DocumentChunk(SQLModel, table=True):
 class Tag(SQLModel, table=True):
     __tablename__ = "tags"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True, max_length=120)
-    color: Optional[str] = None
+    color: str | None = None
     auto: bool = True
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class DocumentTagLink(SQLModel, table=True):
@@ -244,30 +244,30 @@ class DocumentTagLink(SQLModel, table=True):
 class ScanJob(SQLModel, table=True):
     __tablename__ = "scan_jobs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    source_id: Optional[int] = Field(default=None, foreign_key="document_sources.id", index=True)
+    id: int | None = Field(default=None, primary_key=True)
+    source_id: int | None = Field(default=None, foreign_key="document_sources.id", index=True)
     status: ScanJobStatus = ScanJobStatus.queued
     total_files: int = 0
     processed_files: int = 0
     error_count: int = 0
-    current_file: Optional[str] = None
-    started_at: Optional[datetime] = None
-    ended_at: Optional[datetime] = None
+    current_file: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     options: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    message: Optional[str] = None
+    message: str | None = None
 
 
 class ScanJobItem(SQLModel, table=True):
     __tablename__ = "scan_job_items"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     job_id: int = Field(foreign_key="scan_jobs.id", index=True)
-    document_id: Optional[int] = Field(default=None, foreign_key="documents.id")
+    document_id: int | None = Field(default=None, foreign_key="documents.id")
     path: str
     status: DocumentStatus = DocumentStatus.pending
-    error: Optional[str] = None
-    started_at: Optional[datetime] = None
-    ended_at: Optional[datetime] = None
+    error: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class ScanJobItem(SQLModel, table=True):
 class Chat(SQLModel, table=True):
     __tablename__ = "chats"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     title: str = "New chat"
     created_at: datetime = Field(default_factory=utcnow)
@@ -290,7 +290,7 @@ class Chat(SQLModel, table=True):
 class ChatMessage(SQLModel, table=True):
     __tablename__ = "chat_messages"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     chat_id: int = Field(foreign_key="chats.id", index=True)
     role: str  # user | assistant | system
     content: str = Field(sa_column=Column(Text))
@@ -302,11 +302,11 @@ class ChatMessage(SQLModel, table=True):
 class ChatContextItem(SQLModel, table=True):
     __tablename__ = "chat_context_items"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     chat_id: int = Field(foreign_key="chats.id", index=True)
     kind: str  # document | source | tag | path
-    ref_id: Optional[int] = None
-    value: Optional[str] = None
+    ref_id: int | None = None
+    value: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -317,13 +317,13 @@ class ChatContextItem(SQLModel, table=True):
 class Backup(SQLModel, table=True):
     __tablename__ = "backups"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     filename: str
     path: str
     size_bytes: int = 0
     components: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     app_version: str
-    db_version: Optional[str] = None
+    db_version: str | None = None
     encrypted: bool = False
     document_count: int = 0
     chunk_count: int = 0
@@ -342,7 +342,7 @@ class AppSetting(SQLModel, table=True):
 class ModelConfig(SQLModel, table=True):
     __tablename__ = "model_configs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     role: str  # chat | vision | embedding
     name: str  # model id reported by LM Studio
     base_url: str = "http://localhost:1234/v1"
@@ -354,8 +354,8 @@ class ModelConfig(SQLModel, table=True):
 class AuditEvent(SQLModel, table=True):
     __tablename__ = "audit_events"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int | None = Field(default=None, foreign_key="users.id")
     event: str
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)

@@ -103,7 +103,21 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "W", "UP", "C4", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line length — black handles it
+    "B008",   # FastAPI / NiceGUI rely on function calls in defaults (Depends, Query)
+    "UP042",  # str-enum migration; SQLModel needs the explicit str-mixin enums
+    "SIM105", # contextlib.suppress is not always more readable than try/except/pass
+    "SIM108", # if-else vs conditional expr is a style nit
+    "SIM117", # nested-with — NiceGUI's layout builder requires nested context mgrs
+    "B904",   # raise-from is over-strict for user-facing error handling
+    "B007",   # unused loop control vars are sometimes documentation
+    "E402",   # module imports — needed after pytest.importorskip()
+    "E741",   # ambiguous variable names — `l`, `I` etc. are fine in maths
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B008", "E402"]
 
 [tool.black]
 line-length = 110

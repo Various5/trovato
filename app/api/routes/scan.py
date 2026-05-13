@@ -13,7 +13,6 @@ from app.database import get_session
 from app.models import ScanJob, User
 from app.services.indexer import JOB_CONTROLLER, resume_scan_job, start_scan_in_background
 
-
 router = APIRouter()
 
 

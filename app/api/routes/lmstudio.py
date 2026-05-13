@@ -11,7 +11,6 @@ from app.auth.security import login_required
 from app.llm import LMStudioClient
 from app.models import User
 
-
 router = APIRouter()
 
 

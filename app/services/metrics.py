@@ -44,15 +44,9 @@ def system_metrics() -> dict[str, Any]:
 
 def queue_metrics() -> dict[str, Any]:
     with session_scope() as session:
-        running = session.exec(
-            select(ScanJob).where(ScanJob.status == ScanJobStatus.running)
-        ).all()
-        paused = session.exec(
-            select(ScanJob).where(ScanJob.status == ScanJobStatus.paused)
-        ).all()
-        queued = session.exec(
-            select(ScanJob).where(ScanJob.status == ScanJobStatus.queued)
-        ).all()
+        running = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
+        paused = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.paused)).all()
+        queued = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.queued)).all()
     return {
         "in_memory_jobs": list(JOB_CONTROLLER.keys()),
         "watchers_active": watching_ids(),

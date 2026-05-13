@@ -22,7 +22,6 @@ import pytest
 playwright = pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-
 pytestmark = pytest.mark.e2e
 
 
@@ -41,8 +40,10 @@ def app_server(tmp_path_factory):
     env["LDI_PORT"] = str(port)
     env["LDI_LOG_LEVEL"] = "WARNING"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "app.main"], env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [sys.executable, "-m", "app.main"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     deadline = time.time() + 30
     while time.time() < deadline:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
@@ -11,7 +11,6 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
 from app.utils.logging import logger
-
 
 _engine: Engine | None = None
 
@@ -56,8 +55,7 @@ def _ensure_fts5(engine: Engine) -> None:
         return
     with engine.begin() as conn:
         try:
-            conn.exec_driver_sql(
-                """
+            conn.exec_driver_sql("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     chunk_id UNINDEXED,
                     document_id UNINDEXED,
@@ -65,8 +63,7 @@ def _ensure_fts5(engine: Engine) -> None:
                     tags,
                     tokenize='porter unicode61'
                 )
-                """
-            )
+                """)
         except Exception as e:  # FTS5 missing → search degrades to vector only
             logger.warning("FTS5 not available: {} — full-text search disabled", e)
 
@@ -115,9 +112,7 @@ def fts_delete_for_document(document_id: int) -> None:
         return
     with engine.begin() as conn:
         try:
-            conn.execute(
-                text("DELETE FROM chunks_fts WHERE document_id = :d"), {"d": document_id}
-            )
+            conn.execute(text("DELETE FROM chunks_fts WHERE document_id = :d"), {"d": document_id})
         except Exception as e:
             logger.debug("FTS delete skipped: {}", e)
 

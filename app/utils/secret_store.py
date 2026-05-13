@@ -19,7 +19,6 @@ from app.config import get_settings
 from app.database import session_scope
 from app.models import AppSetting
 
-
 _PREFIX = "secret:"
 
 

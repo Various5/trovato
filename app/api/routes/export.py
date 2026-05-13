@@ -16,7 +16,6 @@ from app.services.exports import (
 )
 from app.services.search_service import hybrid_search
 
-
 router = APIRouter()
 
 

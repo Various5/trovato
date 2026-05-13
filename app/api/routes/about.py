@@ -12,7 +12,6 @@ from app import __app_name__, __author__, __contact__, __handle__, __version__
 from app.config import get_settings
 from app.vectorstore import collection_size
 
-
 router = APIRouter()
 
 

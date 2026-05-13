@@ -115,7 +115,7 @@ async def lmstudio_status() -> dict[str, Any]:
     c = LMStudioClient()
     try:
         ok = await asyncio.wait_for(c.ping(), timeout=4.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         ok = False
     out: dict[str, Any] = {"base_url": c.base_url, "reachable": ok}
     if ok:

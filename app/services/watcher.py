@@ -21,7 +21,6 @@ from app.models import DocumentSource
 from app.services.indexer import start_scan_in_background
 from app.utils.logging import logger
 
-
 _TASKS: dict[int, asyncio.Task[Any]] = {}
 _DEBOUNCE_SECONDS = 4.0
 

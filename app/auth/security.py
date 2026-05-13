@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import secrets
-from typing import Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -14,7 +13,6 @@ from app.config import get_settings
 from app.database import get_session
 from app.models import User, UserRole, UserSetting
 from app.utils.logging import logger
-
 
 _ph = PasswordHasher()
 SESSION_USER_KEY = "uid"
@@ -87,16 +85,14 @@ def logout_session(request: Request) -> None:
     request.session.pop(SESSION_USER_KEY, None)
 
 
-def current_user_id(request: Request) -> Optional[int]:
+def current_user_id(request: Request) -> int | None:
     try:
         return request.session.get(SESSION_USER_KEY)
     except Exception:
         return None
 
 
-def get_current_user(
-    request: Request, session: Session = Depends(get_session)
-) -> User:
+def get_current_user(request: Request, session: Session = Depends(get_session)) -> User:
     uid = current_user_id(request)
     if uid is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="login required")

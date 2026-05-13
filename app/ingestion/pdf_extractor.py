@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from app.config import get_settings
 from app.ocr.tesseract import ocr_image_bytes

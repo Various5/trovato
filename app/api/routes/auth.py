@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -21,7 +23,6 @@ from app.auth.security import (
 from app.database import get_session
 from app.models import User, UserRole
 from app.services import audit
-
 
 router = APIRouter()
 
@@ -98,9 +99,9 @@ def login(body: LoginBody, request: Request, session: Session = Depends(get_sess
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
     record_success(ip, body.username)
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    user.last_login_at = datetime.now(timezone.utc)
+    user.last_login_at = datetime.now(UTC)
     session.add(user)
     login_session(request, user)
     audit.log("auth.login.success", user_id=user.id, payload={"ip": ip})

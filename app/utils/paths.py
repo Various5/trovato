@@ -6,7 +6,6 @@ import os
 import re
 from pathlib import Path
 
-
 _INVALID = re.compile(r'[<>:"|?*\x00-\x1f]')
 
 

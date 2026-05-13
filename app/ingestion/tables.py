@@ -6,14 +6,16 @@ the chunker as a separate ``ChunkSource.table`` chunk source.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from app.utils.logging import logger
 
 
 def _row_to_markdown(row: list[str | None]) -> str:
-    return "| " + " | ".join((cell or "").replace("|", "\\|").replace("\n", " ").strip() for cell in row) + " |"
+    return (
+        "| " + " | ".join((cell or "").replace("|", "\\|").replace("\n", " ").strip() for cell in row) + " |"
+    )
 
 
 def extract_tables_markdown(pdf_path: str | Path) -> Iterator[tuple[int, str]]:
@@ -37,9 +39,7 @@ def extract_tables_markdown(pdf_path: str | Path) -> Iterator[tuple[int, str]]:
                     header = tbl[0]
                     body = tbl[1:]
                     md_lines = [_row_to_markdown(header)]
-                    md_lines.append(
-                        "| " + " | ".join("---" for _ in header) + " |"
-                    )
+                    md_lines.append("| " + " | ".join("---" for _ in header) + " |")
                     for r in body:
                         md_lines.append(_row_to_markdown(r))
                     yield i, "\n".join(md_lines)

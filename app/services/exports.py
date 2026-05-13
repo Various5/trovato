@@ -50,9 +50,7 @@ def chat_to_pdf(chat_id: int) -> bytes:
         rect = fitz.Rect(margin_x + indent, cursor_y, margin_x + text_width, 820)
         # Two-pass: render, measure remaining
         before = cursor_y
-        used = page.insert_textbox(
-            rect, text, fontsize=size, fontname=font, align=0
-        )
+        used = page.insert_textbox(rect, text, fontsize=size, fontname=font, align=0)
         # used < 0 means overflow → split into chunks
         if used < 0:
             paragraphs = text.split("\n")
@@ -63,7 +61,10 @@ def chat_to_pdf(chat_id: int) -> bytes:
                 cursor_y += max(14, min(60, int(len(para) / 80) * 14 + 14))
             return
         # Approximate vertical advance
-        lines = max(1, int(rect.width and (len(text) / max(60, int(rect.width / (size * 0.55)))) + text.count("\n") + 1))
+        lines = max(
+            1,
+            int(rect.width and (len(text) / max(60, int(rect.width / (size * 0.55)))) + text.count("\n") + 1),
+        )
         cursor_y = before + lines * (size + 4)
 
     _write(title, size=18, bold=True)
@@ -104,7 +105,9 @@ def chat_to_markdown(chat_id: int) -> str:
         when = chat.updated_at.isoformat() if chat.updated_at else "—"
         lines = [f"# {chat.title or 'Untitled chat'}", "", f"_Exported: {when}_", ""]
         for m in msgs:
-            who = "**You**" if m.role == "user" else "**Assistant**" if m.role == "assistant" else f"_{m.role}_"
+            who = (
+                "**You**" if m.role == "user" else "**Assistant**" if m.role == "assistant" else f"_{m.role}_"
+            )
             lines.append(f"### {who}")
             lines.append("")
             lines.append(m.content)
