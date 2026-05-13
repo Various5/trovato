@@ -194,19 +194,14 @@ def create_app():  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
-def _launch() -> None:
-    """Resolve settings, build the app, hand it to uvicorn."""
+def _launch_headless() -> None:
+    """Server-only launch — no window. Used in tests and via LDI_NO_WINDOW=1."""
     import uvicorn
 
     from app.config import get_settings
 
     s = get_settings()
     host = "0.0.0.0" if s.allow_lan else s.host
-
-    # Build the app *once*, then pass the instance directly to uvicorn.
-    # Avoid the "app.main:create_app" string form: in a PyInstaller bundle
-    # uvicorn would try importlib.import_module("app.main") and the module
-    # resolver doesn't always cooperate. Direct instances are bullet-proof.
     fastapi_app = create_app()
 
     uvicorn.run(
@@ -215,10 +210,19 @@ def _launch() -> None:
         port=s.port,
         reload=False,
         log_level=s.log_level.lower(),
-        log_config=None,  # let loguru own logging; uvicorn's colour formatter
-        # cannot handle PyInstaller's detached stdio
+        log_config=None,
         access_log=False,
     )
+
+
+def _launch() -> None:
+    """Pick the right launch mode (native window vs. headless server)."""
+    from app.desktop import can_open_window, run_with_window
+
+    if can_open_window():
+        run_with_window()
+    else:
+        _launch_headless()
 
 
 def run() -> None:

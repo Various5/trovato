@@ -6,6 +6,7 @@ HTTP roundtrips). Session-cookie auth is shared with the API.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from fastapi import FastAPI
@@ -35,7 +36,8 @@ from app.models import (
     UserSetting,
 )
 from app.services.indexer import start_scan_in_background
-from app.ui.themes import THEMES, theme_css
+from app.ui.styles import build_global_css
+from app.ui.themes import THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
 
 
@@ -73,6 +75,27 @@ def pdf_url(document_id: int, page: int | None = None) -> str:
 def open_pdf(document_id: int, page: int | None = None) -> None:
     """Open the PDF in a new browser tab on the specified page."""
     ui.run_javascript(f"window.open({pdf_url(document_id, page)!r}, '_blank')")
+
+
+def _now_utc():
+    from datetime import datetime
+
+    return datetime.now(UTC)
+
+
+def _maybe_send_on_enter(event, send_fn) -> None:
+    """Send on plain Enter; allow Shift+Enter for newline.
+
+    NiceGUI's `keydown.enter` fires before the textarea inserts the newline,
+    so we only need to prevent / not-prevent based on the modifier flag.
+    """
+    args = getattr(event, "args", {}) or {}
+    if args.get("shiftKey"):
+        return  # let the textarea grow
+    ui.run_javascript("event && event.preventDefault && event.preventDefault();")
+    import asyncio
+
+    asyncio.create_task(send_fn())
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +189,9 @@ def _render_citation(c: dict) -> None:
 
 
 def _apply_theme(theme_name: str = "dark") -> None:
-    t = THEMES.get(theme_name) or THEMES["dark"]
-    ui.dark_mode().set_value(t.is_dark)
-    ui.add_head_html(f"<style>{theme_css(theme_name)}</style>")
+    theme = THEMES.get(theme_name) or THEMES["dark"]
+    ui.dark_mode().set_value(theme.is_dark)
+    ui.add_head_html(f"<style>{build_global_css(theme_name)}</style>")
 
 
 def _user_theme(user: User) -> str:
@@ -184,49 +207,126 @@ def _user_lang(user: User) -> str:
         return lang if lang in SUPPORTED_LANGUAGES else "en"
 
 
+NAV_ITEMS: list[tuple[str, str, str]] = [
+    ("nav.dashboard", "/", "dashboard"),
+    ("nav.documents", "/documents", "description"),
+    ("nav.search", "/search", "search"),
+    ("nav.chat", "/chat", "forum"),
+    ("nav.sources", "/sources", "folder"),
+    ("nav.compare", "/compare", "compare_arrows"),
+    ("nav.tags", "/tags", "label"),
+    ("nav.backup", "/backup", "save"),
+    ("nav.settings", "/settings", "settings"),
+    ("nav.diagnostics", "/diagnostics", "monitor_heart"),
+    ("nav.logs", "/logs", "article"),
+    ("nav.about", "/about", "info"),
+]
+
+
 def _layout(user: User, current: str) -> None:
+    """Build the modern app shell: header + collapsible drawer + page area.
+
+    The header sticks to the top and carries the brand mark, a hamburger to
+    collapse the drawer, and a quick-actions area on the right (current page
+    label, theme/lang shortcuts, user menu). The drawer is a glass panel that
+    can slide off-screen via the hamburger toggle.
+    """
     import asyncio
 
     _apply_theme(_user_theme(user))
     lang = _user_lang(user)
-    # Kick off (or refresh) the update check in the background; the banner
-    # renders on the *next* page navigation after the check completes.
     try:
         asyncio.create_task(_refresh_update_state())
     except RuntimeError:
         pass
-    _render_update_banner(lang)
-    with ui.left_drawer().classes("p-3 gap-2").style("min-width: 220px"):
-        ui.label(__app_name__).classes("text-h6 ldi-primary")
-        ui.label(f"v{__version__}").classes("text-caption opacity-70")
-        ui.separator()
-        nav = [
-            ("nav.dashboard", "/", "dashboard"),
-            ("nav.documents", "/documents", "description"),
-            ("nav.search", "/search", "search"),
-            ("nav.chat", "/chat", "forum"),
-            ("nav.sources", "/sources", "folder"),
-            ("nav.compare", "/compare", "compare_arrows"),
-            ("nav.tags", "/tags", "label"),
-            ("nav.backup", "/backup", "save"),
-            ("nav.settings", "/settings", "settings"),
-            ("nav.diagnostics", "/diagnostics", "monitor_heart"),
-            ("nav.logs", "/logs", "article"),
-            ("nav.about", "/about", "info"),
-        ]
-        for key, path, icon in nav:
-            cls = "w-full justify-start"
+
+    # --- Header ----------------------------------------------------------
+    page_title = next((t(k, lang) for k, p, _ in NAV_ITEMS if p == current), __app_name__)
+
+    with (
+        ui.header(elevated=False)
+        .classes("items-center gap-3 q-px-md")
+        .style("height: 60px; padding-left: 12px; padding-right: 12px;")
+    ):
+        # Drawer toggle (left)
+        hamburger = ui.button(icon="menu").props("flat round dense").classes("ldi-accent")
+
+        # Brand
+        with ui.row().classes("items-center gap-2 ldi-brand"):
+            with ui.element("div").classes("ldi-brand-mark"):
+                ui.label("L")
+            with ui.column().classes("gap-0"):
+                ui.label(__app_name__).classes("text-body1 leading-tight")
+                ui.label(f"v{__version__}").classes("text-caption opacity-60 leading-tight")
+
+        ui.space()
+
+        # Current page tag
+        ui.label(page_title).classes("text-body2 opacity-80")
+
+        # Theme cycle button (light/dark quick swap)
+        def _cycle_theme() -> None:
+            order = ["light", "dark", "nord", "solarized", "dracula", "highcontrast"]
+            cur = _user_theme(user)
+            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "dark"
+            with session_scope() as session:
+                us = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
+                if not us:
+                    us = UserSetting(user_id=user.id)
+                us.theme = nxt
+                session.add(us)
+            ui.navigate.reload()
+
+        ui.button(icon="palette", on_click=_cycle_theme).props("flat round dense").tooltip(
+            t("common.theme", lang)
+        )
+
+        # User menu
+        with ui.button(icon="person").props("flat round dense") as user_btn:
+            with ui.menu().props("anchor='bottom right' self='top right'"):
+                ui.label(f"@{user.username}").classes("text-body2 ldi-primary q-px-md q-pt-sm")
+                ui.label(user.role.value).classes("text-caption opacity-70 q-px-md q-pb-sm")
+                ui.separator()
+                ui.menu_item(t("nav.settings", lang), on_click=lambda: ui.navigate.to("/settings")).props(
+                    "icon=settings"
+                )
+                ui.menu_item(t("btn.logout", lang), on_click=_do_logout).props("icon=logout")
+        _ = user_btn  # silence linter
+
+    # --- Drawer ----------------------------------------------------------
+    with ui.left_drawer(value=True, bordered=False).props("width=260").classes("q-pa-md gap-1") as drawer:
+        with ui.column().classes("gap-0 q-mb-md"):
+            ui.label(t("nav.dashboard", lang).upper() if False else "").classes(
+                "text-caption opacity-50 q-px-sm"
+            )
+            # Section header
+            ui.label("MENU").classes("text-caption opacity-50 q-px-sm").style("letter-spacing: 0.12em;")
+
+        for key, path, icon in NAV_ITEMS:
+            classes = "ldi-nav-item"
             if current == path:
-                cls += " ldi-primary"
-            ui.button(t(key, lang), on_click=lambda p=path: ui.navigate.to(p), icon=icon).props(
-                "flat"
-            ).classes(cls)
-        ui.separator()
-        ui.button(
-            f"{t('btn.logout', lang)} ({user.username})",
-            icon="logout",
-            on_click=_do_logout,
-        ).props("flat outline")
+                classes += " active"
+            with (
+                ui.button(on_click=lambda p=path: ui.navigate.to(p))
+                .props("flat align=left no-caps")
+                .classes(classes)
+            ):
+                with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                    ui.icon(icon).classes("text-xl")
+                    ui.label(t(key, lang)).classes("text-body2")
+
+        ui.space()
+        ui.separator().classes("q-my-md")
+        with (ui.row().classes("items-center gap-2 q-px-sm"),):
+            ui.icon("verified_user").classes("ldi-accent")
+            ui.label(user.username).classes("text-body2 flex-1")
+            ui.label(user.role.value).classes("text-caption opacity-60")
+
+    # Wire up the hamburger now that the drawer exists
+    hamburger.on("click", lambda: drawer.toggle())
+
+    # --- Update banner sits at the top of the page area ------------------
+    _render_update_banner(lang)
 
 
 def _do_logout() -> None:
@@ -710,18 +810,111 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/chat")
         lang = _user_lang(user)
-        ui.label(t("chat.title", lang)).classes("text-h4 q-mb-md ldi-primary")
 
         chat_state: dict = {"chat_id": None}
+        user_initials = (user.username[:1] + (user.username[1:2] if len(user.username) > 1 else "")).upper()
 
-        with ui.row().classes("w-full gap-4 no-wrap").style("height: calc(100vh - 180px)"):
-            # Left: chat list
-            with ui.column().classes("gap-2").style("min-width: 260px; max-width: 280px"):
-                ui.label(t("chat.list_title", lang)).classes("text-h6")
-                with ui.row().classes("gap-1"):
-                    ui.button(t("chat.new", lang), icon="add", on_click=lambda: _new_chat()).props(
-                        "color=primary dense"
+        # --- Helpers ----------------------------------------------------
+        def _fmt_when(ts) -> str:
+            if not ts:
+                return ""
+            try:
+                from datetime import datetime
+
+                import humanize
+
+                now = datetime.now(UTC)
+                delta = now - (ts if ts.tzinfo else ts.replace(tzinfo=UTC))
+                return humanize.naturaltime(delta)
+            except Exception:
+                return ts.strftime("%H:%M") if hasattr(ts, "strftime") else ""
+
+        def _scroll_msgs_to_bottom() -> None:
+            # NiceGUI doesn't expose a direct scroll API on a column, so we
+            # use a small JS shim that targets our msg-container.
+            ui.run_javascript(
+                "(()=>{const el=document.getElementById('ldi-msgs');"
+                "if(el){el.scrollTop=el.scrollHeight;}})()"
+            )
+
+        def _render_user_message(content: str, when: str | None = None) -> None:
+            import html
+
+            safe = html.escape(content).replace("\n", "<br>")
+            with ui.row().classes("w-full no-wrap q-mb-md justify-end items-end gap-2"):
+                with ui.column().classes("gap-0 items-end").style("max-width: 78%"):
+                    ui.html(safe).classes("ldi-chat-bubble-user")
+                    if when:
+                        ui.label(when).classes("text-caption opacity-60 q-mt-xs")
+                with ui.element("div").classes("ldi-avatar ldi-avatar-user").style("margin-bottom: 18px;"):
+                    ui.label(user_initials)
+
+        def _render_assistant_message_open() -> tuple:
+            """Render the assistant bubble shell and return (md_el, bubble_card,
+            footer_row). Used by both replay and streaming."""
+            with ui.row().classes("w-full no-wrap q-mb-md items-end gap-2"):
+                with ui.element("div").classes("ldi-avatar ldi-avatar-bot").style("margin-bottom: 18px;"):
+                    ui.icon("auto_awesome")
+                bubble = ui.column().classes("gap-1").style("max-width: 92%; min-width: 0;")
+                with bubble:
+                    md_card = ui.element("div").classes("ldi-chat-bubble-assistant")
+                    with md_card:
+                        md_el = ui.markdown("")
+                    footer = ui.row().classes("items-center gap-2 q-mt-xs")
+            return md_el, md_card, footer
+
+        def _render_sources_footer(footer_row, sources: list[dict]) -> None:
+            with footer_row:
+                with (
+                    ui.expansion(
+                        f"{t('chat.sources', lang)} · {len(sources)}",
+                        icon="link",
                     )
+                    .props("dense")
+                    .classes("ldi-glass-sm")
+                    .style("padding: 4px 10px;")
+                ):
+                    for s in sources:
+                        with ui.element("div").classes("ldi-source-card"):
+                            with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                                ui.label(f"[{s.get('n')}]").classes("text-caption ldi-accent").style(
+                                    "min-width: 28px;"
+                                )
+                                with ui.column().classes("flex-1 gap-0"):
+                                    ui.label(f"{s.get('filename')} · p.{s.get('page_from')}").classes(
+                                        "text-body2"
+                                    )
+                                    ui.label(s.get("snippet") or "").classes("text-caption opacity-70")
+                                with ui.row().classes("gap-0 items-center"):
+                                    ui.button(
+                                        icon="visibility",
+                                        on_click=lambda d=s.get("document_id"), p=s.get(
+                                            "page_from"
+                                        ): ui.navigate.to(f"/viewer?doc={d}&page={p}"),
+                                    ).props("flat dense round").tooltip("View")
+                                    ui.button(
+                                        icon="picture_as_pdf",
+                                        on_click=lambda d=s.get("document_id"), p=s.get(
+                                            "page_from"
+                                        ): open_pdf(d, p),
+                                    ).props("flat dense round").tooltip("PDF")
+
+        # --- Layout: two-column grid -----------------------------------
+        with (
+            ui.row()
+            .classes("w-full gap-4 no-wrap")
+            .style("height: calc(100vh - 120px); align-items: stretch;")
+        ):
+            # ============ Left: chat sidebar ============
+            with ui.column().classes("ldi-glass gap-2 q-pa-md").style("min-width: 280px; max-width: 300px;"):
+                with ui.row().classes("items-center justify-between w-full"):
+                    ui.label(t("chat.list_title", lang)).classes("text-h6")
+                    ui.button(icon="add", on_click=lambda: _new_chat()).props(
+                        "color=primary dense round"
+                    ).tooltip(t("chat.new", lang))
+
+                # Export-Buttons
+                with ui.row().classes("gap-1 w-full"):
 
                     def _export_chat_md() -> None:
                         cid = chat_state.get("chat_id")
@@ -731,7 +924,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         from app.services.exports import chat_to_markdown
 
                         md = chat_to_markdown(cid)
-                        ui.download(md.encode("utf-8"), filename=f"chat-{cid}.md", media_type="text/markdown")
+                        ui.download(
+                            md.encode("utf-8"),
+                            filename=f"chat-{cid}.md",
+                            media_type="text/markdown",
+                        )
 
                     def _export_chat_pdf() -> None:
                         cid = chat_state.get("chat_id")
@@ -741,16 +938,23 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         from app.services.exports import chat_to_pdf
 
                         ui.download(
-                            chat_to_pdf(cid), filename=f"chat-{cid}.pdf", media_type="application/pdf"
+                            chat_to_pdf(cid),
+                            filename=f"chat-{cid}.pdf",
+                            media_type="application/pdf",
                         )
 
                     ui.button(t("chat.btn_md", lang), icon="download", on_click=_export_chat_md).props(
-                        "dense"
-                    )
+                        "flat dense"
+                    ).classes("flex-1")
                     ui.button(
-                        t("chat.btn_pdf", lang), icon="picture_as_pdf", on_click=_export_chat_pdf
-                    ).props("dense")
-                chat_list = ui.column().classes("gap-1")
+                        t("chat.btn_pdf", lang),
+                        icon="picture_as_pdf",
+                        on_click=_export_chat_pdf,
+                    ).props("flat dense").classes("flex-1")
+
+                ui.separator()
+
+                chat_list = ui.column().classes("gap-1 w-full overflow-auto").style("flex: 1; min-height: 0;")
 
                 def _refresh_chats() -> None:
                     chat_list.clear()
@@ -760,18 +964,33 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             .where(Chat.user_id == user.id)
                             .order_by(Chat.updated_at.desc())  # type: ignore
                         ).all()
+                        if not chats:
+                            ui.label(t("chat.start_or_pick", lang)).classes("text-caption opacity-60 q-px-sm")
+                            return
+                        active_id = chat_state.get("chat_id")
                         for c in chats:
-                            with ui.row().classes("items-center w-full"):
+                            cls = "ldi-nav-item"
+                            if c.id == active_id:
+                                cls += " active"
+                            with ui.row().classes("items-center gap-1 w-full no-wrap"):
+                                with (
+                                    ui.button(on_click=lambda cid=c.id: _open_chat(cid))
+                                    .props("flat align=left no-caps")
+                                    .classes(cls + " flex-1")
+                                ):
+                                    with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                                        ui.icon("chat_bubble_outline").classes("text-base opacity-70")
+                                        with ui.column().classes("gap-0 flex-1 items-start"):
+                                            ui.label((c.title or "Untitled")[:30]).classes(
+                                                "text-body2 text-left"
+                                            )
+                                            ui.label(_fmt_when(c.updated_at)).classes(
+                                                "text-caption opacity-50"
+                                            )
                                 ui.button(
-                                    c.title[:30],
-                                    on_click=lambda cid=c.id: _open_chat(cid),
-                                ).props(
-                                    "flat dense"
-                                ).classes("flex-1 justify-start")
-                                ui.button(
-                                    icon="delete",
+                                    icon="delete_outline",
                                     on_click=lambda cid=c.id: _delete_chat(cid),
-                                ).props("flat dense color=negative")
+                                ).props("flat dense round").classes("opacity-70")
 
                 def _new_chat() -> None:
                     with session_scope() as session:
@@ -785,6 +1004,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 def _open_chat(cid: int) -> None:
                     chat_state["chat_id"] = cid
+                    _refresh_chats()
                     _refresh_msgs()
 
                 def _delete_chat(cid: int) -> None:
@@ -803,91 +1023,127 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     _refresh_chats()
                     _refresh_msgs()
 
-            # Right: messages
-            with ui.column().classes("flex-1 gap-2").style("min-width: 0"):
-                msg_area = (
-                    ui.column().classes("w-full gap-2 q-pa-sm overflow-auto").style("flex: 1; min-height: 0")
+            # ============ Right: chat conversation ============
+            with ui.column().classes("flex-1 gap-2").style("min-width: 0;"):
+                # Chat header
+                chat_header = (
+                    ui.row()
+                    .classes("ldi-glass items-center gap-3 q-px-md q-py-sm w-full no-wrap")
+                    .style("min-height: 52px;")
                 )
-                input_row = ui.row().classes("w-full no-wrap")
-                with input_row:
-                    inp = ui.input(placeholder=t("chat.ph_ask", lang)).classes("flex-1")
+                with chat_header:
+                    chat_header_title = ui.label(t("chat.title", lang)).classes(
+                        "text-h6 ldi-primary flex-1 ellipsis"
+                    )
+                    ui.icon("auto_awesome").classes("ldi-accent text-xl")
+
+                # Message scroll area
+                msg_area = (
+                    ui.column().classes("w-full q-pa-md overflow-auto").style("flex: 1; min-height: 0;")
+                )
+                msg_area.props('id="ldi-msgs"')
+
+                # Input dock
+                with (
+                    ui.row()
+                    .classes("ldi-glass items-end gap-2 q-pa-sm w-full no-wrap")
+                    .style("border-radius: 18px;")
+                ):
+                    inp = (
+                        ui.textarea(placeholder=t("chat.ph_ask", lang))
+                        .props("borderless dense autogrow rows=1 max-rows=6")
+                        .classes("flex-1")
+                        .style("font-size: 15px;")
+                    )
+
+                    sending_state = {"busy": False}
 
                     async def _send() -> None:
-                        if chat_state.get("chat_id") is None:
-                            _new_chat()
+                        if sending_state["busy"]:
+                            return
                         question = (inp.value or "").strip()
                         if not question:
                             return
-                        inp.value = ""
-                        with msg_area, ui.card().classes("w-full p-3 ldi-border"):
-                            ui.label(t("chat.you", lang)).classes("text-caption opacity-70")
-                            ui.label(question)
+                        sending_state["busy"] = True
+                        try:
+                            if chat_state.get("chat_id") is None:
+                                _new_chat()
+                            inp.value = ""
+                            with msg_area:
+                                _render_user_message(question, when=_fmt_when(_now_utc()))
+                                md_el, md_card, footer = _render_assistant_message_open()
+                                md_card.classes("ldi-stream-cursor")
+                            _scroll_msgs_to_bottom()
 
-                        # Streaming answer
-                        from app.chat.rag import stream_answer
+                            from app.chat.rag import stream_answer
 
-                        answer_card = None
-                        answer_md = None
-                        cites_state: list[dict] = []
-                        buffer = []
-                        async for ev in stream_answer(
-                            chat_id=chat_state["chat_id"],
-                            user=user,
-                            question=question,
-                        ):
-                            ev_t = ev.get("type")
-                            if ev_t == "sources":
-                                cites_state = ev.get("citations", [])
-                                with msg_area:
-                                    answer_card = ui.card().classes("w-full p-3")
-                                    with answer_card:
-                                        ui.label(t("chat.assistant", lang)).classes("text-caption ldi-accent")
-                                        answer_md = ui.markdown("")
-                            elif ev_t == "token":
-                                buffer.append(ev.get("text", ""))
-                                if answer_md is not None:
-                                    answer_md.content = "".join(buffer)
-                            elif ev_t == "done":
-                                if cites_state and answer_card is not None:
-                                    with answer_card:
-                                        with ui.expansion(t("chat.sources", lang), icon="link"):
-                                            for c in cites_state:
-                                                _render_citation(c)
+                            cites_state: list[dict] = []
+                            buffer: list[str] = []
+                            async for ev in stream_answer(
+                                chat_id=chat_state["chat_id"],
+                                user=user,
+                                question=question,
+                            ):
+                                ev_t = ev.get("type")
+                                if ev_t == "sources":
+                                    cites_state = ev.get("citations", []) or []
+                                elif ev_t == "token":
+                                    buffer.append(ev.get("text", ""))
+                                    md_el.content = "".join(buffer)
+                                    _scroll_msgs_to_bottom()
+                                elif ev_t == "done":
+                                    # remove streaming cursor & wire up sources
+                                    md_card.classes(remove="ldi-stream-cursor")
+                                    if cites_state:
+                                        _render_sources_footer(footer, cites_state)
+                                    _refresh_chats()  # update timestamp on sidebar
+                                    _scroll_msgs_to_bottom()
+                        finally:
+                            sending_state["busy"] = False
 
-                    ui.button(icon="send", on_click=_send).props("color=primary")
-                    inp.on("keydown.enter", lambda _: _send())
+                    ui.button(icon="send", on_click=_send).props("color=primary round dense").style(
+                        "align-self: flex-end; margin-bottom: 4px;"
+                    )
+                    inp.on("keydown.enter", lambda e: _maybe_send_on_enter(e, _send))
 
                 def _refresh_msgs() -> None:
                     msg_area.clear()
                     cid = chat_state.get("chat_id")
                     if not cid:
-                        with msg_area:
-                            ui.label(t("chat.start_or_pick", lang)).classes("opacity-70")
+                        with (
+                            msg_area,
+                            ui.column()
+                            .classes("items-center justify-center w-full")
+                            .style("padding-top: 80px; gap: 12px;"),
+                        ):
+                            ui.icon("forum").classes("text-6xl opacity-30")
+                            ui.label(t("chat.start_or_pick", lang)).classes("opacity-70 text-body1")
+                            ui.label(f"💡 {t('chat.ph_ask', lang)}").classes("text-caption opacity-50")
+                        chat_header_title.text = t("chat.title", lang)
                         return
-                    with msg_area, session_scope() as session:
+                    with session_scope() as session:
+                        chat_obj = session.get(Chat, cid)
                         msgs = session.exec(
                             select(ChatMessage).where(ChatMessage.chat_id == cid).order_by(ChatMessage.id)
                         ).all()
+                    chat_header_title.text = (chat_obj.title if chat_obj else None) or t("chat.title", lang)
+                    with msg_area:
                         for m in msgs:
-                            role_label = (
-                                t("chat.you", lang)
-                                if m.role == "user"
-                                else (
-                                    t("chat.assistant", lang)
-                                    if m.role == "assistant"
-                                    else m.role.capitalize()
-                                )
-                            )
-                            with ui.card().classes("w-full p-3"):
-                                ui.label(role_label).classes(
-                                    "text-caption "
-                                    + ("ldi-accent" if m.role == "assistant" else "opacity-70")
-                                )
-                                ui.markdown(m.content)
+                            when_str = _fmt_when(m.created_at)
+                            if m.role == "user":
+                                _render_user_message(m.content, when=when_str)
+                            elif m.role == "assistant":
+                                md_el, _md_card, footer = _render_assistant_message_open()
+                                md_el.content = m.content
                                 if m.sources:
-                                    with ui.expansion(t("chat.sources", lang)).classes("q-mt-sm"):
-                                        for s in m.sources:
-                                            _render_citation(s)
+                                    _render_sources_footer(footer, m.sources)
+                                if when_str:
+                                    with footer:
+                                        ui.label(when_str).classes("text-caption opacity-50")
+                            else:
+                                with ui.row().classes("opacity-60 q-mb-sm"):
+                                    ui.label(f"[{m.role}] {m.content}").classes("text-caption")
+                    _scroll_msgs_to_bottom()
 
                 _refresh_chats()
                 _refresh_msgs()

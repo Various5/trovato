@@ -52,6 +52,7 @@ jobs:
           $env:LDI_PORT       = "18765"
           $env:LDI_DATA_DIR   = "$env:RUNNER_TEMP\ldi-smoke"
           $env:LDI_LOG_LEVEL  = "WARNING"
+          $env:LDI_NO_WINDOW  = "1"  # don't try to open a desktop window on the CI VM
           $base = "http://127.0.0.1:18765"
           $exe  = (Resolve-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe").Path
           Write-Host "Launching $exe …"

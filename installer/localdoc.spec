@@ -51,6 +51,8 @@ for pkg in (
     "PIL",
     "cv2",
     "numpy",
+    "webview",       # pywebview — embedded WebView2 window on Windows
+    "psutil",
 ):
     try:
         d, b, h = collect_all(pkg)
