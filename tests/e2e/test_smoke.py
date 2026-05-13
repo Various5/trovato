@@ -39,25 +39,44 @@ def app_server(tmp_path_factory):
     env["LDI_DATA_DIR"] = str(data_dir)
     env["LDI_PORT"] = str(port)
     env["LDI_LOG_LEVEL"] = "WARNING"
+    # On CI the first import chain (NiceGUI + ChromaDB + PyMuPDF + Pillow)
+    # plus first-time chroma index creation can take well over 30s, so we
+    # use a generous timeout and dump the subprocess stderr if it doesn't
+    # come up — saves the next person from blind log archaeology.
     proc = subprocess.Popen(
         [sys.executable, "-m", "app.main"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    deadline = time.time() + 30
+    deadline = time.time() + 120
     while time.time() < deadline:
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate(timeout=5)
+            raise RuntimeError(
+                f"server died (exit {proc.returncode})\n"
+                f"--- stdout ---\n{stdout.decode(errors='replace')[-4000:]}\n"
+                f"--- stderr ---\n{stderr.decode(errors='replace')[-4000:]}"
+            )
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 break
         except OSError:
-            time.sleep(0.4)
+            time.sleep(0.5)
     else:
         proc.terminate()
-        raise RuntimeError("server never came up")
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+            tail = stderr.decode(errors="replace")[-4000:]
+        except Exception:
+            tail = "(could not capture stderr)"
+        raise RuntimeError(f"server never came up within 120s\n--- stderr tail ---\n{tail}")
     yield f"http://127.0.0.1:{port}"
     proc.terminate()
-    proc.wait(timeout=10)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def test_first_run_wizard_loads(app_server: str) -> None:
