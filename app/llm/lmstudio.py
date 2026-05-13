@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
 from app.utils.logging import logger
@@ -135,7 +135,13 @@ class LMStudioClient:
 
     # ---- embeddings -------------------------------------------------------
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=4))
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(min=0.3, max=2),
+        # Don't retry on user-error conditions (model not configured, 4xx, etc.)
+        retry=retry_if_exception_type((httpx.TransportError, httpx.TimeoutException)),
+        reraise=True,
+    )
     async def embed(self, texts: Iterable[str], *, model: str | None = None) -> list[list[float]]:
         model = model or get_settings().embedding_model
         if not model:
@@ -149,6 +155,43 @@ class LMStudioClient:
                 raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
             data = r.json()
             return [row["embedding"] for row in data["data"]]
+
+    # ---- preflight --------------------------------------------------------
+
+    async def preflight_embed(self, model: str | None = None) -> tuple[bool, str]:
+        """Try a single embedding to verify connectivity + model availability.
+
+        Returns ``(ok, message)`` with a human-readable diagnostic. Never
+        raises — designed to be called from a "would this scan even work?"
+        gate before tying up minutes on retries.
+        """
+        model = model or get_settings().embedding_model
+        if not model:
+            return False, "No embedding model configured (Settings → Embedding model)"
+        try:
+            vecs = await self.embed(["preflight"], model=model)
+        except LMStudioError as e:
+            msg = str(e)
+            if "404" in msg or "unexpected endpoint" in msg.lower():
+                return (
+                    False,
+                    "The server at this URL doesn't expose /embeddings. "
+                    "Make sure LM Studio (not raw llama.cpp) is running and an "
+                    "embedding model is loaded.",
+                )
+            return False, msg
+        except httpx.ConnectError:
+            return (
+                False,
+                f"Cannot reach {self.base_url}. Is LM Studio running and its " "local server enabled?",
+            )
+        except httpx.TimeoutException:
+            return False, f"Timed out talking to {self.base_url}"
+        except Exception as e:
+            return False, f"Embedding probe failed: {type(e).__name__}: {e}"
+        if not vecs or not vecs[0]:
+            return False, "Embedding model returned an empty vector"
+        return True, f"OK — embedding model returned {len(vecs[0])} dims"
 
     # ---- vision -----------------------------------------------------------
 

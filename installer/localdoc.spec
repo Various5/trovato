@@ -53,6 +53,10 @@ for pkg in (
     "numpy",
     "webview",       # pywebview — embedded WebView2 window on Windows
     "psutil",
+    "smbclient",     # smbprotocol's high-level client
+    "smbprotocol",
+    "spnego",        # smbprotocol auth dep
+    "pyspnego",
 ):
     try:
         d, b, h = collect_all(pkg)

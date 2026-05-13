@@ -1,4 +1,9 @@
-"""Six built-in UI themes."""
+"""Built-in UI themes.
+
+The default palette favours muted, professional tones — a single accent colour
+per theme, neutral surfaces, restrained gradients. The original colourful
+themes (Nord, Dracula, etc.) are still selectable but no longer the default.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +24,52 @@ class Theme:
 
 
 THEMES: dict[str, Theme] = {
+    # ----- Professional defaults -------------------------------------
+    "slate": Theme(
+        "slate",
+        "Slate (recommended)",
+        True,
+        bg="#0f1419",
+        surface="#171d25",
+        text="#d9dce1",
+        primary="#5b8def",
+        accent="#7da4ff",
+        border="#262d38",
+    ),
+    "pearl": Theme(
+        "pearl",
+        "Pearl",
+        False,
+        bg="#f6f7f9",
+        surface="#ffffff",
+        text="#1c1f24",
+        primary="#3a5ee0",
+        accent="#5b8def",
+        border="#e3e6ec",
+    ),
+    "obsidian": Theme(
+        "obsidian",
+        "Obsidian",
+        True,
+        bg="#08090c",
+        surface="#101218",
+        text="#cdd0d6",
+        primary="#7d9bff",
+        accent="#9bb2ff",
+        border="#1c1f27",
+    ),
+    "graphite": Theme(
+        "graphite",
+        "Graphite",
+        True,
+        bg="#15171b",
+        surface="#1d2026",
+        text="#d0d3d9",
+        primary="#6f7a8a",
+        accent="#a1abbb",
+        border="#262a31",
+    ),
+    # ----- Legacy / alternative themes (kept for users who prefer them) -----
     "light": Theme(
         "light",
         "Light Standard",
@@ -88,8 +139,11 @@ THEMES: dict[str, Theme] = {
 }
 
 
+DEFAULT_THEME = "slate"
+
+
 def theme_css(theme_name: str) -> str:
-    t = THEMES.get(theme_name) or THEMES["dark"]
+    t = THEMES.get(theme_name) or THEMES[DEFAULT_THEME]
     return f"""
     :root {{
         --ldi-bg: {t.bg};

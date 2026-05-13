@@ -31,8 +31,13 @@ def get_provider(source: DocumentSource) -> Provider:
 
         return LocalProvider()
     if t == SourceType.smb:
-        # SMB on Windows usually appears as a regular mount (\\host\share);
-        # treat it as local. On POSIX you'd mount via cifs first.
+        # With credentials → talk to the share directly via smbprotocol.
+        # Without credentials → assume a pre-mounted drive / cifs mount and
+        # use the local provider.
+        if source.credentials_ref:
+            from app.ingestion.providers.smb import SMBProvider
+
+            return SMBProvider()
         from app.ingestion.providers.local import LocalProvider
 
         return LocalProvider()

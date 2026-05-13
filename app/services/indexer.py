@@ -591,6 +591,24 @@ async def run_scan_job(
     JOB_CONTROLLER[job_id] = controller
 
     try:
+        # ----- LM Studio preflight ----------------------------------------
+        # If embeddings aren't going to work, fail loudly *once* instead of
+        # retrying for every PDF in a 5000-file source.
+        if not dry_run:
+            client = get_client()
+            ok, message = await client.preflight_embed()
+            if not ok:
+                logger.error("scan {} aborted on preflight: {}", job_id, message)
+                with session_scope() as session:
+                    j = session.get(ScanJob, job_id)
+                    if j:
+                        j.status = ScanJobStatus.error
+                        j.message = f"Embedding preflight failed: {message}"
+                        j.ended_at = utcnow()
+                        session.add(j)
+                JOB_CONTROLLER.pop(job_id, None)
+                return job_id
+
         provider = get_provider(source_snapshot)
         files = list(provider.iter_files(source_snapshot))
         with session_scope() as session:

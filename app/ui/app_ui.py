@@ -188,16 +188,18 @@ def _render_citation(c: dict) -> None:
             ).props("dense flat")
 
 
-def _apply_theme(theme_name: str = "dark") -> None:
-    theme = THEMES.get(theme_name) or THEMES["dark"]
+def _apply_theme(theme_name: str = "slate") -> None:
+    theme = THEMES.get(theme_name) or THEMES["slate"]
     ui.dark_mode().set_value(theme.is_dark)
     ui.add_head_html(f"<style>{build_global_css(theme_name)}</style>")
 
 
 def _user_theme(user: User) -> str:
+    from app.ui.themes import DEFAULT_THEME
+
     with session_scope() as session:
         s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
-        return s.theme if s and s.theme in THEMES else "dark"
+        return s.theme if s and s.theme in THEMES else DEFAULT_THEME
 
 
 def _user_lang(user: User) -> str:
@@ -266,9 +268,21 @@ def _layout(user: User, current: str) -> None:
 
         # Theme cycle button (light/dark quick swap)
         def _cycle_theme() -> None:
-            order = ["light", "dark", "nord", "solarized", "dracula", "highcontrast"]
+            # Cycle through professional themes first, then legacy.
+            order = [
+                "slate",
+                "pearl",
+                "obsidian",
+                "graphite",
+                "light",
+                "dark",
+                "nord",
+                "solarized",
+                "dracula",
+                "highcontrast",
+            ]
             cur = _user_theme(user)
-            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "dark"
+            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "slate"
             with session_scope() as session:
                 us = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
                 if not us:
@@ -515,88 +529,127 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         ui.label(t("sources.title", lang)).classes("text-h4 q-mb-md ldi-primary")
 
-        table_container = ui.column().classes("w-full gap-2")
+        from app.models import ScanJob, ScanJobStatus
 
-        def _refresh() -> None:
-            table_container.clear()
-            with table_container, session_scope() as session:
-                rows = session.exec(select(DocumentSource).order_by(DocumentSource.id)).all()
-                for s in rows:
-                    with ui.card().classes("w-full p-3"):
-                        with ui.row().classes("justify-between items-center w-full"):
-                            with ui.column().classes("gap-0"):
-                                ui.label(f"{s.name}  ").classes("text-h6")
-                                ui.label(f"{s.type.value} — {s.path}").classes("opacity-70 text-caption")
-                                if s.last_scan_at:
-                                    ui.label(f"{t('sources.last_scan', lang)} {s.last_scan_at}").classes(
-                                        "text-caption opacity-60"
-                                    )
-                            with ui.row().classes("gap-1"):
-                                ui.button(
-                                    t("sources.scan", lang),
-                                    icon="play_arrow",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid),
-                                        ui.notify(t("sources.scan_started", lang)),
-                                    ),
-                                ).props("color=primary dense")
-                                ui.button(
-                                    t("sources.force_ocr", lang),
-                                    icon="text_fields",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid, force_ocr=True),
-                                        ui.notify(t("sources.ocr_started", lang)),
-                                    ),
-                                ).props("dense")
-                                ui.button(
-                                    t("sources.vision", lang),
-                                    icon="image",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid, force_vision=True),
-                                        ui.notify(t("sources.vision_started", lang)),
-                                    ),
-                                ).props("dense")
-                                ui.button(
-                                    t("sources.dry_run", lang),
-                                    icon="science",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid, dry_run=True),
-                                        ui.notify(t("sources.dryrun_started", lang)),
-                                    ),
-                                ).props("dense")
+        def _latest_job_for(session, source_id: int) -> ScanJob | None:
+            return session.exec(
+                select(ScanJob)
+                .where(ScanJob.source_id == source_id)
+                .order_by(ScanJob.id.desc())  # type: ignore
+                .limit(1)
+            ).first()
 
-                                from app.services.watcher import (
-                                    is_watching as _is_watching,
-                                )
-                                from app.services.watcher import (
-                                    start_watcher as _start_watch,
-                                )
-                                from app.services.watcher import (
-                                    stop_watcher as _stop_watch,
-                                )
+        def _status_pill(job: ScanJob | None):
+            if job is None:
+                return None
+            status = job.status
+            if status == ScanJobStatus.running:
+                cls, label = "ldi-pill ldi-pill-success", "● running"
+            elif status == ScanJobStatus.paused:
+                cls, label = "ldi-pill ldi-pill-warning", "❚❚ paused"
+            elif status == ScanJobStatus.queued:
+                cls, label = "ldi-pill ldi-pill-warning", "queued"
+            elif status == ScanJobStatus.completed:
+                cls, label = "ldi-pill", "✓ completed"
+            elif status == ScanJobStatus.error:
+                cls, label = "ldi-pill ldi-pill-error", "✗ error"
+            elif status == ScanJobStatus.aborted:
+                cls, label = "ldi-pill", "⨯ aborted"
+            else:
+                cls, label = "ldi-pill", str(status)
+            ui.label(label).classes(cls)
 
-                                watching = _is_watching(s.id)
-                                ui.button(
-                                    t("sources.unwatch" if watching else "sources.watch", lang),
-                                    icon="visibility_off" if watching else "visibility",
-                                    on_click=lambda sid=s.id: (
-                                        (_stop_watch(sid) if _is_watching(sid) else _start_watch(sid)),
-                                        _refresh(),
-                                    ),
-                                ).props("dense")
-                                ui.button(
-                                    t("sources.delete", lang),
-                                    icon="delete",
-                                    on_click=lambda sid=s.id: _delete_source(sid),
-                                ).props("dense color=negative")
+        def _progress_block(job: ScanJob) -> None:
+            total = max(job.total_files or 0, job.processed_files)
+            if total <= 0:
+                pct = 0.0
+            else:
+                pct = min(100.0, 100.0 * (job.processed_files / total))
+            with ui.column().classes("w-full gap-1 q-mt-sm"):
+                with ui.element("div").classes("ldi-progress"):
+                    if job.status == ScanJobStatus.running and total <= 0:
+                        ui.element("div").classes("ldi-progress-fill indeterminate")
+                    else:
+                        ui.element("div").classes("ldi-progress-fill").style(f"width: {pct:.1f}%;")
+                with ui.row().classes("items-center gap-3 text-caption opacity-80"):
+                    if total > 0:
+                        ui.label(f"{job.processed_files} / {total}")
+                    else:
+                        ui.label(f"{job.processed_files} files")
+                    if job.error_count:
+                        ui.label(f"· errors: {job.error_count}").classes("ldi-pill-error")
+                    if job.current_file:
+                        ui.label(f"· {job.current_file}").classes("ellipsis").style("max-width: 380px;")
 
-        def _delete_source(sid: int) -> None:
-            with session_scope() as session:
-                src = session.get(DocumentSource, sid)
-                if src:
-                    session.delete(src)
-            _refresh()
+        def _show_credentials_dialog(source_id: int, source_type: str, default_path: str) -> None:
+            from app.utils.secret_store import get_secret, put_secret
 
+            existing = get_secret(f"source-{source_id}") or {}
+            with ui.dialog() as dialog, ui.card().classes("w-[460px] p-4"):
+                ui.label(f"Credentials — {source_type.upper()}").classes("text-h6 ldi-primary")
+                ui.label("Stored encrypted; never written to logs.").classes(
+                    "text-caption opacity-70 q-mb-md"
+                )
+                fields: dict[str, Any] = {}
+                if source_type == "webdav":
+                    fields["base_url"] = ui.input("Base URL", value=existing.get("base_url", "")).classes(
+                        "w-full"
+                    )
+                elif source_type == "sftp":
+                    fields["host"] = ui.input("Host", value=existing.get("host", "")).classes("w-full")
+                    fields["port"] = ui.number(
+                        "Port", value=existing.get("port", 22), min=1, max=65535
+                    ).classes("w-full")
+                    fields["private_key_path"] = ui.input(
+                        "Private key path (optional)",
+                        value=existing.get("private_key_path", ""),
+                    ).classes("w-full")
+                elif source_type == "smb":
+                    # Derive a default server from \\server\share if present
+                    default_server = ""
+                    if default_path.startswith("\\\\") or default_path.startswith("//"):
+                        parts = default_path.lstrip("\\/").split("/")[0].split("\\")
+                        default_server = parts[0] if parts else ""
+                    fields["server"] = ui.input(
+                        "Server (e.g. fileserver.local or 192.168.1.10)",
+                        value=existing.get("server", default_server),
+                    ).classes("w-full")
+                    fields["domain"] = ui.input(
+                        "Domain (optional)", value=existing.get("domain", "")
+                    ).classes("w-full")
+                fields["username"] = ui.input("Username", value=existing.get("username", "")).classes(
+                    "w-full"
+                )
+                fields["password"] = ui.input(
+                    "Password",
+                    value=existing.get("password", ""),
+                    password=True,
+                    password_toggle_button=True,
+                ).classes("w-full")
+
+                with ui.row().classes("justify-end gap-2 q-mt-md w-full"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                    def _save() -> None:
+                        payload = {
+                            k: (v.value if hasattr(v, "value") else v)
+                            for k, v in fields.items()
+                            if (v.value if hasattr(v, "value") else v) not in ("", None)
+                        }
+                        ref = f"source-{source_id}"
+                        put_secret(ref, payload)
+                        with session_scope() as session:
+                            src = session.get(DocumentSource, source_id)
+                            if src:
+                                src.credentials_ref = ref
+                                session.add(src)
+                        ui.notify("Credentials saved", color="positive")
+                        dialog.close()
+
+                    ui.button("Save", on_click=_save).props("color=primary")
+                dialog.open()
+
+        # ----- Add-new card ---------------------------------------------
         with ui.card().classes("w-full p-3 q-mb-md"):
             ui.label(t("sources.add_new", lang)).classes("text-h6")
             with ui.row().classes("w-full items-end gap-2"):
@@ -611,22 +664,142 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ui.notify(t("sources.need_name_path", lang), color="negative")
                         return
                     with session_scope() as session:
-                        session.add(
-                            DocumentSource(
-                                name=name.value,
-                                type=SourceType(stype.value),
-                                path=path.value,
-                                owner_id=user.id,
-                            )
+                        src = DocumentSource(
+                            name=name.value,
+                            type=SourceType(stype.value),
+                            path=path.value,
+                            owner_id=user.id,
                         )
+                        session.add(src)
+                        session.flush()
+                        new_id = src.id
+                        new_type = src.type.value
+                        new_path = src.path
                     name.value = ""
                     path.value = ""
                     _refresh()
                     ui.notify(t("sources.added", lang))
+                    # Prompt for credentials if remote
+                    if new_type in ("smb", "webdav", "sftp") and new_id is not None:
+                        _show_credentials_dialog(new_id, new_type, new_path)
 
                 ui.button(t("common.add", lang), icon="add", on_click=_add).props("color=primary")
 
+        # ----- Source list (live updating) ------------------------------
+        table_container = ui.column().classes("w-full gap-2")
+
+        def _refresh() -> None:
+            from app.services.watcher import (
+                is_watching as _is_watching,
+            )
+            from app.services.watcher import (
+                start_watcher as _start_watch,
+            )
+            from app.services.watcher import (
+                stop_watcher as _stop_watch,
+            )
+
+            table_container.clear()
+            with table_container, session_scope() as session:
+                rows = session.exec(select(DocumentSource).order_by(DocumentSource.id)).all()
+                for s in rows:
+                    job = _latest_job_for(session, s.id)
+                    is_active = job is not None and job.status in (
+                        ScanJobStatus.running,
+                        ScanJobStatus.queued,
+                        ScanJobStatus.paused,
+                    )
+                    with ui.card().classes("w-full p-3"):
+                        # Top row: name / path / status
+                        with ui.row().classes("justify-between items-start w-full gap-3 no-wrap"):
+                            with ui.column().classes("gap-0 flex-1 min-w-0"):
+                                with ui.row().classes("items-center gap-2"):
+                                    ui.label(s.name).classes("text-h6")
+                                    ui.label(s.type.value.upper()).classes("ldi-pill")
+                                    _status_pill(job)
+                                    if s.credentials_ref:
+                                        ui.label("🔒 creds").classes("ldi-pill")
+                                ui.label(s.path).classes("ldi-muted text-caption ellipsis")
+                                if s.last_scan_at:
+                                    ui.label(
+                                        f"{t('sources.last_scan', lang)} {s.last_scan_at:%Y-%m-%d %H:%M}"
+                                    ).classes("text-caption opacity-60")
+                            with ui.row().classes("gap-1 flex-shrink-0"):
+                                ui.button(
+                                    icon="play_arrow",
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid),
+                                        ui.notify(t("sources.scan_started", lang)),
+                                        _refresh(),
+                                    ),
+                                ).props("color=primary dense round").tooltip(t("sources.scan", lang))
+                                ui.button(
+                                    icon="text_fields",
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, force_ocr=True),
+                                        ui.notify(t("sources.ocr_started", lang)),
+                                        _refresh(),
+                                    ),
+                                ).props("flat dense round").tooltip(t("sources.force_ocr", lang))
+                                ui.button(
+                                    icon="image",
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, force_vision=True),
+                                        ui.notify(t("sources.vision_started", lang)),
+                                        _refresh(),
+                                    ),
+                                ).props("flat dense round").tooltip(t("sources.vision", lang))
+                                ui.button(
+                                    icon="science",
+                                    on_click=lambda sid=s.id: (
+                                        start_scan_in_background(sid, dry_run=True),
+                                        ui.notify(t("sources.dryrun_started", lang)),
+                                        _refresh(),
+                                    ),
+                                ).props("flat dense round").tooltip(t("sources.dry_run", lang))
+                                if s.type.value in ("smb", "webdav", "sftp"):
+                                    ui.button(
+                                        icon="vpn_key",
+                                        on_click=lambda sid=s.id, sty=s.type.value, sp=s.path: _show_credentials_dialog(
+                                            sid, sty, sp
+                                        ),
+                                    ).props("flat dense round").tooltip("Credentials")
+                                watching = _is_watching(s.id)
+                                ui.button(
+                                    icon="visibility_off" if watching else "visibility",
+                                    on_click=lambda sid=s.id: (
+                                        (_stop_watch(sid) if _is_watching(sid) else _start_watch(sid)),
+                                        _refresh(),
+                                    ),
+                                ).props("flat dense round").tooltip(
+                                    t("sources.unwatch" if watching else "sources.watch", lang)
+                                )
+                                ui.button(
+                                    icon="delete",
+                                    on_click=lambda sid=s.id: _delete_source(sid),
+                                ).props("flat dense round color=negative").tooltip(t("sources.delete", lang))
+
+                        if is_active and job is not None:
+                            _progress_block(job)
+                        elif job is not None and job.message and job.status == ScanJobStatus.error:
+                            ui.label(job.message).classes("ldi-pill ldi-pill-error q-mt-sm").style(
+                                "max-width: 100%; white-space: normal;"
+                            )
+
+        def _delete_source(sid: int) -> None:
+            with session_scope() as session:
+                src = session.get(DocumentSource, sid)
+                if src:
+                    session.delete(src)
+            _refresh()
+
+        with ui.row().classes("items-center gap-2 q-mb-md"):
+            ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("flat dense")
+            ui.label("Auto-refresh: 2 s").classes("text-caption opacity-60")
+
         _refresh()
+        # Live progress poll — only refreshes the table area, doesn't reload the page.
+        ui.timer(2.0, _refresh)
 
     @ui.page("/documents")
     def page_documents() -> None:
