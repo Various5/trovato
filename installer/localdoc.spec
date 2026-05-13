@@ -3,15 +3,55 @@
 
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
 import sys
+from pathlib import Path
+
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 
-hidden = []
-datas = []
-binaries = []
+# ---------------------------------------------------------------------------
+# Project root: the spec file lives in installer/, so root is its parent.
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(SPECPATH).parent  # noqa: F821 (SPECPATH injected by PyInstaller)
+ENTRY = str(PROJECT_ROOT / "app" / "main.py")
 
-for pkg in ("nicegui", "chromadb", "fitz", "pdfplumber"):
+
+hidden: list[str] = []
+datas: list[tuple[str, str]] = []
+binaries: list[tuple[str, str]] = []
+
+
+# Third-party libraries with dynamic imports / data files. ``collect_all`` is
+# the catch-all hammer; if it can't find the package it returns empty tuples.
+for pkg in (
+    "nicegui",
+    "chromadb",
+    "fitz",          # PyMuPDF
+    "pdfplumber",
+    "tiktoken",      # encoders shipped as binary blobs
+    "tiktoken_ext",  # ext registry
+    "argon2",
+    "loguru",
+    "httpx",
+    "sqlalchemy",
+    "sqlmodel",
+    "pydantic",
+    "pydantic_settings",
+    "starlette",
+    "fastapi",
+    "watchfiles",
+    "cryptography",
+    "zstandard",
+    "humanize",
+    "PIL",
+    "cv2",
+    "numpy",
+):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -20,19 +60,72 @@ for pkg in ("nicegui", "chromadb", "fitz", "pdfplumber"):
     except Exception:
         pass
 
+# Our own package: every submodule pre-discovered so dynamic imports
+# (``from app.services.X import Y`` inside route handlers, etc.) always
+# resolve in the frozen bundle.
+hidden += collect_submodules("app")
+
+# SQLAlchemy registers dialects via entry points — bundle them explicitly.
+hidden += collect_submodules("sqlalchemy.dialects")
+hidden += collect_submodules("sqlalchemy.connectors")
+
+# uvicorn loops + httptools / h11 protocols are picked up via entry points.
 hidden += collect_submodules("uvicorn")
-hidden += collect_submodules("sqlmodel")
+hidden += [
+    "uvicorn.loops.auto",
+    "uvicorn.loops.asyncio",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.http.h11_impl",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.protocols.websockets.websockets_impl",
+    "uvicorn.lifespan.on",
+]
+
+# Metadata files some libraries read at runtime (importlib.metadata).
+for pkg in (
+    "nicegui",
+    "fastapi",
+    "starlette",
+    "uvicorn",
+    "sqlmodel",
+    "sqlalchemy",
+    "pydantic",
+    "chromadb",
+    "tiktoken",
+    "loguru",
+):
+    try:
+        datas += copy_metadata(pkg)
+    except Exception:
+        pass
+
+# tiktoken ships its tokenizer data outside the importable tree.
+try:
+    datas += collect_data_files("tiktoken_ext", include_py_files=True)
+except Exception:
+    pass
 
 
 a = Analysis(
-    ["..\\app\\main.py"] if sys.platform == "win32" else ["../app/main.py"],
-    pathex=[".."],
+    [ENTRY],
+    pathex=[str(PROJECT_ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hidden,
+    hiddenimports=sorted(set(hidden)),
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Cut size — these would only be pulled in by transitive specs.
+        "matplotlib",
+        "tkinter",
+        "PySide6",
+        "PyQt5",
+        "PyQt6",
+        "IPython",
+        "jupyter",
+        "notebook",
+        "pandas.tests",
+    ],
     noarchive=False,
 )
 
@@ -50,6 +143,7 @@ exe = EXE(
     upx=False,
     console=False,
     icon=None,
+    disable_windowed_traceback=False,
 )
 
 coll = COLLECT(

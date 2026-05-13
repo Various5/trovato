@@ -1,8 +1,8 @@
 name: Build Windows Installer
 
 # Triggered on:
-#   - pushing a tag like v0.1.0 → builds and attaches the installer to a GitHub Release
-#   - manually via the Actions tab (workflow_dispatch) → uploads only the artifact
+#   - pushing a tag like v0.1.0 → builds, smoke-tests, attaches to Release
+#   - manually via the Actions tab (workflow_dispatch) → artefact-only
 
 on:
   push:
@@ -11,12 +11,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed to create / update a Release
+  contents: write
 
 jobs:
   windows-installer:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +36,74 @@ jobs:
         shell: pwsh
         run: |
           python installer/build.py
-          if (-not (Test-Path "dist/LocalDocIntelligence")) {
-            Write-Error "PyInstaller output missing"
+          if (-not (Test-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe")) {
+            Write-Error "PyInstaller did not produce LocalDocIntelligence.exe"
             exit 1
           }
+
+      # -----------------------------------------------------------------
+      # Smoke-test: actually boot the frozen exe and verify the server
+      # responds on /api/health/ping. If this fails we abort the release
+      # so a broken installer can never reach a user.
+      # -----------------------------------------------------------------
+      - name: Smoke-test the frozen exe
+        shell: pwsh
+        run: |
+          $env:LDI_PORT       = "18765"
+          $env:LDI_DATA_DIR   = "$env:RUNNER_TEMP\ldi-smoke"
+          $env:LDI_LOG_LEVEL  = "WARNING"
+          $exe = (Resolve-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe").Path
+          Write-Host "Launching $exe …"
+          $proc = Start-Process -PassThru -FilePath $exe
+          $deadline = [DateTime]::UtcNow.AddSeconds(120)
+          $up = $false
+          $lastError = ""
+          while ([DateTime]::UtcNow -lt $deadline) {
+              if ($proc.HasExited) {
+                  Write-Host "Process exited prematurely with code $($proc.ExitCode)"
+                  break
+              }
+              try {
+                  $r = Invoke-WebRequest -Uri "http://127.0.0.1:18765/api/health/ping" `
+                                          -UseBasicParsing -TimeoutSec 3
+                  if ($r.StatusCode -eq 200) {
+                      Write-Host "Ping OK: $($r.Content)"
+                      $up = $true
+                      break
+                  }
+              } catch {
+                  $lastError = $_.Exception.Message
+              }
+              Start-Sleep -Milliseconds 800
+          }
+
+          # Clean shutdown so the crash-dump (if any) is flushed.
+          if (-not $proc.HasExited) {
+              Write-Host "Terminating server …"
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              try { $proc.WaitForExit(8000) | Out-Null } catch {}
+          }
+
+          # Dump any crash-log we can find so the job log shows what happened.
+          $crashGlobs = @(
+              "$env:APPDATA\LocalDocIntelligence\crash-*.log",
+              "$env:RUNNER_TEMP\ldi-smoke\crash-*.log",
+              "$env:USERPROFILE\.localdoc-intelligence\crash-*.log",
+              "$env:RUNNER_TEMP\LocalDocIntelligence\crash-*.log"
+          )
+          Get-ChildItem -Path $crashGlobs -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 3 |
+              ForEach-Object {
+                  Write-Host "=== Crash dump: $($_.FullName) ==="
+                  Get-Content -Path $_.FullName -Raw | Write-Host
+              }
+
+          if (-not $up) {
+              Write-Error "Smoke test failed — server didn't answer /api/health/ping within 120s. Last error: $lastError"
+              exit 1
+          }
+          Write-Host "✓ Smoke test passed"
 
       - name: Package portable ZIP
         shell: pwsh

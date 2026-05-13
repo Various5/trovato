@@ -1421,12 +1421,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             ui.button(t("update.check_now", lang), icon="system_update", on_click=_check_now).props("outline")
 
-    # Finally bind NiceGUI to the FastAPI app
+    # Finally bind NiceGUI to the FastAPI app.
+    # Keep the favicon ASCII — an emoji favicon traverses Windows console
+    # codepage on PyInstaller builds and can blow up early init.
     ui.run_with(
         fastapi_app,
         storage_secret=get_settings().secret_key,
         mount_path="/",
         title=__app_name__,
-        favicon="📚",
+        favicon=None,
         dark=True,
     )
