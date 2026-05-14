@@ -191,11 +191,55 @@ class LMStudioClient:
         items = [t for t in texts if t and t.strip()]
         if not items:
             return []
+
+        # Different LM Studio versions / backends expose embeddings on
+        # different paths. Try the most likely candidates in order:
+        #   1. /embeddings        — OpenAI standard on the existing /v1 base
+        #   2. /api/v0/embeddings — LM Studio native API (sibling of /v1)
+        #   3. /embedding         — old llama.cpp server (singular)
         async with await self._client() as c:
-            r = await c.post("/embeddings", json={"model": model, "input": items})
-            if r.status_code >= 400:
+            base = str(c.base_url).rstrip("/")
+            sibling_native = base[: -len("/v1")] + "/api/v0/embeddings" if base.endswith("/v1") else None
+            attempts: list[tuple[str, str]] = [
+                ("relative", "/embeddings"),
+                ("relative-singular", "/embedding"),
+            ]
+            if sibling_native:
+                attempts.append(("native", sibling_native))
+
+            last_status = 0
+            last_text = ""
+            data: Any = None
+            for kind, ep in attempts:
+                try:
+                    if kind == "native":
+                        r = await c.post(ep, json={"model": model, "input": items})
+                    else:
+                        r = await c.post(ep, json={"model": model, "input": items})
+                except Exception as e:
+                    last_text = f"{type(e).__name__}: {e}"
+                    continue
+                last_status = r.status_code
+                last_text = r.text[:300]
+                if r.status_code < 400:
+                    try:
+                        data = r.json()
+                    except Exception as e:
+                        raise LMStudioError(f"invalid embeddings JSON: {e}") from None
+                    break
+                # 404 on this path → try the next one
+                if r.status_code == 404:
+                    continue
+                # Anything else (5xx, 400 with diagnostic) → stop and surface it
                 raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
-            data = r.json()
+            if data is None:
+                # All attempts 404'd or errored — give a hint that's useful.
+                raise LMStudioError(
+                    f"no embeddings endpoint responded (last: {last_status} "
+                    f"{last_text[:200]}). In LM Studio, open Developer → ensure "
+                    f"your embedding model is loaded as an EMBEDDING type, then "
+                    f"restart the server."
+                )
 
         # The OpenAI standard shape is {"data": [{"embedding": [..]}]}, but
         # some llama.cpp-based backends inside LM Studio emit alternatives:
@@ -245,12 +289,12 @@ class LMStudioClient:
             vecs = await self.embed(["preflight"], model=model)
         except LMStudioError as e:
             msg = str(e)
-            if "404" in msg or "unexpected endpoint" in msg.lower():
+            if "no embeddings endpoint responded" in msg:
                 return (
                     False,
-                    "The server at this URL doesn't expose /embeddings. "
-                    "Make sure LM Studio (not raw llama.cpp) is running and an "
-                    "embedding model is loaded.",
+                    "LM Studio does not expose an /embeddings endpoint for this "
+                    "model. In LM Studio: Developer → load the model with type "
+                    f"'Embedding' (not Chat). Raw: {msg[:200]}",
                 )
             return False, msg
         except httpx.ConnectError:

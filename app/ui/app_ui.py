@@ -1704,6 +1704,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     emb_ok, msg = await c.preflight_embed(model=emb_model.value)
                     connection_status.text += " · embed: " + ("✓" if emb_ok else f"✗ {msg}")
 
+            help_card = ui.card().classes("w-full q-mt-sm").style("display: none;")
+
             async def _test_embed() -> None:
                 from app.llm import LMStudioClient
 
@@ -1713,12 +1715,36 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     return
                 c = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
                 ok, message = await c.preflight_embed(model=mid)
+                help_card.clear()
                 if ok:
                     connection_status.text = f"✓ Embedding works · {message}"
                     ui.notify(f"Embedding OK: {message}", color="positive")
+                    help_card.style("display: none;")
                 else:
                     connection_status.text = f"✗ {message}"
-                    ui.notify(f"Embedding failed: {message}", color="negative")
+                    ui.notify("Embedding failed — see hint below", color="negative")
+                    help_card.style("display: block;")
+                    with help_card:
+                        ui.label("How to fix this in LM Studio").classes("text-h6 ldi-primary")
+                        ui.markdown(
+                            "**LM Studio needs the embedding model loaded as an "
+                            "*Embedding* model, not a Chat model.**\n\n"
+                            "1. Open **LM Studio Desktop** → left sidebar **Developer**.\n"
+                            "2. In *Models loaded for inference*, click the ⋯ menu / "
+                            "wrench next to your embedding model.\n"
+                            "3. Set its **type / role** to **Embedding** (some versions "
+                            "show a dropdown directly under the model name; older ones "
+                            "need you to remove and re-load it with *'Use as embedding "
+                            "model'*).\n"
+                            "4. Toggle the server off and on at the top.\n"
+                            "5. Verify in your browser: `http://localhost:1234/v1/models` "
+                            "should list this model. Come back and click **Test embedding** "
+                            "again."
+                        ).classes("text-body2 q-mb-sm")
+                        ui.label("Diagnostic detail").classes("text-caption opacity-70 q-mt-sm")
+                        ui.code(message, language="text").classes("w-full").style(
+                            "max-height: 200px; overflow: auto;"
+                        )
 
             with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
                 ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
