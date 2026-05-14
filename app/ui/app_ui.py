@@ -1446,96 +1446,140 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(t("settings.lmstudio", lang)).classes("text-h6")
             url = ui.input(t("settings.base_url", lang), value=s.lmstudio_base_url).classes("w-full")
 
-            def _opts(current: str, extras: list[str]) -> dict[str, str]:
-                items = {m: m for m in extras}
-                if current and current not in items:
-                    items[current] = current
-                if not items:
-                    items[""] = "— none —"
-                return items
-
-            chat_model = ui.select(
-                _opts(s.chat_model, []),
-                value=s.chat_model or "",
-                label=t("settings.chat_model", lang),
-                with_input=True,
+            # Free-text inputs so any model id can be typed in regardless of
+            # how LM Studio's /v1/models responds. Buttons below let you pick
+            # from a popup listing the actually-loaded models.
+            chat_model = ui.input(
+                t("settings.chat_model", lang),
+                value=s.chat_model,
+                placeholder="e.g. qwen2.5-7b-instruct",
             ).classes("w-full")
-            vision_model = ui.select(
-                _opts(s.vision_model, []),
-                value=s.vision_model or "",
-                label=t("settings.vision_model", lang),
-                with_input=True,
+            vision_model = ui.input(
+                t("settings.vision_model", lang),
+                value=s.vision_model,
+                placeholder="e.g. llava-llama-3-8b-v1_1 (optional)",
             ).classes("w-full")
-            emb_model = ui.select(
-                _opts(s.embedding_model, []),
-                value=s.embedding_model or "",
-                label=t("settings.emb_model", lang),
-                with_input=True,
+            emb_model = ui.input(
+                t("settings.emb_model", lang),
+                value=s.embedding_model,
+                placeholder="e.g. text-embedding-bge-m3",
             ).classes("w-full")
 
             connection_status = ui.label("").classes("text-caption q-mt-sm opacity-80")
 
-            async def _refresh_models() -> None:
+            # ----- Model browser dialog -----------------------------------
+            async def _fetch_models() -> tuple[list[dict], str | None]:
                 from app.llm import LMStudioClient
 
-                client = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
+                c = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
                 try:
-                    raw = await client.list_models()
+                    return await c.list_models(), None
                 except Exception as e:
-                    connection_status.text = f"✗ {e}"
-                    ui.notify(f"Could not list models: {e}", color="negative")
-                    return
+                    return [], str(e)
 
-                chat_ids: list[str] = []
-                emb_ids: list[str] = []
-                vis_ids: list[str] = []
+            def _classify(mid: str) -> str:
+                lid = mid.lower()
+                if any(k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")):
+                    return "embedding"
+                if any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl")):
+                    return "vision"
+                return "chat"
+
+            async def _browse_models() -> None:
+                raw, err = await _fetch_models()
+                with ui.dialog() as dialog, ui.card().classes("w-[640px] p-4"):
+                    ui.label("Loaded models in LM Studio").classes("text-h6 ldi-primary")
+                    if err:
+                        ui.label(f"✗ Cannot reach LM Studio: {err}").classes(
+                            "ldi-pill ldi-pill-error q-mb-md"
+                        ).style("white-space: normal;")
+                        ui.label(
+                            "Open LM Studio → Developer tab → Start Server. Make sure "
+                            "at least one chat *and* one embedding model are loaded."
+                        ).classes("text-caption opacity-80")
+                    elif not raw:
+                        ui.label(
+                            "LM Studio answered but the model list is empty. "
+                            "Load a model in LM Studio's Developer / Local Server tab."
+                        ).classes("ldi-pill ldi-pill-warning q-mb-md").style("white-space: normal;")
+                    else:
+                        ui.label(f"{len(raw)} model(s) currently loaded:").classes(
+                            "text-caption q-mb-sm opacity-80"
+                        )
+                        for m in raw:
+                            if not isinstance(m, dict):
+                                continue
+                            mid = m.get("id") or m.get("model")
+                            if not mid:
+                                continue
+                            role = _classify(mid)
+                            with ui.row().classes("items-center gap-2 w-full no-wrap q-mb-xs"):
+                                ui.label(role.upper()).classes(
+                                    "ldi-pill " + ("ldi-pill-success" if role == "embedding" else "")
+                                ).style("min-width: 80px;")
+                                ui.label(mid).classes("flex-1 text-body2 ellipsis")
+
+                                def _use(model_id=mid, target_role=role) -> None:
+                                    if target_role == "embedding":
+                                        emb_model.value = model_id
+                                    elif target_role == "vision":
+                                        vision_model.value = model_id
+                                    else:
+                                        chat_model.value = model_id
+                                    ui.notify(f"Set {target_role}: {model_id}", color="positive")
+
+                                ui.button("Use", on_click=_use).props("dense flat color=primary")
+
+                        ui.separator().classes("q-my-md")
+                        # Optional: show raw JSON for diagnosis
+                        with ui.expansion("Raw response (for debugging)", icon="code"):
+                            import json as _json
+
+                            ui.code(_json.dumps(raw, indent=2), language="json").classes("w-full").style(
+                                "max-height: 240px; overflow: auto;"
+                            )
+
+                    with ui.row().classes("justify-end w-full q-mt-md"):
+                        ui.button("Close", on_click=dialog.close).props("flat")
+                dialog.open()
+
+            async def _auto_pick() -> None:
+                raw, err = await _fetch_models()
+                if err:
+                    connection_status.text = f"✗ {err}"
+                    ui.notify(err, color="negative")
+                    return
+                chat = ""
+                emb = ""
+                vis = ""
                 for m in raw:
                     if not isinstance(m, dict):
                         continue
                     mid = m.get("id") or m.get("model")
                     if not mid:
                         continue
-                    lid = mid.lower()
-                    is_emb = any(
-                        k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")
-                    )
-                    is_vis = any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl"))
-                    if is_emb:
-                        emb_ids.append(mid)
-                    if is_vis:
-                        vis_ids.append(mid)
-                    if not is_emb:
-                        chat_ids.append(mid)
-
-                chat_model.options = _opts(chat_model.value or "", chat_ids)
-                vision_model.options = _opts(vision_model.value or "", vis_ids)
-                emb_model.options = _opts(emb_model.value or "", emb_ids)
-                chat_model.update()
-                vision_model.update()
-                emb_model.update()
-                line = (
-                    f"✓ {len(raw)} model(s) · chat: {len(chat_ids)} · "
-                    f"embedding: {len(emb_ids)} · vision: {len(vis_ids)}"
+                    role = _classify(mid)
+                    if role == "embedding" and not emb:
+                        emb = mid
+                    elif role == "vision" and not vis:
+                        vis = mid
+                    elif role == "chat" and not chat:
+                        chat = mid
+                if chat:
+                    chat_model.value = chat
+                if emb:
+                    emb_model.value = emb
+                if vis:
+                    vision_model.value = vis
+                applied = [k for k, v in (("chat", chat), ("embedding", emb), ("vision", vis)) if v]
+                if applied:
+                    ui.notify(f"Auto-picked: {', '.join(applied)}", color="positive")
+                else:
+                    ui.notify("No models found. Load at least one in LM Studio.", color="warning")
+                connection_status.text = (
+                    f"✓ {len(raw)} model(s) loaded · chat={chat or '—'} · "
+                    f"embedding={emb or '—'} · vision={vis or '—'}"
                 )
-                if not emb_ids:
-                    line += "  ⚠ no embedding model loaded in LM Studio"
-                connection_status.text = line
-
-            async def _auto_pick() -> None:
-                await _refresh_models()
-                if not chat_model.value:
-                    opts = [k for k in chat_model.options if k]
-                    if opts:
-                        chat_model.value = opts[0]
-                if not emb_model.value:
-                    opts = [k for k in emb_model.options if k]
-                    if opts:
-                        emb_model.value = opts[0]
-                if not vision_model.value:
-                    opts = [k for k in vision_model.options if k]
-                    if opts:
-                        vision_model.value = opts[0]
-                ui.notify("Picked from LM Studio", color="positive")
 
             async def _test() -> None:
                 from app.llm import LMStudioClient
@@ -1553,11 +1597,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             with ui.row().classes("gap-2 q-mt-sm"):
                 ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
-                ui.button("Refresh models", icon="refresh", on_click=_refresh_models).props("dense")
+                ui.button("Browse models", icon="list", on_click=_browse_models).props("dense")
                 ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
-
-            # Auto-populate on page load
-            ui.timer(0.2, _refresh_models, once=True)
 
         with ui.card().classes("w-full p-3 q-mt-md"):
             ui.label(t("settings.ocr", lang)).classes("text-h6")
@@ -1760,6 +1801,30 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         + ", ".join(status["models"][:10])
                         + (" …" if len(status["models"]) > 10 else "")
                     ).classes("text-caption opacity-70")
+
+                # Tesseract OCR availability
+                ui.separator().classes("q-my-sm")
+                ui.label("OCR (Tesseract)").classes("text-body2 ldi-primary")
+                try:
+                    from app.ocr.tesseract import tesseract_available
+
+                    tess_ok = tesseract_available()
+                except Exception:
+                    tess_ok = False
+                if tess_ok:
+                    ui.label("✓ Tesseract found — OCR for scanned PDFs is available").classes(
+                        "text-caption text-positive"
+                    )
+                else:
+                    ui.label(
+                        "✗ Tesseract not found — OCR for image-only PDFs is disabled. "
+                        "Native PDF text is still indexed."
+                    ).classes("text-caption text-negative")
+                    ui.link(
+                        "Download Tesseract for Windows",
+                        "https://github.com/UB-Mannheim/tesseract/wiki",
+                        new_tab=True,
+                    ).classes("text-caption")
 
             with dup_card:
                 ui.label(t("diag.duplicates", lang)).classes("text-h6")
