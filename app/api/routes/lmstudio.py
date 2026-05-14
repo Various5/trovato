@@ -36,6 +36,103 @@ async def models(_user: User = Depends(login_required)) -> list[dict[str, Any]]:
         return [{"error": str(e)}]
 
 
+@router.get("/models/categorized")
+async def models_categorized(_user: User = Depends(login_required)) -> dict[str, Any]:
+    """Same as /models but pre-classified into chat / embedding / vision buckets.
+
+    Classification is heuristic on the model id — most LM Studio listings don't
+    expose the model type, so we look at name conventions.
+    """
+    client = LMStudioClient()
+    try:
+        raw = await client.list_models()
+    except Exception as e:
+        return {"error": str(e), "all": [], "chat": [], "embedding": [], "vision": []}
+
+    chat: list[str] = []
+    embedding: list[str] = []
+    vision: list[str] = []
+    all_ids: list[str] = []
+
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id") or m.get("model")
+        if not mid:
+            continue
+        all_ids.append(mid)
+        lid = mid.lower()
+        is_embedding = any(k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic"))
+        is_vision = any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl"))
+        if is_embedding:
+            embedding.append(mid)
+        if is_vision:
+            vision.append(mid)
+        if not is_embedding:
+            # everything that's not strictly an embedding model can serve as chat
+            chat.append(mid)
+
+    return {
+        "all": all_ids,
+        "chat": chat,
+        "embedding": embedding,
+        "vision": vision,
+    }
+
+
+@router.post("/models/auto-pick")
+async def auto_pick(_user: User = Depends(login_required)) -> dict[str, Any]:
+    """Pick a default chat / embedding / vision model from what's currently
+    loaded in LM Studio and persist the choice to settings.json."""
+    client = LMStudioClient()
+    try:
+        raw = await client.list_models()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    chat = embedding = vision = ""
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id") or m.get("model") or ""
+        if not mid:
+            continue
+        lid = mid.lower()
+        if not embedding and any(
+            k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")
+        ):
+            embedding = mid
+            continue
+        if not vision and any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl")):
+            vision = mid
+            continue
+        if not chat and not any(
+            k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")
+        ):
+            chat = mid
+
+    from app.config import get_settings, save_user_settings
+
+    updates: dict[str, Any] = {}
+    if chat:
+        updates["chat_model"] = chat
+    if embedding:
+        updates["embedding_model"] = embedding
+    if vision:
+        updates["vision_model"] = vision
+    if updates:
+        save_user_settings(updates)
+        get_settings.cache_clear()
+
+    return {
+        "ok": True,
+        "chat_model": chat or None,
+        "embedding_model": embedding or None,
+        "vision_model": vision or None,
+        "applied": list(updates.keys()),
+    }
+
+
 @router.post("/test")
 async def test(body: TestBody, _user: User = Depends(login_required)) -> dict[str, Any]:
     client = LMStudioClient(base_url=body.base_url)

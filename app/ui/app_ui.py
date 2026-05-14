@@ -782,9 +782,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         if is_active and job is not None:
                             _progress_block(job)
                         elif job is not None and job.message and job.status == ScanJobStatus.error:
-                            ui.label(job.message).classes("ldi-pill ldi-pill-error q-mt-sm").style(
-                                "max-width: 100%; white-space: normal;"
-                            )
+                            with ui.row().classes("items-center gap-2 q-mt-sm w-full"):
+                                ui.label(job.message).classes("ldi-pill ldi-pill-error flex-1").style(
+                                    "white-space: normal; word-break: break-word;"
+                                )
+                                if (
+                                    "embedding" in (job.message or "").lower()
+                                    or "lm studio" in (job.message or "").lower()
+                                    or "preflight" in (job.message or "").lower()
+                                ):
+                                    ui.button(
+                                        "Open Settings",
+                                        icon="settings",
+                                        on_click=lambda: ui.navigate.to("/settings"),
+                                    ).props("dense flat")
 
         def _delete_source(sid: int) -> None:
             with session_scope() as session:
@@ -1434,21 +1445,119 @@ def register_ui(fastapi_app: FastAPI) -> None:
         with ui.card().classes("w-full p-3"):
             ui.label(t("settings.lmstudio", lang)).classes("text-h6")
             url = ui.input(t("settings.base_url", lang), value=s.lmstudio_base_url).classes("w-full")
-            chat_model = ui.input(t("settings.chat_model", lang), value=s.chat_model).classes("w-full")
-            vision_model = ui.input(t("settings.vision_model", lang), value=s.vision_model).classes("w-full")
-            emb_model = ui.input(t("settings.emb_model", lang), value=s.embedding_model).classes("w-full")
+
+            def _opts(current: str, extras: list[str]) -> dict[str, str]:
+                items = {m: m for m in extras}
+                if current and current not in items:
+                    items[current] = current
+                if not items:
+                    items[""] = "— none —"
+                return items
+
+            chat_model = ui.select(
+                _opts(s.chat_model, []),
+                value=s.chat_model or "",
+                label=t("settings.chat_model", lang),
+                with_input=True,
+            ).classes("w-full")
+            vision_model = ui.select(
+                _opts(s.vision_model, []),
+                value=s.vision_model or "",
+                label=t("settings.vision_model", lang),
+                with_input=True,
+            ).classes("w-full")
+            emb_model = ui.select(
+                _opts(s.embedding_model, []),
+                value=s.embedding_model or "",
+                label=t("settings.emb_model", lang),
+                with_input=True,
+            ).classes("w-full")
+
+            connection_status = ui.label("").classes("text-caption q-mt-sm opacity-80")
+
+            async def _refresh_models() -> None:
+                from app.llm import LMStudioClient
+
+                client = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
+                try:
+                    raw = await client.list_models()
+                except Exception as e:
+                    connection_status.text = f"✗ {e}"
+                    ui.notify(f"Could not list models: {e}", color="negative")
+                    return
+
+                chat_ids: list[str] = []
+                emb_ids: list[str] = []
+                vis_ids: list[str] = []
+                for m in raw:
+                    if not isinstance(m, dict):
+                        continue
+                    mid = m.get("id") or m.get("model")
+                    if not mid:
+                        continue
+                    lid = mid.lower()
+                    is_emb = any(
+                        k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")
+                    )
+                    is_vis = any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl"))
+                    if is_emb:
+                        emb_ids.append(mid)
+                    if is_vis:
+                        vis_ids.append(mid)
+                    if not is_emb:
+                        chat_ids.append(mid)
+
+                chat_model.options = _opts(chat_model.value or "", chat_ids)
+                vision_model.options = _opts(vision_model.value or "", vis_ids)
+                emb_model.options = _opts(emb_model.value or "", emb_ids)
+                chat_model.update()
+                vision_model.update()
+                emb_model.update()
+                line = (
+                    f"✓ {len(raw)} model(s) · chat: {len(chat_ids)} · "
+                    f"embedding: {len(emb_ids)} · vision: {len(vis_ids)}"
+                )
+                if not emb_ids:
+                    line += "  ⚠ no embedding model loaded in LM Studio"
+                connection_status.text = line
+
+            async def _auto_pick() -> None:
+                await _refresh_models()
+                if not chat_model.value:
+                    opts = [k for k in chat_model.options if k]
+                    if opts:
+                        chat_model.value = opts[0]
+                if not emb_model.value:
+                    opts = [k for k in emb_model.options if k]
+                    if opts:
+                        emb_model.value = opts[0]
+                if not vision_model.value:
+                    opts = [k for k in vision_model.options if k]
+                    if opts:
+                        vision_model.value = opts[0]
+                ui.notify("Picked from LM Studio", color="positive")
 
             async def _test() -> None:
                 from app.llm import LMStudioClient
 
                 c = LMStudioClient(base_url=url.value)
                 ok = await c.ping()
+                connection_status.text = "✓ Reachable" if ok else f"✗ Cannot reach {url.value}"
                 ui.notify(
                     f"{t('settings.lm_reachable', lang)} {ok}",
                     color=("positive" if ok else "negative"),
                 )
+                if ok and emb_model.value:
+                    emb_ok, msg = await c.preflight_embed(model=emb_model.value)
+                    connection_status.text += " · embed: " + ("✓" if emb_ok else f"✗ {msg}")
 
-            ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
+            with ui.row().classes("gap-2 q-mt-sm"):
+                ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
+                ui.button("Refresh models", icon="refresh", on_click=_refresh_models).props("dense")
+                ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
+
+            # Auto-populate on page load
+            ui.timer(0.2, _refresh_models, once=True)
 
         with ui.card().classes("w-full p-3 q-mt-md"):
             ui.label(t("settings.ocr", lang)).classes("text-h6")
