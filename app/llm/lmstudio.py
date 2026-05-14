@@ -59,11 +59,53 @@ class LMStudioClient:
             return False
 
     async def list_models(self) -> list[dict[str, Any]]:
+        """List models exposed by the server.
+
+        Tries the OpenAI-compatible ``/v1/models`` first; if it returns an
+        empty list, falls back to LM Studio's native ``/api/v0/models`` which
+        often shows additional loaded models (embeddings in particular) that
+        the OpenAI surface omits.
+        """
+        out: list[dict[str, Any]] = []
         async with await self._client() as c:
-            r = await c.get("/models")
-            r.raise_for_status()
-            data = r.json()
-            return data.get("data", [])
+            try:
+                r = await c.get("/models")
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, dict):
+                        out = list(data.get("data", []) or [])
+                    elif isinstance(data, list):
+                        out = list(data)
+            except Exception as e:
+                logger.debug("/v1/models failed: {}", e)
+
+            if not out:
+                # LM Studio native (base_url is .../v1, so go up one level)
+                try:
+                    base = str(c.base_url).rstrip("/")
+                    if base.endswith("/v1"):
+                        native = base[: -len("/v1")] + "/api/v0/models"
+                    else:
+                        native = base + "/api/v0/models"
+                    r2 = await c.get(native)
+                    if r2.status_code == 200:
+                        data2 = r2.json()
+                        items: list[dict[str, Any]] = []
+                        if isinstance(data2, dict):
+                            items = list(data2.get("data", []) or data2.get("models", []) or [])
+                        elif isinstance(data2, list):
+                            items = list(data2)
+                        # Normalise: native API uses ``id``, sometimes nested
+                        for it in items:
+                            if isinstance(it, dict):
+                                if "id" not in it and "model_key" in it:
+                                    it["id"] = it["model_key"]
+                                if "id" not in it and "name" in it:
+                                    it["id"] = it["name"]
+                        out = items
+                except Exception as e:
+                    logger.debug("/api/v0/models fallback failed: {}", e)
+        return out
 
     # ---- chat -------------------------------------------------------------
 

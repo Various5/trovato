@@ -266,6 +266,43 @@ def _layout(user: User, current: str) -> None:
         # Current page tag
         ui.label(page_title).classes("text-body2 opacity-80")
 
+        # Live scan indicator — visible on every page while jobs are running.
+        scan_indicator = ui.row().classes("items-center gap-2 q-ml-md")
+
+        def _refresh_scan_indicator() -> None:
+            from app.models import ScanJob, ScanJobStatus
+
+            scan_indicator.clear()
+            with session_scope() as session:
+                running = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
+            if not running:
+                return
+            j = running[0]
+            total = max(j.total_files or 0, j.processed_files)
+            pct = (100.0 * j.processed_files / total) if total else 0.0
+            with scan_indicator:
+                ui.spinner(size="sm").classes("ldi-accent")
+                with ui.column().classes("gap-0").style("min-width: 170px;"):
+                    label_text = (
+                        f"Scanning · {j.processed_files}/{total}"
+                        if total
+                        else f"Scanning · {j.processed_files} files"
+                    )
+                    if len(running) > 1:
+                        label_text += f" (+{len(running) - 1} more)"
+                    ui.label(label_text).classes("text-caption")
+                    with ui.element("div").classes("ldi-progress").style("height: 4px;"):
+                        if total:
+                            ui.element("div").classes("ldi-progress-fill").style(f"width: {pct:.1f}%;")
+                        else:
+                            ui.element("div").classes("ldi-progress-fill indeterminate")
+                ui.button(icon="folder_open", on_click=lambda: ui.navigate.to("/sources")).props(
+                    "flat dense round"
+                ).tooltip("Open Sources")
+
+        _refresh_scan_indicator()
+        ui.timer(2.0, _refresh_scan_indicator)
+
         # Theme cycle button (light/dark quick swap)
         def _cycle_theme() -> None:
             # Cycle through professional themes first, then legacy.
@@ -512,6 +549,61 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.icon(icon).classes("text-3xl ldi-accent")
                     ui.label(str(value)).classes("text-h4")
                     ui.label(t(label_key, lang)).classes("opacity-80")
+        # ----- Active scans (live) -----
+        from app.models import ScanJob, ScanJobStatus
+
+        active_card = ui.card().classes("w-full p-3 q-mt-md")
+
+        def _refresh_active() -> None:
+            active_card.clear()
+            with session_scope() as session:
+                running = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
+                paused = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.paused)).all()
+            with active_card:
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.icon("radio_button_checked").classes("ldi-accent")
+                    ui.label("Active scans").classes("text-h6 flex-1")
+                    ui.button(
+                        icon="open_in_new",
+                        on_click=lambda: ui.navigate.to("/sources"),
+                    ).props(
+                        "flat dense"
+                    ).tooltip("Open Sources")
+                if not running and not paused:
+                    ui.label("No scans running. Trigger one from the Sources page.").classes(
+                        "text-caption opacity-70"
+                    )
+                    return
+                for j in running + paused:
+                    total = max(j.total_files or 0, j.processed_files)
+                    pct = (100.0 * j.processed_files / total) if total else 0.0
+                    with ui.column().classes("w-full gap-1 q-mb-sm"):
+                        with ui.row().classes("items-center gap-2 w-full"):
+                            badge = "● running" if j.status == ScanJobStatus.running else "❚❚ paused"
+                            badge_cls = (
+                                "ldi-pill ldi-pill-success"
+                                if j.status == ScanJobStatus.running
+                                else "ldi-pill ldi-pill-warning"
+                            )
+                            ui.label(badge).classes(badge_cls)
+                            ui.label(
+                                f"job #{j.id} · source {j.source_id} · "
+                                f"{j.processed_files}/{total if total else '?'} files"
+                                + (f" · {j.error_count} errors" if j.error_count else "")
+                            ).classes("text-caption flex-1")
+                        with ui.element("div").classes("ldi-progress"):
+                            if total:
+                                ui.element("div").classes("ldi-progress-fill").style(f"width: {pct:.1f}%;")
+                            else:
+                                ui.element("div").classes("ldi-progress-fill indeterminate")
+                        if j.current_file:
+                            ui.label(j.current_file).classes("text-caption opacity-70 ellipsis").style(
+                                "max-width: 100%;"
+                            )
+
+        _refresh_active()
+        ui.timer(2.0, _refresh_active)
+
         ui.label(t("dash.quick_actions", lang)).classes("text-h6 q-mt-md")
         with ui.row().classes("gap-2"):
             ui.button(t("dash.add_source", lang), icon="add", on_click=lambda: ui.navigate.to("/sources"))
@@ -1595,8 +1687,25 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     emb_ok, msg = await c.preflight_embed(model=emb_model.value)
                     connection_status.text += " · embed: " + ("✓" if emb_ok else f"✗ {msg}")
 
-            with ui.row().classes("gap-2 q-mt-sm"):
+            async def _test_embed() -> None:
+                from app.llm import LMStudioClient
+
+                mid = (emb_model.value or "").strip()
+                if not mid:
+                    ui.notify("Enter an embedding model id first", color="warning")
+                    return
+                c = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
+                ok, message = await c.preflight_embed(model=mid)
+                if ok:
+                    connection_status.text = f"✓ Embedding works · {message}"
+                    ui.notify(f"Embedding OK: {message}", color="positive")
+                else:
+                    connection_status.text = f"✗ {message}"
+                    ui.notify(f"Embedding failed: {message}", color="negative")
+
+            with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
                 ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
+                ui.button("Test embedding", icon="psychology", on_click=_test_embed).props("dense")
                 ui.button("Browse models", icon="list", on_click=_browse_models).props("dense")
                 ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
 
