@@ -411,10 +411,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
         ph_lang = "en"
         with ui.card().classes("absolute-center w-96 p-6"):
             ui.label(t("login.title", ph_lang)).classes("text-h5 q-mb-md ldi-primary")
-            username = ui.input(t("common.username", ph_lang)).classes("w-full")
+            # Pre-fill from previously-remembered username (per-browser).
+            remembered_user = ""
+            try:
+                remembered_user = nicegui_app.storage.browser.get("remembered_user", "") or ""
+            except Exception:
+                remembered_user = ""
+            username = ui.input(t("common.username", ph_lang), value=remembered_user).classes("w-full")
             password = ui.input(
                 t("common.password", ph_lang), password=True, password_toggle_button=True
             ).classes("w-full")
+            remember = ui.checkbox("Stay signed in on this device", value=bool(remembered_user)).classes(
+                "q-mt-sm"
+            )
             err = ui.label("").classes("text-negative q-mt-sm")
 
             def _login() -> None:
@@ -424,11 +433,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         err.text = t("login.invalid", ph_lang)
                         return
                     nicegui_app.storage.user[SESSION_USER_KEY] = u.id
+                # Persist username in the long-lived browser store so the next
+                # launch pre-fills the field. The session cookie itself lives
+                # 14 days (configured in app/main.py).
+                try:
+                    if remember.value:
+                        nicegui_app.storage.browser["remembered_user"] = username.value
+                    else:
+                        nicegui_app.storage.browser.pop("remembered_user", None)
+                except Exception:
+                    pass
                 ui.navigate.to("/")
 
             ui.button(t("btn.login", ph_lang), on_click=_login).props("color=primary").classes(
                 "w-full q-mt-md"
             )
+            password.on("keydown.enter", lambda _: _login())
             ui.link(t("login.forgot", ph_lang), "/recover").classes("text-caption q-mt-sm")
 
     @ui.page("/first-run")
@@ -1095,8 +1115,87 @@ def register_ui(fastapi_app: FastAPI) -> None:
             q.props("autofocus dense outlined")
             rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
 
+        # Filter state — read by _go() before each search
+        filter_state: dict[str, list] = {"source_ids": [], "tags": [], "doc_types": []}
+
+        from app.models import Tag
+
+        with session_scope() as session:
+            sources_for_filter = [
+                (sr.id, sr.name)
+                for sr in session.exec(select(DocumentSource).order_by(DocumentSource.name)).all()
+            ]
+            tags_for_filter = [t_.name for t_ in session.exec(select(Tag).order_by(Tag.name)).all()]
+            doc_types_for_filter = sorted(
+                {d.doc_type for d in session.exec(select(Document)).all() if d.doc_type}
+            )
+
         result_summary = ui.label("").classes("text-caption opacity-70 q-mt-sm")
-        out = ui.column().classes("w-full gap-2 q-mt-sm")
+
+        # Layout: filter sidebar (left) + results (right)
+        with ui.row().classes("w-full gap-3 no-wrap q-mt-sm items-start"):
+            with ui.column().classes("ldi-glass gap-3 q-pa-md").style("min-width: 240px; max-width: 260px;"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.icon("filter_list").classes("ldi-accent")
+                    ui.label("Filters").classes("text-h6 flex-1")
+                if sources_for_filter:
+                    ui.label("SOURCES").classes("text-caption opacity-60 q-mt-xs").style(
+                        "letter-spacing: 0.12em;"
+                    )
+                    for sid, sname in sources_for_filter:
+
+                        def _toggle_src(e, _sid=sid) -> None:
+                            if e.value and _sid not in filter_state["source_ids"]:
+                                filter_state["source_ids"].append(_sid)
+                            elif not e.value and _sid in filter_state["source_ids"]:
+                                filter_state["source_ids"].remove(_sid)
+
+                        ui.checkbox(sname).classes("text-body2").on("update:model-value", _toggle_src)
+                if doc_types_for_filter:
+                    ui.label("DOCUMENT TYPE").classes("text-caption opacity-60 q-mt-md").style(
+                        "letter-spacing: 0.12em;"
+                    )
+                    for dt in doc_types_for_filter:
+
+                        def _toggle_dt(e, _dt=dt) -> None:
+                            if e.value and _dt not in filter_state["doc_types"]:
+                                filter_state["doc_types"].append(_dt)
+                            elif not e.value and _dt in filter_state["doc_types"]:
+                                filter_state["doc_types"].remove(_dt)
+
+                        ui.checkbox(dt).classes("text-body2").on("update:model-value", _toggle_dt)
+                if tags_for_filter:
+                    ui.label("TAGS").classes("text-caption opacity-60 q-mt-md").style(
+                        "letter-spacing: 0.12em;"
+                    )
+                    tag_chip_row = ui.row().classes("gap-1 flex-wrap")
+                    with tag_chip_row:
+                        for tname in tags_for_filter[:30]:
+                            active = {"v": False}
+
+                            def _toggle_tag(_tname=tname, _state=active, _row=tag_chip_row) -> None:
+                                _state["v"] = not _state["v"]
+                                if _state["v"]:
+                                    if _tname not in filter_state["tags"]:
+                                        filter_state["tags"].append(_tname)
+                                else:
+                                    if _tname in filter_state["tags"]:
+                                        filter_state["tags"].remove(_tname)
+
+                            chip = (
+                                ui.button(tname, on_click=_toggle_tag)
+                                .props("flat dense no-caps")
+                                .classes("ldi-pill")
+                            )
+                            _ = chip
+                ui.separator().classes("q-my-sm")
+                ui.button(
+                    "Clear filters",
+                    icon="restart_alt",
+                    on_click=lambda: ui.navigate.reload(),
+                ).props("flat dense")
+
+            out = ui.column().classes("flex-1 gap-2 min-w-0")
 
         import html as _html
         import re as _re
@@ -1138,7 +1237,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.services.search_service import hybrid_search
 
             t0 = _time.perf_counter()
-            hits = await hybrid_search(query, rerank=rerank_toggle.value, user=user)
+            hits = await hybrid_search(
+                query,
+                rerank=rerank_toggle.value,
+                user=user,
+                source_ids=list(filter_state["source_ids"]) or None,
+                tags=list(filter_state["tags"]) or None,
+            )
+            # Apply doc-type filter client-side (hybrid_search has no native one)
+            if filter_state["doc_types"]:
+                wanted = set(filter_state["doc_types"])
+                with session_scope() as session:
+                    docs = session.exec(
+                        select(Document).where(
+                            Document.id.in_(list({h.document_id for h in hits}))  # type: ignore[attr-defined]
+                        )
+                    ).all()
+                    by_id = {d.id: d for d in docs}
+                hits = [
+                    h for h in hits if (by_id.get(h.document_id) and by_id[h.document_id].doc_type in wanted)
+                ]
             elapsed = _time.perf_counter() - t0
 
             result_summary.text = (
@@ -1471,6 +1589,84 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     chat_header_title = ui.label(t("chat.title", lang)).classes(
                         "text-h6 ldi-primary flex-1 ellipsis"
                     )
+
+                    def _show_context_dialog() -> None:
+                        """Pick sources / tags to constrain RAG retrieval for
+                        the active chat."""
+                        cid = chat_state.get("chat_id")
+                        if not cid:
+                            ui.notify(t("chat.open_first", lang), color="warning")
+                            return
+                        from app.models import Tag
+
+                        with session_scope() as session:
+                            all_sources = session.exec(
+                                select(DocumentSource).order_by(DocumentSource.name)
+                            ).all()
+                            all_tags = session.exec(select(Tag).order_by(Tag.name)).all()
+                            existing = session.exec(
+                                select(ChatContextItem).where(ChatContextItem.chat_id == cid)
+                            ).all()
+                            existing_src = {it.ref_id for it in existing if it.kind == "source"}
+                            existing_tag = {it.value for it in existing if it.kind == "tag" and it.value}
+
+                        with ui.dialog() as dialog, ui.card().classes("w-[520px] p-4"):
+                            ui.label("Restrict this chat to…").classes("text-h6 ldi-primary")
+                            ui.label(
+                                "Pick the sources or tags the assistant may use. "
+                                "Leave empty to search everything."
+                            ).classes("text-caption opacity-70 q-mb-md")
+                            ui.label("SOURCES").classes("text-caption opacity-60").style(
+                                "letter-spacing: 0.12em;"
+                            )
+                            src_checks: dict[int, Any] = {}
+                            for sr in all_sources:
+                                src_checks[sr.id] = ui.checkbox(f"{sr.name}", value=sr.id in existing_src)
+                            ui.label("TAGS").classes("text-caption opacity-60 q-mt-md").style(
+                                "letter-spacing: 0.12em;"
+                            )
+                            tag_checks: dict[str, Any] = {}
+                            with ui.row().classes("flex-wrap gap-1"):
+                                for tag in all_tags[:50]:
+                                    tag_checks[tag.name] = ui.checkbox(
+                                        tag.name, value=tag.name in existing_tag
+                                    ).classes("text-caption")
+
+                            def _apply() -> None:
+                                with session_scope() as session:
+                                    for old in session.exec(
+                                        select(ChatContextItem).where(ChatContextItem.chat_id == cid)
+                                    ).all():
+                                        session.delete(old)
+                                    for sid, cb in src_checks.items():
+                                        if cb.value:
+                                            session.add(
+                                                ChatContextItem(
+                                                    chat_id=cid,
+                                                    kind="source",
+                                                    ref_id=sid,
+                                                )
+                                            )
+                                    for tname, cb in tag_checks.items():
+                                        if cb.value:
+                                            session.add(
+                                                ChatContextItem(
+                                                    chat_id=cid,
+                                                    kind="tag",
+                                                    value=tname,
+                                                )
+                                            )
+                                ui.notify("Context updated", color="positive")
+                                dialog.close()
+
+                            with ui.row().classes("justify-end w-full gap-2 q-mt-md"):
+                                ui.button("Cancel", on_click=dialog.close).props("flat")
+                                ui.button("Apply", on_click=_apply).props("color=primary")
+                        dialog.open()
+
+                    ui.button(icon="filter_alt", on_click=_show_context_dialog).props(
+                        "flat round dense"
+                    ).tooltip("Restrict context")
                     ui.icon("auto_awesome").classes("ldi-accent text-xl")
 
                 # Message scroll area
@@ -1594,26 +1790,74 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _layout(user, "/tags")
         lang = _user_lang(user)
         ui.label(t("tags.title", lang)).classes("text-h4 q-mb-md ldi-primary")
-        from app.models import Tag
+        from app.models import DocumentTagLink, Tag
 
-        results = ui.column().classes("w-full gap-2")
+        cloud_card = ui.card().classes("w-full p-4 q-mb-md")
+        list_card = ui.column().classes("w-full gap-1")
 
         def _refresh() -> None:
-            results.clear()
-            with results, session_scope() as session:
+            cloud_card.clear()
+            list_card.clear()
+            with session_scope() as session:
                 tags = session.exec(select(Tag).order_by(Tag.name)).all()
+                # Count documents per tag for the cloud sizing
+                counts: dict[int, int] = {}
                 for tag in tags:
+                    cnt = len(
+                        session.exec(select(DocumentTagLink).where(DocumentTagLink.tag_id == tag.id)).all()
+                    )
+                    counts[tag.id] = cnt
+
+            # ------ Tag cloud ------
+            with cloud_card:
+                with ui.row().classes("items-center gap-2 w-full q-mb-sm"):
+                    ui.icon("local_offer").classes("ldi-accent")
+                    ui.label(f"{len(tags)} tags · cloud").classes("text-h6 flex-1")
+                if not tags:
+                    ui.label("Tags appear automatically when documents are scanned.").classes(
+                        "text-caption opacity-70"
+                    )
+                else:
+                    max_count = max(counts.values()) if counts else 1
+                    with ui.row().classes("flex-wrap gap-2 q-py-sm").style("line-height: 2.2;"):
+                        for tag in tags:
+                            count = counts.get(tag.id, 0)
+                            ratio = count / max(max_count, 1)
+                            size_em = 0.85 + 1.2 * ratio
+                            opacity = 0.6 + 0.4 * ratio
+                            chip = (
+                                ui.button(
+                                    f"{tag.name}  · {count}",
+                                    on_click=lambda tn=tag.name: ui.navigate.to(
+                                        f"/search?tag={tn}"  # placeholder; honoured below
+                                    ),
+                                )
+                                .props("flat no-caps")
+                                .classes("ldi-pill")
+                            )
+                            chip.style(f"font-size: {size_em:.2f}em; opacity: {opacity:.2f};")
+                            if "lang:" in tag.name or tag.name.startswith("has:"):
+                                chip.classes(add="ldi-pill-warning")
+
+            # ------ Plain list (sortable, deletable) ------
+            with list_card:
+                ui.label("All tags").classes("text-h6 q-mb-sm")
+                if not tags:
+                    return
+                with session_scope() as session:
+                    refreshed = session.exec(select(Tag).order_by(Tag.name)).all()
+                for tag in refreshed:
+                    cnt = counts.get(tag.id, 0)
                     with ui.row().classes("items-center gap-2 w-full"):
                         ui.label(tag.name).classes("flex-1")
-                        ui.label(t("tags.auto", lang) if tag.auto else "").classes("opacity-50 text-caption")
-                        ui.button(
-                            icon="delete",
-                            on_click=lambda tid=tag.id: _delete(tid),
-                        ).props("flat dense color=negative")
+                        ui.label(f"{cnt} doc(s)").classes("text-caption opacity-70").style("min-width: 70px;")
+                        if tag.auto:
+                            ui.label(t("tags.auto", lang)).classes("ldi-pill text-caption")
+                        ui.button(icon="delete", on_click=lambda tid=tag.id: _delete(tid)).props(
+                            "flat dense color=negative"
+                        )
 
         def _delete(tid: int) -> None:
-            from app.models import DocumentTagLink
-
             with session_scope() as session:
                 for link in session.exec(select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)).all():
                     session.delete(link)

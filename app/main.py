@@ -162,7 +162,9 @@ def create_app():  # type: ignore[no-untyped-def]
         secret_key=s.secret_key,
         same_site="lax",
         https_only=False,
-        max_age=14 * 24 * 3600,
+        # 90 days — this is a local desktop app, the cookie lives on the same
+        # machine. Long expiry means the user only sees the login screen once.
+        max_age=90 * 24 * 3600,
     )
 
     cors_origins = ["http://localhost", "http://127.0.0.1"]

@@ -214,13 +214,26 @@ async def index_document(
     else:
         skip_extract = False
 
+    # Run the heavy synchronous extraction (PyMuPDF + tesseract) on a worker
+    # thread so the asyncio event loop stays free — otherwise the NiceGUI
+    # websocket times out and the UI shows "connection lost".
     try:
-        extract_iter = (
-            iter(())
-            if skip_extract
-            else extract_pdf(path, doc_id_for_cache=doc_id or content_hash[:10], force_ocr=force_ocr)
-        )
-        for pc in extract_iter:
+        if skip_extract:
+            extracted_pages: list = []
+        else:
+
+            def _extract_all() -> list:
+                return list(
+                    extract_pdf(
+                        path,
+                        doc_id_for_cache=doc_id or content_hash[:10],
+                        force_ocr=force_ocr,
+                    )
+                )
+
+            extracted_pages = await asyncio.to_thread(_extract_all)
+
+        for pc in extracted_pages:
             page_count = pc.page_number
             if controller and not await controller.gate():
                 logger.info("aborted during extract of {}", path)
@@ -260,6 +273,9 @@ async def index_document(
                         vision_description=vision_desc[:20_000],
                     )
                 )
+            # Yield to the event loop after each page so the UI's
+            # websocket heartbeat and the per-job progress bar update.
+            await asyncio.sleep(0)
     except Exception as e:
         logger.exception("extract failed for {}: {}", path, e)
         with session_scope() as session:
@@ -272,8 +288,10 @@ async def index_document(
 
     # Chunk + embed (pages/images are *not yet* persisted — we do that
     # atomically with the chunks at the end so the document is never left in
-    # a half-rebuilt state).
-    chunks = list(chunk_text(all_pages_text, chunk_tokens=s.chunk_size, overlap=s.chunk_overlap))
+    # a half-rebuilt state). Chunking is CPU-bound; off-thread it.
+    chunks = await asyncio.to_thread(
+        lambda: list(chunk_text(all_pages_text, chunk_tokens=s.chunk_size, overlap=s.chunk_overlap))
+    )
 
     # Add image-description chunks too
     from app.ingestion.chunker import Chunk as _C
@@ -290,13 +308,17 @@ async def index_document(
                 )
             )
 
-    # Tables via pdfplumber → markdown chunks (skip in re-embed-only mode)
+    # Tables via pdfplumber → markdown chunks (skip in re-embed-only mode);
+    # pdfplumber is also synchronous, run in worker thread.
     table_chunks: list[tuple[_C, int]] = []  # (chunk, page_no)
     if not skip_extract:
         try:
             from app.ingestion.tables import extract_tables_markdown
 
-            for page_no, md in extract_tables_markdown(path):
+            def _extract_tables() -> list[tuple[int, str]]:
+                return list(extract_tables_markdown(path))
+
+            for page_no, md in await asyncio.to_thread(_extract_tables):
                 if len(md) < 30:
                     continue
                 table_chunks.append(
