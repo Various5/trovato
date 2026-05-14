@@ -55,9 +55,48 @@ def doc_types_breakdown(limit: int = 6) -> list[tuple[str, int]]:
     return rows[:limit]
 
 
+def wow_trend() -> dict[str, Any]:
+    """Week-over-week comparison: documents indexed this week vs prior week."""
+    today = datetime.now(UTC).date()
+    this_week_start = today - timedelta(days=6)
+    prev_week_start = today - timedelta(days=13)
+    prev_week_end = today - timedelta(days=7)
+    this_week = 0
+    prev_week = 0
+    most_active: tuple[str, int] = ("", 0)
+    with session_scope() as session:
+        docs = session.exec(select(Document).where(Document.indexed_at.is_not(None))).all()  # type: ignore[attr-defined]
+        per_day: dict[str, int] = {}
+        for d in docs:
+            if not d.indexed_at:
+                continue
+            day = d.indexed_at.date()
+            per_day[day.isoformat()] = per_day.get(day.isoformat(), 0) + 1
+            if this_week_start <= day <= today:
+                this_week += 1
+            elif prev_week_start <= day <= prev_week_end:
+                prev_week += 1
+        for k, v in per_day.items():
+            if v > most_active[1]:
+                most_active = (k, v)
+    pct_change: float | None
+    if prev_week == 0:
+        pct_change = None if this_week == 0 else 100.0
+    else:
+        pct_change = ((this_week - prev_week) / prev_week) * 100.0
+    return {
+        "this_week": this_week,
+        "prev_week": prev_week,
+        "pct_change": pct_change,
+        "most_active_day": most_active[0],
+        "most_active_count": most_active[1],
+    }
+
+
 def overview() -> dict[str, Any]:
     return {
         "per_day": docs_indexed_per_day(),
         "per_source": docs_per_source(),
         "doc_types": doc_types_breakdown(),
+        "trend": wow_trend(),
     }

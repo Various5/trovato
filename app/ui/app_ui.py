@@ -628,6 +628,36 @@ def register_ui(fastapi_app: FastAPI) -> None:
         from app.services.dashboard import overview as _dash_overview
 
         agg = _dash_overview()
+
+        # ----- Week-over-week trend tile -----
+        trend = agg.get("trend", {})
+        with ui.row().classes("w-full gap-3 q-mt-md flex-wrap"):
+            with ui.card().classes("p-3").style("flex: 1; min-width: 220px;"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("trending_up").classes("ldi-accent")
+                    ui.label("This week").classes("text-h6 flex-1")
+                ui.label(str(trend.get("this_week", 0))).classes("text-h3").style("line-height: 1.05;")
+                pct = trend.get("pct_change")
+                if pct is None:
+                    arrow_txt = "—"
+                    arrow_cls = "ldi-pill"
+                elif pct > 5:
+                    arrow_txt = f"↑ {pct:+.0f}%"
+                    arrow_cls = "ldi-pill ldi-pill-success"
+                elif pct < -5:
+                    arrow_txt = f"↓ {pct:+.0f}%"
+                    arrow_cls = "ldi-pill ldi-pill-error"
+                else:
+                    arrow_txt = f"≈ {pct:+.0f}%"
+                    arrow_cls = "ldi-pill"
+                with ui.row().classes("items-center gap-2 q-mt-xs"):
+                    ui.label(arrow_txt).classes(arrow_cls)
+                    ui.label(f"vs last week ({trend.get('prev_week', 0)})").classes("text-caption opacity-70")
+                if trend.get("most_active_day"):
+                    ui.label(f"Peak: {trend['most_active_day']} ({trend['most_active_count']} docs)").classes(
+                        "text-caption opacity-60 q-mt-sm"
+                    )
+
         with ui.row().classes("w-full gap-3 q-mt-md flex-wrap"):
             # Per-day column chart (last 14 days)
             with ui.card().classes("p-3").style("flex: 2; min-width: 360px;"):
@@ -1056,7 +1086,161 @@ def register_ui(fastapi_app: FastAPI) -> None:
         q_input = ui.input(t("docs.filter", lang)).classes("w-full")
         results = ui.column().classes("w-full gap-2")
 
+        # --- Bulk selection state ---
+        selection: set[int] = set()
+        bulk_bar = (
+            ui.row()
+            .classes("ldi-glass items-center gap-2 q-pa-sm w-full no-wrap q-mb-md")
+            .style("display: none;")
+        )
+
+        def _update_bulk_bar() -> None:
+            bulk_bar.clear()
+            bulk_bar.style("display: none;" if not selection else "display: flex;")
+            if not selection:
+                return
+            with bulk_bar:
+                ui.label(f"{len(selection)} document(s) selected").classes("text-body2 ldi-primary")
+                ui.space()
+
+                async def _bulk_tag() -> None:
+                    from app.models import DocumentTagLink, Tag
+
+                    with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                        ui.label(f"Add tag to {len(selection)} document(s)").classes("text-h6 ldi-primary")
+                        name_in = ui.input("Tag name").classes("w-full")
+
+                        def _apply() -> None:
+                            tname = (name_in.value or "").strip()
+                            if not tname:
+                                ui.notify("Enter a tag name", color="warning")
+                                return
+                            with session_scope() as sess:
+                                tag = sess.exec(select(Tag).where(Tag.name == tname)).first()
+                                if not tag:
+                                    tag = Tag(name=tname, auto=False)
+                                    sess.add(tag)
+                                    sess.flush()
+                                for did in selection:
+                                    exists = sess.exec(
+                                        select(DocumentTagLink).where(
+                                            DocumentTagLink.document_id == did,
+                                            DocumentTagLink.tag_id == tag.id,
+                                        )
+                                    ).first()
+                                    if not exists:
+                                        sess.add(
+                                            DocumentTagLink(
+                                                document_id=did,
+                                                tag_id=tag.id,
+                                                auto=False,
+                                            )
+                                        )
+                            ui.notify(
+                                f"Tag '{tname}' added to {len(selection)} doc(s)",
+                                color="positive",
+                            )
+                            d.close()
+                            selection.clear()
+                            _refresh()
+
+                        with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                            ui.button("Cancel", on_click=d.close).props("flat")
+                            ui.button("Apply", on_click=_apply).props("color=primary")
+                    d.open()
+
+                async def _bulk_reindex() -> None:
+                    from app.services.indexer import index_document
+
+                    with session_scope() as sess:
+                        docs = sess.exec(
+                            select(Document).where(Document.id.in_(list(selection)))  # type: ignore[attr-defined]
+                        ).all()
+                        source_ids = {d.source_id for d in docs}
+                        sources_by_id = {
+                            sr.id: sr
+                            for sr in sess.exec(
+                                select(DocumentSource).where(
+                                    DocumentSource.id.in_(list(source_ids))  # type: ignore[attr-defined]
+                                )
+                            ).all()
+                        }
+                        doc_data = [(d.id, d.path, sources_by_id.get(d.source_id)) for d in docs]
+                    ui.notify(f"Re-indexing {len(doc_data)} document(s)…", color="positive")
+
+                    import asyncio as _aio
+
+                    async def _runner():
+                        from pathlib import Path as _P
+
+                        for did, dpath, src in doc_data:
+                            if not src:
+                                continue
+                            snap = DocumentSource(**src.model_dump())
+                            try:
+                                await index_document(snap, _P(dpath), force_ocr=False, force_embed=True)
+                            except Exception as e:
+                                logger_local = (__import__("app.utils.logging", fromlist=["logger"])).logger
+                                logger_local.warning("bulk re-index failed for {}: {}", dpath, e)
+
+                    _aio.create_task(_runner())
+                    selection.clear()
+                    _refresh()
+
+                async def _bulk_delete() -> None:
+                    from app.models import DocumentChunk, DocumentImage, DocumentPage, DocumentTagLink
+                    from app.vectorstore import delete_for_document
+
+                    with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                        ui.label(f"Delete {len(selection)} document(s)?").classes("text-h6 ldi-primary")
+                        ui.label(
+                            "The original PDF files on disk are not touched — only " "the index entries here."
+                        ).classes("text-caption opacity-70")
+
+                        def _do_delete() -> None:
+                            with session_scope() as sess:
+                                for did in list(selection):
+                                    for table in (
+                                        DocumentChunk,
+                                        DocumentPage,
+                                        DocumentImage,
+                                        DocumentTagLink,
+                                    ):
+                                        for row in sess.exec(
+                                            select(table).where(table.document_id == did)  # type: ignore[arg-type]
+                                        ).all():
+                                            sess.delete(row)
+                                    try:
+                                        delete_for_document(did)
+                                    except Exception:
+                                        pass
+                                    doc_obj = sess.get(Document, did)
+                                    if doc_obj:
+                                        sess.delete(doc_obj)
+                            ui.notify(
+                                f"Deleted {len(selection)} document(s)",
+                                color="positive",
+                            )
+                            d.close()
+                            selection.clear()
+                            _refresh()
+
+                        with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                            ui.button("Cancel", on_click=d.close).props("flat")
+                            ui.button("Delete", on_click=_do_delete).props("color=negative")
+                    d.open()
+
+                ui.button("Add tag", icon="label", on_click=_bulk_tag).props("dense")
+                ui.button("Re-index", icon="refresh", on_click=_bulk_reindex).props("dense")
+                ui.button("Delete", icon="delete", on_click=_bulk_delete).props("dense color=negative")
+                ui.button(
+                    "Clear",
+                    icon="close",
+                    on_click=lambda: (selection.clear(), _refresh()),
+                ).props("flat dense")
+
         def _refresh() -> None:
+            _update_bulk_bar()
             results.clear()
             with results, session_scope() as session:
                 stmt = select(Document)
@@ -1066,38 +1250,62 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 stmt = stmt.order_by(Document.id.desc()).limit(200)  # type: ignore
                 for d in session.exec(stmt).all():
                     with ui.card().classes("w-full p-3"):
-                        ui.label(d.filename).classes("text-h6")
-                        ui.label(d.path).classes("text-caption opacity-70 break-all")
-                        ui.label(
-                            f"{t('docs.pages', lang)}: {d.page_count} · "
-                            f"{t('docs.status', lang)}: {d.status.value} · "
-                            f"{t('docs.type', lang)}: {d.doc_type or '—'} · "
-                            f"{t('docs.lang', lang)}: {d.language or '—'}"
-                        ).classes("text-caption")
-                        with ui.row().classes("gap-1 q-mt-xs"):
-                            ui.button(
-                                t("docs.btn_view", lang),
-                                icon="visibility",
-                                on_click=lambda did=d.id: ui.navigate.to(f"/viewer?doc={did}&page=1"),
-                            ).props("dense flat")
-                            ui.button(
-                                t("docs.btn_pdf", lang),
-                                icon="picture_as_pdf",
-                                on_click=lambda did=d.id: open_pdf(did, 1),
-                            ).props("dense flat")
-                            ui.button(
-                                t("docs.btn_similar", lang),
-                                icon="auto_awesome",
-                                on_click=lambda did=d.id, fname=d.filename: _show_similar(did, fname),
-                            ).props("dense flat")
-                            ui.button(
-                                t("docs.btn_summarize", lang),
-                                icon="summarize",
-                                on_click=lambda did=d.id, fname=d.filename: _show_summary(did, fname),
-                            ).props("dense flat")
+                        with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                            cb = ui.checkbox(value=d.id in selection)
 
-        q_input.on("change", lambda _: _refresh())
-        ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("dense")
+                            def _toggle(e, _did=d.id) -> None:
+                                if e.value:
+                                    selection.add(_did)
+                                else:
+                                    selection.discard(_did)
+                                _update_bulk_bar()
+
+                            cb.on("update:model-value", _toggle)
+                            with ui.column().classes("flex-1 gap-0 min-w-0"):
+                                ui.label(d.filename).classes("text-h6")
+                                ui.label(d.path).classes("text-caption opacity-70 break-all")
+                                ui.label(
+                                    f"{t('docs.pages', lang)}: {d.page_count} · "
+                                    f"{t('docs.status', lang)}: {d.status.value} · "
+                                    f"{t('docs.type', lang)}: {d.doc_type or '—'} · "
+                                    f"{t('docs.lang', lang)}: {d.language or '—'}"
+                                ).classes("text-caption")
+                                with ui.row().classes("gap-1 q-mt-xs"):
+                                    ui.button(
+                                        t("docs.btn_view", lang),
+                                        icon="visibility",
+                                        on_click=lambda did=d.id: ui.navigate.to(f"/viewer?doc={did}&page=1"),
+                                    ).props("dense flat")
+                                    ui.button(
+                                        t("docs.btn_pdf", lang),
+                                        icon="picture_as_pdf",
+                                        on_click=lambda did=d.id: open_pdf(did, 1),
+                                    ).props("dense flat")
+                                    ui.button(
+                                        t("docs.btn_similar", lang),
+                                        icon="auto_awesome",
+                                        on_click=lambda did=d.id, fname=d.filename: _show_similar(did, fname),
+                                    ).props("dense flat")
+                                    ui.button(
+                                        t("docs.btn_summarize", lang),
+                                        icon="summarize",
+                                        on_click=lambda did=d.id, fname=d.filename: _show_summary(did, fname),
+                                    ).props("dense flat")
+
+        with ui.row().classes("items-center gap-2"):
+            q_input.on("change", lambda _: _refresh())
+            ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("dense")
+
+            def _select_all() -> None:
+                with session_scope() as sess:
+                    docs = sess.exec(select(Document).limit(200)).all()
+                    for d in docs:
+                        if d.id is not None:
+                            selection.add(d.id)
+                _refresh()
+
+            ui.button("Select all (200)", icon="select_all", on_click=_select_all).props("dense flat")
+
         _refresh()
 
     @ui.page("/search")
@@ -1418,6 +1626,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return result
 
         def _render_sources_footer(footer_row, sources: list[dict]) -> None:
+            """Horizontal scroller of source cards beneath an assistant bubble.
+            Each card shows index, filename, page and a short snippet, with
+            View/PDF actions on hover."""
             with footer_row:
                 with (
                     ui.expansion(
@@ -1428,30 +1639,43 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     .classes("ldi-glass-sm")
                     .style("padding: 4px 10px;")
                 ):
-                    for s in sources:
-                        with ui.element("div").classes("ldi-source-card"):
-                            with ui.row().classes("items-start gap-2 w-full no-wrap"):
-                                ui.label(f"[{s.get('n')}]").classes("text-caption ldi-accent").style(
-                                    "min-width: 28px;"
-                                )
-                                with ui.column().classes("flex-1 gap-0"):
-                                    ui.label(f"{s.get('filename')} · p.{s.get('page_from')}").classes(
-                                        "text-body2"
-                                    )
-                                    ui.label(s.get("snippet") or "").classes("text-caption opacity-70")
-                                with ui.row().classes("gap-0 items-center"):
+                    # Horizontal carousel — wraps to multiline only on small
+                    # screens; otherwise pure side-scroll keeps the answer
+                    # area uncluttered when there are many sources.
+                    with (
+                        ui.row().classes("gap-2 no-wrap").style("overflow-x: auto; padding: 4px 2px 6px 2px;")
+                    ):
+                        for s in sources:
+                            with (
+                                ui.card()
+                                .classes("ldi-source-card q-pa-sm")
+                                .style("min-width: 240px; max-width: 280px; " "flex: 0 0 auto;")
+                            ):
+                                with ui.row().classes("items-center gap-2 w-full"):
+                                    ui.label(f"[{s.get('n')}]").classes("ldi-pill text-caption")
+                                    ui.label(f"p.{s.get('page_from')}").classes("ldi-pill text-caption")
+                                    ui.space()
                                     ui.button(
                                         icon="visibility",
                                         on_click=lambda d=s.get("document_id"), p=s.get(
                                             "page_from"
                                         ): ui.navigate.to(f"/viewer?doc={d}&page={p}"),
-                                    ).props("flat dense round").tooltip("View")
+                                    ).props("flat dense round size=sm").tooltip("View")
                                     ui.button(
                                         icon="picture_as_pdf",
                                         on_click=lambda d=s.get("document_id"), p=s.get(
                                             "page_from"
                                         ): open_pdf(d, p),
-                                    ).props("flat dense round").tooltip("PDF")
+                                    ).props("flat dense round size=sm").tooltip("PDF")
+                                ui.label(s.get("filename") or "").classes("text-body2 ellipsis").style(
+                                    "font-weight: 500;"
+                                )
+                                ui.label(s.get("snippet") or "").classes("text-caption opacity-70").style(
+                                    "display: -webkit-box; "
+                                    "-webkit-line-clamp: 3; "
+                                    "-webkit-box-orient: vertical; "
+                                    "overflow: hidden;"
+                                )
 
         # --- Layout: two-column grid -----------------------------------
         with (
@@ -1744,15 +1968,44 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     msg_area.clear()
                     cid = chat_state.get("chat_id")
                     if not cid:
+                        from app.services.suggestions import suggested_starters
+
+                        starters = suggested_starters(limit=6)
                         with (
                             msg_area,
-                            ui.column()
-                            .classes("items-center justify-center w-full")
-                            .style("padding-top: 80px; gap: 12px;"),
+                            ui.column().classes("items-center w-full").style("padding-top: 32px; gap: 18px;"),
                         ):
                             ui.icon("forum").classes("text-6xl opacity-30")
                             ui.label(t("chat.start_or_pick", lang)).classes("opacity-70 text-body1")
                             ui.label(f"💡 {t('chat.ph_ask', lang)}").classes("text-caption opacity-50")
+                            if starters:
+                                ui.label("Try one of these:").classes(
+                                    "text-caption opacity-70 q-mt-md"
+                                ).style("letter-spacing: 0.06em;")
+                                with (
+                                    ui.row()
+                                    .classes("gap-2 flex-wrap justify-center")
+                                    .style("max-width: 720px;")
+                                ):
+                                    for st in starters:
+
+                                        def _use_starter(_q=st["question"]) -> None:
+                                            _new_chat()
+                                            inp.value = _q
+                                            import asyncio as _aio
+
+                                            _aio.create_task(_send())
+
+                                        with (
+                                            ui.card()
+                                            .classes("ldi-glass-sm q-pa-md cursor-pointer")
+                                            .style("max-width: 320px; min-width: 220px;") as starter_card
+                                        ):
+                                            ui.label(st["question"]).classes("text-body2").style(
+                                                "font-weight: 500;"
+                                            )
+                                            ui.label(st["hint"]).classes("text-caption opacity-60 q-mt-xs")
+                                        starter_card.on("click", lambda _e, q=st["question"]: _use_starter(q))
                         chat_header_title.text = t("chat.title", lang)
                         return
                     with session_scope() as session:
