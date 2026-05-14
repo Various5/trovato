@@ -301,7 +301,7 @@ def _layout(user: User, current: str) -> None:
                 ).tooltip("Open Sources")
 
         _refresh_scan_indicator()
-        ui.timer(2.0, _refresh_scan_indicator)
+        ui.timer(3.0, _refresh_scan_indicator)
 
         # Theme cycle button (light/dark quick swap)
         def _cycle_theme() -> None:
@@ -622,7 +622,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             )
 
         _refresh_active()
-        ui.timer(2.0, _refresh_active)
+        ui.timer(3.0, _refresh_active)
 
         # ----- Mini analytics -----
         from app.services.dashboard import overview as _dash_overview
@@ -993,7 +993,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         _refresh()
         # Live progress poll — only refreshes the table area, doesn't reload the page.
-        ui.timer(2.0, _refresh)
+        ui.timer(3.0, _refresh)
 
     @ui.page("/documents")
     def page_documents() -> None:
@@ -2693,4 +2693,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         title=__app_name__,
         favicon=None,
         dark=True,
+        # Give the server a generous grace period before a slow background
+        # job is treated as a "client gone". Heavy CPU work runs in threads
+        # but a single huge PDF can still spike total latency.
+        reconnect_timeout=90.0,
     )

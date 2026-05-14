@@ -372,6 +372,8 @@ async def index_document(
                     return None
                 vecs = await client.embed(embedding_inputs[i : i + batch])
                 embeddings.extend(vecs)
+                # Let the event loop breathe between embedding batches
+                await asyncio.sleep(0)
         except Exception as e:
             logger.warning("embedding failed for {}: {}", path, e)
             embeddings = []
@@ -387,86 +389,88 @@ async def index_document(
                 session.add(d)
         return None
 
-    # Atomic swap: delete old chunks/pages/images for this doc, then insert new
-    # ones in a single session. Vector store + FTS mirror are cleared in the
-    # same step.
-    if doc_id is not None:
-        delete_for_document(doc_id)
-        fts_delete_for_document(doc_id)
-    with session_scope() as session:
-        for table in (DocumentChunk, DocumentPage, DocumentImage, DocumentTagLink):
-            rows = session.exec(
-                select(table).where(table.document_id == doc_id)  # type: ignore[arg-type]
-            ).all()
-            for r in rows:
-                session.delete(r)
-        session.flush()
+    # Atomic swap: delete old chunks/pages/images, then insert new ones.
+    # All synchronous; runs off the event loop so the UI stays responsive
+    # for big documents (1000+ chunks = lots of SQLite writes + Chroma upserts).
+    def _persist_index_sync() -> None:
+        if doc_id is not None:
+            delete_for_document(doc_id)
+            fts_delete_for_document(doc_id)
+        with session_scope() as session:
+            for table in (DocumentChunk, DocumentPage, DocumentImage, DocumentTagLink):
+                rows = session.exec(
+                    select(table).where(table.document_id == doc_id)  # type: ignore[arg-type]
+                ).all()
+                for r in rows:
+                    session.delete(r)
+            session.flush()
 
-        for r in page_rows:
-            session.add(r)
-        for r in image_rows:
-            session.add(r)
-        for rec in chunk_records:
-            session.add(rec)
-        session.flush()
-
-        if embeddings and len(embeddings) == len(chunk_records):
-            ids: list[str] = []
-            docs_for_chroma: list[str] = []
-            metas: list[dict[str, Any]] = []
-            for rec, vec in zip(chunk_records, embeddings, strict=False):
-                rec.embedding_id = str(rec.id)
-                ids.append(str(rec.id))
-                docs_for_chroma.append(rec.text)
-                metas.append(
-                    {
-                        "document_id": int(doc_id) if doc_id else 0,
-                        "source_id": int(source.id) if source.id else 0,
-                        "page_from": rec.page_from,
-                        "page_to": rec.page_to,
-                        "filename": path.name,
-                    }
-                )
-                session.add(rec)
-            try:
-                add_chunks(
-                    ids=ids,
-                    embeddings=embeddings,
-                    documents=docs_for_chroma,
-                    metadatas=metas,
-                )
-            except Exception as e:
-                logger.warning("chroma upsert failed: {}", e)
-
-            # FTS mirror
+            for r in page_rows:
+                session.add(r)
+            for r in image_rows:
+                session.add(r)
             for rec in chunk_records:
-                if rec.id is not None and doc_id is not None:
-                    fts_insert(rec.id, doc_id, rec.text, rec.tags or [])
+                session.add(rec)
+            session.flush()
 
-        # Auto-tagging on aggregated text + vision descriptions
-        agg_text = "\n".join(t for _, t in all_pages_text)[:50_000]
-        vision_text = "\n".join((img.vision_description or "") for img in image_rows)[:20_000]
-        tags = auto_tags(agg_text, vision_text=vision_text)
-        for tag_name in tags:
-            tag_obj = session.exec(select(Tag).where(Tag.name == tag_name)).first()
-            if not tag_obj:
-                tag_obj = Tag(name=tag_name, auto=True)
-                session.add(tag_obj)
-                session.flush()
-            session.add(
-                DocumentTagLink(document_id=doc_id, tag_id=tag_obj.id, auto=True)  # type: ignore[arg-type]
-            )
+            if embeddings and len(embeddings) == len(chunk_records):
+                ids: list[str] = []
+                docs_for_chroma: list[str] = []
+                metas: list[dict[str, Any]] = []
+                for rec, _vec in zip(chunk_records, embeddings, strict=False):
+                    rec.embedding_id = str(rec.id)
+                    ids.append(str(rec.id))
+                    docs_for_chroma.append(rec.text)
+                    metas.append(
+                        {
+                            "document_id": int(doc_id) if doc_id else 0,
+                            "source_id": int(source.id) if source.id else 0,
+                            "page_from": rec.page_from,
+                            "page_to": rec.page_to,
+                            "filename": path.name,
+                        }
+                    )
+                    session.add(rec)
+                try:
+                    add_chunks(
+                        ids=ids,
+                        embeddings=embeddings,
+                        documents=docs_for_chroma,
+                        metadatas=metas,
+                    )
+                except Exception as e:
+                    logger.warning("chroma upsert failed: {}", e)
 
-        d = session.get(Document, doc_id)
-        if d:
-            d.page_count = page_count
-            d.indexed_at = utcnow()
-            d.status = DocumentStatus.indexed
-            d.error = None
-            d.language = detect_language(agg_text)
-            d.doc_type = detect_doc_type(agg_text)
-            d.content_hash = content_hash  # commit the new hash only on success
-            session.add(d)
+                for rec in chunk_records:
+                    if rec.id is not None and doc_id is not None:
+                        fts_insert(rec.id, doc_id, rec.text, rec.tags or [])
+
+            # Auto-tagging on aggregated text + vision descriptions
+            agg_text = "\n".join(t for _, t in all_pages_text)[:50_000]
+            vision_text = "\n".join((img.vision_description or "") for img in image_rows)[:20_000]
+            tags = auto_tags(agg_text, vision_text=vision_text)
+            for tag_name in tags:
+                tag_obj = session.exec(select(Tag).where(Tag.name == tag_name)).first()
+                if not tag_obj:
+                    tag_obj = Tag(name=tag_name, auto=True)
+                    session.add(tag_obj)
+                    session.flush()
+                session.add(
+                    DocumentTagLink(document_id=doc_id, tag_id=tag_obj.id, auto=True)  # type: ignore[arg-type]
+                )
+
+            d = session.get(Document, doc_id)
+            if d:
+                d.page_count = page_count
+                d.indexed_at = utcnow()
+                d.status = DocumentStatus.indexed
+                d.error = None
+                d.language = detect_language(agg_text)
+                d.doc_type = detect_doc_type(agg_text)
+                d.content_hash = content_hash  # commit the new hash only on success
+                session.add(d)
+
+    await asyncio.to_thread(_persist_index_sync)
 
     logger.info("indexed {} ({} pages, {} chunks)", path.name, page_count, len(chunk_records))
     return doc_id
@@ -690,6 +694,9 @@ async def run_scan_job(
                     if not doc_id:
                         j.error_count += 1
                     session.add(j)
+            # Yield to the event loop between files so the progress UI
+            # can refresh and the websocket stays alive.
+            await asyncio.sleep(0)
 
         with session_scope() as session:
             source = session.get(DocumentSource, source_id)
