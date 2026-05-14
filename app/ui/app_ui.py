@@ -938,28 +938,68 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         f"{t('sources.last_scan', lang)} {s.last_scan_at:%Y-%m-%d %H:%M}"
                                     ).classes("text-caption opacity-60")
                             with ui.row().classes("gap-1 flex-shrink-0"):
+                                def _start(
+                                    sid: int,
+                                    phase: str,
+                                    note_key: str,
+                                ) -> None:
+                                    start_scan_in_background(sid, phase=phase)
+                                    ui.notify(t(note_key, lang))
+                                    _refresh()
+
+                                with ui.button(icon="play_arrow").props(
+                                    "color=primary dense round"
+                                ).tooltip(t("sources.scan", lang)):
+                                    with ui.menu():
+                                        ui.menu_item(
+                                            t("sources.phase_quick", lang),
+                                            on_click=lambda sid=s.id: _start(
+                                                sid, "quick", "sources.scan_started"
+                                            ),
+                                        )
+                                        ui.menu_item(
+                                            t("sources.phase_text", lang),
+                                            on_click=lambda sid=s.id: _start(
+                                                sid, "text", "sources.scan_started"
+                                            ),
+                                        )
+                                        ui.menu_item(
+                                            t("sources.phase_ocr", lang),
+                                            on_click=lambda sid=s.id: _start(
+                                                sid, "ocr", "sources.ocr_started"
+                                            ),
+                                        )
+                                        ui.menu_item(
+                                            t("sources.phase_vision", lang),
+                                            on_click=lambda sid=s.id: _start(
+                                                sid, "vision", "sources.vision_started"
+                                            ),
+                                        )
+                                        ui.separator()
+                                        ui.menu_item(
+                                            t("sources.phase_full", lang),
+                                            on_click=lambda sid=s.id: _start(
+                                                sid, "full", "sources.scan_started"
+                                            ),
+                                        )
                                 ui.button(
-                                    icon="play_arrow",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid),
-                                        ui.notify(t("sources.scan_started", lang)),
-                                        _refresh(),
+                                    icon="bolt",
+                                    on_click=lambda sid=s.id: _start(
+                                        sid, "quick", "sources.scan_started"
                                     ),
-                                ).props("color=primary dense round").tooltip(t("sources.scan", lang))
+                                ).props("flat dense round").tooltip(
+                                    t("sources.phase_quick", lang)
+                                )
                                 ui.button(
                                     icon="text_fields",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid, force_ocr=True),
-                                        ui.notify(t("sources.ocr_started", lang)),
-                                        _refresh(),
+                                    on_click=lambda sid=s.id: _start(
+                                        sid, "ocr", "sources.ocr_started"
                                     ),
                                 ).props("flat dense round").tooltip(t("sources.force_ocr", lang))
                                 ui.button(
                                     icon="image",
-                                    on_click=lambda sid=s.id: (
-                                        start_scan_in_background(sid, force_vision=True),
-                                        ui.notify(t("sources.vision_started", lang)),
-                                        _refresh(),
+                                    on_click=lambda sid=s.id: _start(
+                                        sid, "vision", "sources.vision_started"
                                     ),
                                 ).props("flat dense round").tooltip(t("sources.vision", lang))
                                 ui.button(

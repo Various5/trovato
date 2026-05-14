@@ -97,11 +97,36 @@ async def index_document(
     force_ocr: bool = False,
     force_vision: bool = False,
     force_embed: bool = False,
+    phase: str = "full",
     controller: JobController | None = None,
 ) -> int | None:
-    """Index a single file. Returns document_id or None on failure/skip."""
+    """Index a single file. Returns ``document_id`` or ``None`` on failure/skip.
+
+    ``phase`` controls what work is actually done:
+        * ``quick``  — only hash + Document row (fastest, hundreds/min).
+        * ``text``   — native PDF text + embeddings, *no* OCR, *no* vision.
+        * ``ocr``    — same as text but with OCR fallback on low-text pages.
+        * ``vision`` — same as OCR plus vision descriptions of images.
+        * ``full``   — backward-compatible: behaves like ocr + force_vision.
+
+    ``force_ocr`` / ``force_vision`` still work (per-file overrides).
+    """
     s = get_settings()
     client = get_client()
+
+    # Phase resolution — what each phase enables/disables:
+    do_ocr = (
+        force_ocr
+        or phase == "ocr"
+        or phase == "vision"
+        or (phase == "full" and force_ocr)
+    )
+    do_vision = (
+        force_vision
+        or phase == "vision"
+        or (phase == "full" and force_vision)
+    )
+    catalog_only = phase == "quick"
 
     try:
         content_hash = sha256_file(path)
@@ -114,10 +139,15 @@ async def index_document(
     # previous index usable).
     with session_scope() as session:
         doc = session.exec(select(Document).where(Document.path == str(path))).first()
+        # Skip only if the file is unchanged AND we have a usable index for the
+        # phase being requested.  A document that was just catalog-indexed
+        # (``page_count == 0``) still needs the heavier phases to run.
+        has_real_index = doc is not None and (doc.page_count or 0) > 0
         unchanged = (
             doc is not None
             and doc.content_hash == content_hash
             and not (force_ocr or force_vision or force_embed)
+            and (catalog_only or has_real_index)
         )
         if unchanged:
             return doc.id  # type: ignore[return-value]
@@ -150,6 +180,20 @@ async def index_document(
         session.add(doc)
         session.flush()
         doc_id = doc.id
+
+    # Quick / catalog-only phase: just record the file in the index and stop.
+    # This lets the user see all PDFs as a browsable list within seconds —
+    # text extraction + embeddings can run as a later phase.
+    if catalog_only:
+        with session_scope() as session:
+            d = session.get(Document, doc_id)
+            if d:
+                d.status = DocumentStatus.indexed
+                d.content_hash = content_hash
+                d.error = None
+                session.add(d)
+        logger.info("cataloged {} (quick phase)", path.name)
+        return doc_id
 
     # If we got here with the same content hash but force_* is set, we still
     # rebuild. If embeddings already exist and only force_embed is set, we can
@@ -227,7 +271,8 @@ async def index_document(
                     extract_pdf(
                         path,
                         doc_id_for_cache=doc_id or content_hash[:10],
-                        force_ocr=force_ocr,
+                        force_ocr=do_ocr,
+                        extract_images=do_vision,
                     )
                 )
 
@@ -255,7 +300,7 @@ async def index_document(
             )
             for img in pc.images:
                 vision_desc = ""
-                if force_vision and s.vision_model:
+                if do_vision and s.vision_model:
                     try:
                         vision_desc = await client.describe_image(img.cache_path)
                     except Exception as e:
@@ -366,7 +411,7 @@ async def index_document(
     embeddings: list[list[float]] = []
     if embedding_inputs:
         try:
-            batch = 32
+            batch = 128
             for i in range(0, len(embedding_inputs), batch):
                 if controller and not await controller.gate():
                     return None
@@ -484,6 +529,7 @@ async def index_document(
 async def resume_scan_job(job_id: int) -> int:
     """Continue an existing job: process every ScanJobItem still in ``pending``
     or ``processing`` status. Used at startup to recover from crashes."""
+    s = get_settings()
     with session_scope() as session:
         job = session.get(ScanJob, job_id)
         if not job:
@@ -506,19 +552,21 @@ async def resume_scan_job(job_id: int) -> int:
         item_snapshots = [(it.id, it.path) for it in items]
         options = dict(job.options or {})
 
+    phase = options.get("phase", "full")
     controller = JobController(job_id=job_id)
     JOB_CONTROLLER[job_id] = controller
 
-    try:
-        for item_id, item_path in item_snapshots:
+    if phase == "quick":
+        concurrency = max(4, min(16, (s.parallel_workers or 2) * 4))
+    else:
+        concurrency = max(1, s.parallel_workers or 2)
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+
+    async def _process_one(item_id: int | None, item_path: str) -> None:
+        async with sem:
             if not await controller.gate():
-                with session_scope() as session:
-                    j = session.get(ScanJob, job_id)
-                    if j:
-                        j.status = ScanJobStatus.aborted
-                        j.ended_at = utcnow()
-                        session.add(j)
-                return job_id
+                return
 
             with session_scope() as session:
                 j = session.get(ScanJob, job_id)
@@ -527,16 +575,21 @@ async def resume_scan_job(job_id: int) -> int:
                     session.add(j)
 
             if source_snapshot is None or options.get("dry_run"):
-                doc_id = None
+                doc_id: int | None = None
             else:
-                doc_id = await index_document(
-                    source_snapshot,
-                    Path(item_path),
-                    force_ocr=options.get("force_ocr", False),
-                    force_vision=options.get("force_vision", False),
-                    force_embed=options.get("force_embed", False),
-                    controller=controller,
-                )
+                try:
+                    doc_id = await index_document(
+                        source_snapshot,
+                        Path(item_path),
+                        force_ocr=options.get("force_ocr", False),
+                        force_vision=options.get("force_vision", False),
+                        force_embed=options.get("force_embed", False),
+                        phase=phase,
+                        controller=controller,
+                    )
+                except Exception as e:
+                    logger.exception("index_document crashed for {}: {}", item_path, e)
+                    doc_id = None
 
             with session_scope() as session:
                 item = session.get(ScanJobItem, item_id)
@@ -545,12 +598,39 @@ async def resume_scan_job(job_id: int) -> int:
                     item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
                     item.ended_at = utcnow()
                     session.add(item)
+            async with lock:
+                with session_scope() as session:
+                    j = session.get(ScanJob, job_id)
+                    if j:
+                        j.processed_files = min(
+                            j.processed_files + 1,
+                            j.total_files or j.processed_files + 1,
+                        )
+                        if not doc_id:
+                            j.error_count += 1
+                        session.add(j)
+            await asyncio.sleep(0)
+
+    try:
+        tasks = [
+            asyncio.create_task(_process_one(it_id, it_path))
+            for it_id, it_path in item_snapshots
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            raise
+
+        if controller.abort_event.is_set():
+            with session_scope() as session:
                 j = session.get(ScanJob, job_id)
                 if j:
-                    j.processed_files = min(j.processed_files + 1, j.total_files or j.processed_files + 1)
-                    if not doc_id:
-                        j.error_count += 1
+                    j.status = ScanJobStatus.aborted
+                    j.ended_at = utcnow()
                     session.add(j)
+            return job_id
 
         with session_scope() as session:
             j = session.get(ScanJob, job_id)
@@ -587,9 +667,17 @@ async def run_scan_job(
     force_vision: bool = False,
     force_embed: bool = False,
     dry_run: bool = False,
+    phase: str = "full",
 ) -> int:
-    """Create a ScanJob and process all candidate files. Returns job_id."""
+    """Create a ScanJob and process all candidate files.
 
+    ``phase`` is passed straight through to ``index_document`` and changes
+    how much work is done per file. The default ``full`` keeps backward
+    compatibility with all the existing UI buttons; the new fast variants
+    are ``quick``, ``text``, ``ocr`` and ``vision``.
+    """
+
+    s = get_settings()
     with session_scope() as session:
         source = session.get(DocumentSource, source_id)
         if not source:
@@ -603,6 +691,7 @@ async def run_scan_job(
                 "force_vision": force_vision,
                 "force_embed": force_embed,
                 "dry_run": dry_run,
+                "phase": phase,
             },
         )
         session.add(job)
@@ -619,8 +708,9 @@ async def run_scan_job(
     try:
         # ----- LM Studio preflight ----------------------------------------
         # If embeddings aren't going to work, fail loudly *once* instead of
-        # retrying for every PDF in a 5000-file source.
-        if not dry_run:
+        # retrying for every PDF in a 5000-file source.  Quick phase only
+        # catalogs filenames so embeddings aren't required.
+        if not dry_run and phase != "quick":
             client = get_client()
             ok, message = await client.preflight_embed()
             if not ok:
@@ -643,60 +733,96 @@ async def run_scan_job(
                 j.total_files = len(files)
                 session.add(j)
 
-        for idx, df in enumerate(files, start=1):
-            if not await controller.gate():
+        # Parallel file processing: quick-phase scales widely (just hashing +
+        # SQLite writes), the heavier phases stay bounded by parallel_workers
+        # so OCR/embedding/Chroma don't thrash.
+        if phase == "quick":
+            concurrency = max(4, min(16, (s.parallel_workers or 2) * 4))
+        else:
+            concurrency = max(1, s.parallel_workers or 2)
+        sem = asyncio.Semaphore(concurrency)
+        processed = 0
+        errors = 0
+        lock = asyncio.Lock()
+
+        async def _process_one(idx: int, df: Any) -> None:
+            nonlocal processed, errors
+            async with sem:
+                if not await controller.gate():
+                    return
+
                 with session_scope() as session:
+                    item = ScanJobItem(
+                        job_id=job_id,
+                        path=df.remote_path,
+                        status=DocumentStatus.processing,
+                        started_at=utcnow(),
+                    )
+                    session.add(item)
+                    session.flush()
+                    item_id = item.id
                     j = session.get(ScanJob, job_id)
                     if j:
-                        j.status = ScanJobStatus.aborted
-                        j.ended_at = utcnow()
+                        j.current_file = df.local_path.name
                         session.add(j)
-                return job_id
 
-            with session_scope() as session:
-                item = ScanJobItem(
-                    job_id=job_id,
-                    path=df.remote_path,
-                    status=DocumentStatus.processing,
-                    started_at=utcnow(),
-                )
-                session.add(item)
-                session.flush()
-                item_id = item.id
-                j = session.get(ScanJob, job_id)
-                if j:
-                    j.current_file = df.local_path.name
-                    j.processed_files = idx - 1
-                    session.add(j)
+                if dry_run:
+                    doc_id: int | None = None
+                else:
+                    try:
+                        doc_id = await index_document(
+                            source_snapshot,
+                            df.local_path,
+                            force_ocr=force_ocr,
+                            force_vision=force_vision,
+                            force_embed=force_embed,
+                            phase=phase,
+                            controller=controller,
+                        )
+                    except Exception as e:
+                        logger.exception("index_document crashed for {}: {}", df.local_path, e)
+                        doc_id = None
 
-            if dry_run:
-                doc_id = None
-            else:
-                doc_id = await index_document(
-                    source_snapshot,
-                    df.local_path,
-                    force_ocr=force_ocr,
-                    force_vision=force_vision,
-                    force_embed=force_embed,
-                    controller=controller,
-                )
-
-            with session_scope() as session:
-                item = session.get(ScanJobItem, item_id)
-                if item:
-                    item.document_id = doc_id
-                    item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
-                    item.ended_at = utcnow()
-                    session.add(item)
-                j = session.get(ScanJob, job_id)
-                if j:
-                    j.processed_files = idx
+                async with lock:
+                    processed += 1
                     if not doc_id:
-                        j.error_count += 1
+                        errors += 1
+                    snap_processed = processed
+                    snap_errors = errors
+
+                with session_scope() as session:
+                    item = session.get(ScanJobItem, item_id)
+                    if item:
+                        item.document_id = doc_id
+                        item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
+                        item.ended_at = utcnow()
+                        session.add(item)
+                    j = session.get(ScanJob, job_id)
+                    if j:
+                        j.processed_files = snap_processed
+                        j.error_count = snap_errors
+                        session.add(j)
+                await asyncio.sleep(0)
+
+        tasks = [
+            asyncio.create_task(_process_one(idx, df))
+            for idx, df in enumerate(files, start=1)
+        ]
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            raise
+
+        if controller.abort_event.is_set():
+            with session_scope() as session:
+                j = session.get(ScanJob, job_id)
+                if j:
+                    j.status = ScanJobStatus.aborted
+                    j.ended_at = utcnow()
                     session.add(j)
-            # Yield to the event loop between files so the progress UI
-            # can refresh and the websocket stays alive.
-            await asyncio.sleep(0)
+            return job_id
 
         with session_scope() as session:
             source = session.get(DocumentSource, source_id)

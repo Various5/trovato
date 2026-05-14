@@ -127,6 +127,11 @@ _DICT: dict[str, dict[str, str]] = {
         "sources.ocr_started": "OCR scan started",
         "sources.vision_started": "Vision scan started",
         "sources.dryrun_started": "Dry run started",
+        "sources.phase_quick": "Quick (filenames only)",
+        "sources.phase_text": "Text (native PDFs, no OCR)",
+        "sources.phase_ocr": "OCR (scanned PDFs)",
+        "sources.phase_vision": "Vision (images + OCR)",
+        "sources.phase_full": "Full (everything)",
         # tags
         "tags.title": "Tags",
         "tags.auto": "(auto)",
@@ -367,6 +372,11 @@ _DICT: dict[str, dict[str, str]] = {
         "sources.ocr_started": "OCR-Scan gestartet",
         "sources.vision_started": "Vision-Scan gestartet",
         "sources.dryrun_started": "Probelauf gestartet",
+        "sources.phase_quick": "Schnell (nur Dateinamen)",
+        "sources.phase_text": "Text (Text-PDFs, ohne OCR)",
+        "sources.phase_ocr": "OCR (Scan-PDFs)",
+        "sources.phase_vision": "Vision (Bilder + OCR)",
+        "sources.phase_full": "Vollständig (alles)",
         # tags
         "tags.title": "Tags",
         "tags.auto": "(auto)",
