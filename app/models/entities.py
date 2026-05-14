@@ -359,3 +359,19 @@ class AuditEvent(SQLModel, table=True):
     event: str
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class SavedSearch(SQLModel, table=True):
+    __tablename__ = "saved_searches"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    name: str = Field(max_length=120)
+    query: str = Field(sa_column=Column(Text))
+    source_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    doc_types: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rerank: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
+    last_used_at: datetime | None = None
+    use_count: int = 0

@@ -10,6 +10,7 @@ from app.api.routes import (
     export,
     health,
     lmstudio,
+    saved_searches,
     scan,
     search,
     settings,
@@ -25,6 +26,7 @@ api_router.include_router(sources.router, prefix="/sources", tags=["sources"])
 api_router.include_router(scan.router, prefix="/scan", tags=["scan"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
 api_router.include_router(search.router, prefix="/search", tags=["search"])
+api_router.include_router(saved_searches.router, prefix="/saved-searches", tags=["search"])
 api_router.include_router(chat.router, prefix="/chats", tags=["chat"])
 api_router.include_router(tags.router, prefix="/tags", tags=["tags"])
 api_router.include_router(backup.router, prefix="/backup", tags=["backup"])

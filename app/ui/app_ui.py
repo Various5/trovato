@@ -1250,7 +1250,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 stmt = stmt.order_by(Document.id.desc()).limit(200)  # type: ignore
                 for d in session.exec(stmt).all():
                     with ui.card().classes("w-full p-3"):
-                        with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                        with ui.row().classes("items-start gap-3 w-full no-wrap"):
                             cb = ui.checkbox(value=d.id in selection)
 
                             def _toggle(e, _did=d.id) -> None:
@@ -1261,6 +1261,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 _update_bulk_bar()
 
                             cb.on("update:model-value", _toggle)
+                            # Page-1 thumbnail — browser-lazy so we don't
+                            # blast the server with N parallel renders.
+                            thumb_url = f"/api/documents/{d.id}/page/1/image"
+                            ui.html(f"""
+<div class="ldi-glass-sm" style="width:120px; min-width:120px; height:150px;
+   overflow:hidden; display:flex; align-items:center; justify-content:center;
+   cursor:pointer;" onclick="window.location.href='/viewer?doc={d.id}&amp;page=1'">
+  <img src="{thumb_url}" loading="lazy" referrerpolicy="no-referrer"
+       style="max-width:100%; max-height:100%; object-fit:contain;"
+       onerror="this.style.display='none';this.parentElement.innerHTML=
+       '<div style=&quot;opacity:0.4;font-size:11px;text-align:center&quot;>no preview</div>'"/>
+</div>
+""")
                             with ui.column().classes("flex-1 gap-0 min-w-0"):
                                 ui.label(d.filename).classes("text-h6")
                                 ui.label(d.path).classes("text-caption opacity-70 break-all")
@@ -1270,7 +1283,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     f"{t('docs.type', lang)}: {d.doc_type or '—'} · "
                                     f"{t('docs.lang', lang)}: {d.language or '—'}"
                                 ).classes("text-caption")
-                                with ui.row().classes("gap-1 q-mt-xs"):
+                                with ui.row().classes("gap-1 q-mt-xs flex-wrap"):
                                     ui.button(
                                         t("docs.btn_view", lang),
                                         icon="visibility",
@@ -1291,6 +1304,29 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         icon="summarize",
                                         on_click=lambda did=d.id, fname=d.filename: _show_summary(did, fname),
                                     ).props("dense flat")
+
+                                    async def _reocr(did=d.id, dpath=d.path, src_id=d.source_id) -> None:
+                                        from pathlib import Path as _P
+
+                                        from app.services.indexer import index_document
+
+                                        with session_scope() as sess:
+                                            src = sess.get(DocumentSource, src_id)
+                                            if src is None:
+                                                ui.notify("Source missing", color="negative")
+                                                return
+                                            snap = DocumentSource(**src.model_dump())
+                                        ui.notify(
+                                            f"Re-OCR queued for {_P(dpath).name}",
+                                            color="positive",
+                                        )
+                                        import asyncio as _aio
+
+                                        _aio.create_task(index_document(snap, _P(dpath), force_ocr=True))
+
+                                    ui.button("Re-OCR", icon="text_fields", on_click=_reocr).props(
+                                        "dense flat"
+                                    )
 
         with ui.row().classes("items-center gap-2"):
             q_input.on("change", lambda _: _refresh())
@@ -1325,6 +1361,112 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         # Filter state — read by _go() before each search
         filter_state: dict[str, list] = {"source_ids": [], "tags": [], "doc_types": []}
+
+        # ----- Saved searches row -----
+        from app.models import SavedSearch
+
+        saved_row = ui.row().classes("items-center gap-2 q-mt-xs flex-wrap")
+
+        def _refresh_saved() -> None:
+            saved_row.clear()
+            with saved_row, session_scope() as session:
+                rows = session.exec(
+                    select(SavedSearch)
+                    .where(SavedSearch.user_id == user.id)
+                    .order_by(SavedSearch.last_used_at.desc().nullslast(), SavedSearch.id.desc())  # type: ignore[attr-defined]
+                    .limit(12)
+                ).all()
+                if not rows:
+                    ui.label("No saved searches yet — run a query then click the bookmark icon.").classes(
+                        "text-caption opacity-60"
+                    )
+                    return
+                ui.label("Saved:").classes("text-caption opacity-60")
+                for s in rows:
+
+                    def _load(
+                        sid=s.id,
+                        name=s.name,
+                        query=s.query,
+                        src=tuple(s.source_ids),
+                        tg=tuple(s.tags),
+                        dt=tuple(s.doc_types),
+                        rr=s.rerank,
+                    ) -> None:
+                        q.value = query
+                        rerank_toggle.value = rr
+                        filter_state["source_ids"] = list(src)
+                        filter_state["tags"] = list(tg)
+                        filter_state["doc_types"] = list(dt)
+                        # Mark as used
+                        with session_scope() as sess:
+                            row = sess.get(SavedSearch, sid)
+                            if row:
+                                from datetime import datetime as _dt
+
+                                row.last_used_at = _dt.now(UTC)
+                                row.use_count += 1
+                                sess.add(row)
+                        import asyncio as _aio
+
+                        _aio.create_task(_go())
+
+                    with ui.row().classes("items-center gap-0"):
+                        ui.button(s.name, on_click=_load).props("flat dense no-caps").classes("ldi-pill")
+
+                        def _delete_saved(sid=s.id) -> None:
+                            with session_scope() as sess:
+                                row = sess.get(SavedSearch, sid)
+                                if row and row.user_id == user.id:
+                                    sess.delete(row)
+                            _refresh_saved()
+                            ui.notify("Saved search removed", color="positive")
+
+                        ui.button(icon="close", on_click=_delete_saved).props(
+                            "flat dense round size=xs"
+                        ).style("min-height: 0;")
+
+        def _save_current() -> None:
+            query = (q.value or "").strip()
+            if not query:
+                ui.notify("Enter a search query first", color="warning")
+                return
+            with ui.dialog() as d, ui.card().classes("w-[400px] p-4"):
+                ui.label("Save this search").classes("text-h6 ldi-primary")
+                ui.label(f"Query: {query!r}").classes("text-caption opacity-70")
+                if any(filter_state.values()):
+                    parts = []
+                    if filter_state["source_ids"]:
+                        parts.append(f"{len(filter_state['source_ids'])} source(s)")
+                    if filter_state["tags"]:
+                        parts.append(f"{len(filter_state['tags'])} tag(s)")
+                    if filter_state["doc_types"]:
+                        parts.append(f"{len(filter_state['doc_types'])} type(s)")
+                    ui.label("Filters: " + ", ".join(parts)).classes("text-caption opacity-70")
+                name_in = ui.input("Name", value=query[:50]).classes("w-full q-mt-md")
+
+                def _do_save() -> None:
+                    nm = (name_in.value or "").strip() or query[:50]
+                    with session_scope() as sess:
+                        sess.add(
+                            SavedSearch(
+                                user_id=user.id,  # type: ignore[arg-type]
+                                name=nm,
+                                query=query,
+                                source_ids=list(filter_state["source_ids"]),
+                                tags=list(filter_state["tags"]),
+                                doc_types=list(filter_state["doc_types"]),
+                                rerank=bool(rerank_toggle.value),
+                            )
+                        )
+                    ui.notify(f"Saved as '{nm}'", color="positive")
+                    d.close()
+                    _refresh_saved()
+
+                with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                    ui.button("Cancel", on_click=d.close).props("flat")
+                    ui.button("Save", on_click=_do_save).props("color=primary")
+            d.open()
 
         from app.models import Tag
 
@@ -1524,6 +1666,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         with ui.row().classes("gap-2"):
             ui.button(t("search.go", lang), icon="search", on_click=_go).props("color=primary")
+            ui.button("Save search", icon="bookmark_add", on_click=_save_current).props("dense")
 
             async def _export(fmt: str) -> None:
                 from app.services.exports import search_hits_to_csv, search_hits_to_json
@@ -1544,6 +1687,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "dense"
             )
         q.on("keydown.enter", lambda _: _go())
+        _refresh_saved()
 
     @ui.page("/chat")
     def page_chat() -> None:

@@ -16,6 +16,7 @@ from app.models.entities import (  # noqa: F401
     DocumentStatus,
     DocumentTagLink,
     ModelConfig,
+    SavedSearch,
     ScanJob,
     ScanJobItem,
     ScanJobStatus,
