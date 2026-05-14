@@ -1746,9 +1746,70 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             "max-height: 200px; overflow: auto;"
                         )
 
+            async def _debug_embed() -> None:
+                """Probe every plausible embeddings endpoint and show the raw
+                response from each. Diagnose without DevTools."""
+                import httpx as _httpx
+
+                mid = (emb_model.value or "").strip()
+                base = (url.value or s.lmstudio_base_url).rstrip("/")
+                if not mid:
+                    ui.notify("Enter an embedding model id first", color="warning")
+                    return
+                native = base[: -len("/v1")] if base.endswith("/v1") else base
+                candidates = [
+                    f"{base}/embeddings",
+                    f"{native}/api/v0/embeddings",
+                    f"{base}/embedding",
+                ]
+                payload = {"model": mid, "input": ["debug ping"]}
+                rows: list[tuple[str, str, str]] = []
+                async with _httpx.AsyncClient(
+                    timeout=12.0,
+                    headers={
+                        "Authorization": "Bearer lm-studio",
+                        "Content-Type": "application/json",
+                    },
+                ) as ac:
+                    for ep in candidates:
+                        try:
+                            r = await ac.post(ep, json=payload)
+                            rows.append((ep, str(r.status_code), r.text[:800]))
+                        except Exception as e:
+                            rows.append((ep, "ERROR", f"{type(e).__name__}: {e}"))
+
+                with ui.dialog() as dialog, ui.card().classes("w-[720px] p-4"):
+                    ui.label("Embedding endpoint diagnostic").classes("text-h6 ldi-primary")
+                    ui.label(f"Model: {mid}").classes("text-caption opacity-80 q-mb-sm")
+                    for ep, status, body in rows:
+                        is_ok = (
+                            status.isdigit()
+                            and 200 <= int(status) < 300
+                            and ('"embedding"' in body or '"data"' in body)
+                        )
+                        with ui.expansion(
+                            f"{ep}  →  {status}",
+                            icon="check_circle" if is_ok else "report",
+                        ).classes("w-full q-mb-xs"):
+                            ui.code(body, language="json").classes("w-full").style(
+                                "max-height: 260px; overflow: auto;"
+                            )
+                    ui.markdown(
+                        "**How to read this:**\n"
+                        '- `200` + body with `"embedding"`: endpoint works ✓\n'
+                        '- `200` + `{"error":"Unexpected endpoint…"}`: '
+                        "llama.cpp's wrong-path quirk — try a different URL\n"
+                        "- `404`: path doesn't exist on this server\n"
+                        '- `400` + `"Model not found"`: model id wrong / not loaded'
+                    ).classes("text-caption q-mt-md")
+                    with ui.row().classes("justify-end w-full q-mt-md"):
+                        ui.button("Close", on_click=dialog.close).props("flat")
+                dialog.open()
+
             with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
                 ui.button(t("settings.test_connection", lang), icon="cable", on_click=_test).props("dense")
                 ui.button("Test embedding", icon="psychology", on_click=_test_embed).props("dense")
+                ui.button("Debug embedding", icon="bug_report", on_click=_debug_embed).props("dense")
                 ui.button("Browse models", icon="list", on_click=_browse_models).props("dense")
                 ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
 

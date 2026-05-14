@@ -197,48 +197,58 @@ class LMStudioClient:
         #   1. /embeddings        — OpenAI standard on the existing /v1 base
         #   2. /api/v0/embeddings — LM Studio native API (sibling of /v1)
         #   3. /embedding         — old llama.cpp server (singular)
+        #
+        # Some llama.cpp builds bound inside LM Studio return HTTP 200 with
+        # ``{"error": "Unexpected endpoint..."}`` for the wrong path, instead
+        # of a 404. Treat any payload that contains a top-level ``error`` key
+        # without ``data`` as "wrong path, try the next one".
         async with await self._client() as c:
             base = str(c.base_url).rstrip("/")
             sibling_native = base[: -len("/v1")] + "/api/v0/embeddings" if base.endswith("/v1") else None
-            attempts: list[tuple[str, str]] = [
+            attempts: list[tuple[str, str]] = []
+            if sibling_native:
+                # LM Studio's native API is the most reliable on builds that
+                # don't ship the OpenAI shim's /v1/embeddings — try it first.
+                attempts.append(("native", sibling_native))
+            attempts += [
                 ("relative", "/embeddings"),
                 ("relative-singular", "/embedding"),
             ]
-            if sibling_native:
-                attempts.append(("native", sibling_native))
 
-            last_status = 0
-            last_text = ""
             data: Any = None
+            attempt_log: list[str] = []
             for kind, ep in attempts:
                 try:
-                    if kind == "native":
-                        r = await c.post(ep, json={"model": model, "input": items})
-                    else:
-                        r = await c.post(ep, json={"model": model, "input": items})
+                    r = await c.post(ep, json={"model": model, "input": items})
                 except Exception as e:
-                    last_text = f"{type(e).__name__}: {e}"
+                    attempt_log.append(f"{kind}({ep}): {type(e).__name__}: {e}")
                     continue
-                last_status = r.status_code
-                last_text = r.text[:300]
-                if r.status_code < 400:
-                    try:
-                        data = r.json()
-                    except Exception as e:
-                        raise LMStudioError(f"invalid embeddings JSON: {e}") from None
-                    break
-                # 404 on this path → try the next one
+                attempt_log.append(f"{kind}({ep}): {r.status_code}")
                 if r.status_code == 404:
                     continue
-                # Anything else (5xx, 400 with diagnostic) → stop and surface it
-                raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
+                if r.status_code >= 400:
+                    # 5xx / 400 — surface immediately with raw body
+                    raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
+                try:
+                    candidate = r.json()
+                except Exception as e:
+                    raise LMStudioError(f"invalid embeddings JSON: {e}") from None
+                # Treat "200 OK + error-only payload" as a wrong-path response
+                # (llama.cpp's "Returning 200 anyway" quirk).
+                if (
+                    isinstance(candidate, dict)
+                    and "error" in candidate
+                    and not candidate.get("data")
+                    and not candidate.get("embeddings")
+                ):
+                    attempt_log[-1] += f" (200/error: {str(candidate.get('error'))[:80]})"
+                    continue
+                data = candidate
+                break
+
             if data is None:
-                # All attempts 404'd or errored — give a hint that's useful.
                 raise LMStudioError(
-                    f"no embeddings endpoint responded (last: {last_status} "
-                    f"{last_text[:200]}). In LM Studio, open Developer → ensure "
-                    f"your embedding model is loaded as an EMBEDDING type, then "
-                    f"restart the server."
+                    "no embeddings endpoint responded with vectors. " f"Attempts: {' | '.join(attempt_log)}"
                 )
 
         # The OpenAI standard shape is {"data": [{"embedding": [..]}]}, but
