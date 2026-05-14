@@ -196,7 +196,38 @@ class LMStudioClient:
             if r.status_code >= 400:
                 raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
             data = r.json()
-            return [row["embedding"] for row in data["data"]]
+
+        # The OpenAI standard shape is {"data": [{"embedding": [..]}]}, but
+        # some llama.cpp-based backends inside LM Studio emit alternatives:
+        #   - bare list-of-lists
+        #   - {"embeddings": [[..]]}
+        #   - {"data": [[..]]}  (no "embedding" key)
+        # Handle all of them — and fall back to a clear error rather than
+        # KeyError.
+        rows: list[Any]
+        if isinstance(data, dict):
+            if "error" in data:
+                raise LMStudioError(f"embeddings error: {data['error']}")
+            rows = data.get("data") or data.get("embeddings") or []
+            if not rows:
+                raise LMStudioError(f"empty embeddings response (keys: {sorted(data)})")
+        elif isinstance(data, list):
+            rows = data
+        else:
+            raise LMStudioError(f"unexpected response type: {type(data).__name__}")
+
+        results: list[list[float]] = []
+        for row in rows:
+            if isinstance(row, dict):
+                vec = row.get("embedding") or row.get("vector")
+                if vec is None:
+                    raise LMStudioError(f"row missing 'embedding': keys={sorted(row)[:5]}")
+                results.append(list(vec))
+            elif isinstance(row, list):
+                results.append(list(row))
+            else:
+                raise LMStudioError(f"unexpected row type: {type(row).__name__}")
+        return results
 
     # ---- preflight --------------------------------------------------------
 

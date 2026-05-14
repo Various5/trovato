@@ -1612,13 +1612,23 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ui.label(mid).classes("flex-1 text-body2 ellipsis")
 
                                 def _use(model_id=mid, target_role=role) -> None:
+                                    # Persist to settings.json immediately so the
+                                    # Save button isn't required (and so a later
+                                    # browser sync can't blank the field).
+                                    key = {
+                                        "embedding": "embedding_model",
+                                        "vision": "vision_model",
+                                        "chat": "chat_model",
+                                    }[target_role]
+                                    save_user_settings({key: model_id})
+                                    get_settings.cache_clear()
                                     if target_role == "embedding":
-                                        emb_model.value = model_id
+                                        emb_model.set_value(model_id)
                                     elif target_role == "vision":
-                                        vision_model.value = model_id
+                                        vision_model.set_value(model_id)
                                     else:
-                                        chat_model.value = model_id
-                                    ui.notify(f"Set {target_role}: {model_id}", color="positive")
+                                        chat_model.set_value(model_id)
+                                    ui.notify(f"Saved as {target_role}: {model_id}", color="positive")
 
                                 ui.button("Use", on_click=_use).props("dense flat color=primary")
 
@@ -1657,15 +1667,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         vis = mid
                     elif role == "chat" and not chat:
                         chat = mid
+                updates: dict[str, Any] = {}
                 if chat:
-                    chat_model.value = chat
+                    chat_model.set_value(chat)
+                    updates["chat_model"] = chat
                 if emb:
-                    emb_model.value = emb
+                    emb_model.set_value(emb)
+                    updates["embedding_model"] = emb
                 if vis:
-                    vision_model.value = vis
+                    vision_model.set_value(vis)
+                    updates["vision_model"] = vis
+                if updates:
+                    save_user_settings(updates)
+                    get_settings.cache_clear()
                 applied = [k for k, v in (("chat", chat), ("embedding", emb), ("vision", vis)) if v]
                 if applied:
-                    ui.notify(f"Auto-picked: {', '.join(applied)}", color="positive")
+                    ui.notify(f"Auto-picked & saved: {', '.join(applied)}", color="positive")
                 else:
                     ui.notify("No models found. Load at least one in LM Studio.", color="warning")
                 connection_status.text = (
@@ -1713,6 +1730,41 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(t("settings.ocr", lang)).classes("text-h6")
             tcmd = ui.input(t("settings.tesseract", lang), value=s.tesseract_cmd).classes("w-full")
             tlang = ui.input(t("settings.ocr_langs", lang), value=s.ocr_lang).classes("w-full")
+            tess_status = ui.label("").classes("text-caption opacity-80 q-mt-xs")
+
+            def _detect_tesseract() -> None:
+                """Probe common install locations and PATH for tesseract.exe."""
+                import os
+                import shutil
+                from pathlib import Path as _P
+
+                candidates = [
+                    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+                    os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+                    shutil.which("tesseract") or "",
+                ]
+                for c in candidates:
+                    if c and _P(c).is_file():
+                        tcmd.set_value(c)
+                        save_user_settings({"tesseract_cmd": c})
+                        get_settings.cache_clear()
+                        tess_status.text = f"✓ Found and saved: {c}"
+                        ui.notify(f"Tesseract found: {c}", color="positive")
+                        return
+                tess_status.text = (
+                    "✗ Tesseract not found. Install from " "github.com/UB-Mannheim/tesseract/wiki"
+                )
+                ui.notify("Tesseract not found — see the OCR link", color="warning")
+
+            with ui.row().classes("gap-2 q-mt-sm"):
+                ui.button("Auto-detect Tesseract", icon="search", on_click=_detect_tesseract).props("dense")
+                ui.link(
+                    "Download Tesseract",
+                    "https://github.com/UB-Mannheim/tesseract/wiki",
+                    new_tab=True,
+                ).classes("text-caption q-pa-sm")
 
         with ui.card().classes("w-full p-3 q-mt-md"):
             ui.label(t("settings.indexing", lang)).classes("text-h6")
@@ -1733,14 +1785,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ).classes("w-64")
 
         def _save() -> None:
+            # Stringify and strip — NiceGUI inputs return None when never
+            # touched, and trailing whitespace breaks model id lookups.
+            def _str(x):
+                return (x or "").strip() if isinstance(x, str) else x
+
             save_user_settings(
                 {
-                    "lmstudio_base_url": url.value,
-                    "chat_model": chat_model.value,
-                    "vision_model": vision_model.value,
-                    "embedding_model": emb_model.value,
-                    "tesseract_cmd": tcmd.value,
-                    "ocr_lang": tlang.value,
+                    "lmstudio_base_url": _str(url.value) or s.lmstudio_base_url,
+                    "chat_model": _str(chat_model.value),
+                    "vision_model": _str(vision_model.value),
+                    "embedding_model": _str(emb_model.value),
+                    "tesseract_cmd": _str(tcmd.value),
+                    "ocr_lang": _str(tlang.value) or s.ocr_lang,
                     "chunk_size": int(csize.value or s.chunk_size),
                     "chunk_overlap": int(coverlap.value or s.chunk_overlap),
                 }
