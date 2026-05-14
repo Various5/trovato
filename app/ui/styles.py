@@ -364,4 +364,55 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {{
 }}
 
 .q-page-container > .q-page {{ padding-top: 12px; }}
+
+/* Search highlight */
+.ldi-mark {{
+  background: var(--ldi-accent);
+  color: var(--ldi-bg);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 500;
+}}
+.ldi-snippet {{
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ldi-text);
+  opacity: 0.92;
+}}
+
+/* Footnote / citation pill in chat */
+.ldi-citation-ref {{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  margin: 0 2px;
+  border-radius: 11px;
+  background: var(--ldi-glass-bg);
+  border: 1px solid var(--ldi-glass-border);
+  color: var(--ldi-accent);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--ldi-trans);
+  vertical-align: baseline;
+}}
+.ldi-citation-ref:hover {{
+  background: var(--ldi-primary);
+  color: white;
+}}
+
+/* Dashboard mini-chart bars */
+.ldi-chart-bar {{
+  flex: 1;
+  min-width: 6px;
+  background: linear-gradient(180deg, var(--ldi-primary), var(--ldi-accent));
+  border-radius: 3px 3px 0 0;
+  opacity: 0.85;
+  transition: opacity var(--ldi-trans);
+}}
+.ldi-chart-bar:hover {{ opacity: 1; }}
 """

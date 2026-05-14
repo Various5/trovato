@@ -604,6 +604,77 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _refresh_active()
         ui.timer(2.0, _refresh_active)
 
+        # ----- Mini analytics -----
+        from app.services.dashboard import overview as _dash_overview
+
+        agg = _dash_overview()
+        with ui.row().classes("w-full gap-3 q-mt-md flex-wrap"):
+            # Per-day column chart (last 14 days)
+            with ui.card().classes("p-3").style("flex: 2; min-width: 360px;"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.icon("show_chart").classes("ldi-accent")
+                    ui.label("Indexed documents (last 14 days)").classes("text-h6 flex-1")
+                per_day = agg["per_day"]
+                if not per_day or sum(c for _, c in per_day) == 0:
+                    ui.label("No documents indexed yet.").classes("text-caption opacity-60")
+                else:
+                    max_v = max(c for _, c in per_day) or 1
+                    with ui.row().classes("items-end gap-1 w-full q-mt-sm").style("height: 90px;"):
+                        for date_str, count in per_day:
+                            height = (count / max_v) * 100 if max_v else 0
+                            with (
+                                ui.element("div")
+                                .classes("ldi-chart-bar")
+                                .style(f"height: {max(height, 2)}%;")
+                            ):
+                                pass
+                    with ui.row().classes("text-caption opacity-60 q-mt-xs"):
+                        ui.label(per_day[0][0])
+                        ui.space()
+                        ui.label(f"max: {max_v}/day · total: {sum(c for _, c in per_day)}")
+                        ui.space()
+                        ui.label(per_day[-1][0])
+
+            # Per-source horizontal bars
+            with ui.card().classes("p-3").style("flex: 1; min-width: 280px;"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.icon("folder").classes("ldi-accent")
+                    ui.label("Documents per source").classes("text-h6 flex-1")
+                per_src = agg["per_source"]
+                if not per_src:
+                    ui.label("No sources yet.").classes("text-caption opacity-60")
+                else:
+                    max_v = max(c for _, c in per_src) or 1
+                    for name, count in per_src:
+                        with ui.column().classes("w-full gap-0 q-mb-xs"):
+                            with ui.row().classes("items-center w-full"):
+                                ui.label(name[:24]).classes("text-caption flex-1 ellipsis")
+                                ui.label(str(count)).classes("text-caption opacity-80")
+                            with ui.element("div").classes("ldi-progress").style("height: 4px;"):
+                                ui.element("div").classes("ldi-progress-fill").style(
+                                    f"width: {(count / max_v) * 100:.1f}%;"
+                                )
+
+            # Doc-type breakdown
+            with ui.card().classes("p-3").style("flex: 1; min-width: 260px;"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.icon("category").classes("ldi-accent")
+                    ui.label("Document types").classes("text-h6 flex-1")
+                types = agg["doc_types"]
+                if not types:
+                    ui.label("Auto-classification kicks in on scan.").classes("text-caption opacity-60")
+                else:
+                    max_v = max(c for _, c in types) or 1
+                    for tname, count in types:
+                        with ui.column().classes("w-full gap-0 q-mb-xs"):
+                            with ui.row().classes("items-center w-full"):
+                                ui.label(tname).classes("text-caption flex-1 ellipsis")
+                                ui.label(str(count)).classes("text-caption opacity-80")
+                            with ui.element("div").classes("ldi-progress").style("height: 4px;"):
+                                ui.element("div").classes("ldi-progress-fill").style(
+                                    f"width: {(count / max_v) * 100:.1f}%;"
+                                )
+
         ui.label(t("dash.quick_actions", lang)).classes("text-h6 q-mt-md")
         with ui.row().classes("gap-2"):
             ui.button(t("dash.add_source", lang), icon="add", on_click=lambda: ui.navigate.to("/sources"))
@@ -1017,36 +1088,105 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _layout(user, "/search")
         lang = _user_lang(user)
         ui.label(t("search.title", lang)).classes("text-h4 q-mb-md ldi-primary")
-        q = ui.input(t("search.placeholder", lang)).classes("w-full")
-        rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
-        out = ui.column().classes("w-full gap-2")
+
+        # Search bar with embedded icon-button
+        with ui.row().classes("w-full gap-2 items-center no-wrap"):
+            q = ui.input(t("search.placeholder", lang)).classes("flex-1")
+            q.props("autofocus dense outlined")
+            rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
+
+        result_summary = ui.label("").classes("text-caption opacity-70 q-mt-sm")
+        out = ui.column().classes("w-full gap-2 q-mt-sm")
+
+        import html as _html
+        import re as _re
+
+        def _highlight(snippet: str, query: str) -> str:
+            """Wrap each query word in <mark> tags. Returns HTML-safe string."""
+            safe = _html.escape(snippet or "")
+            if not query.strip():
+                return safe
+            words = [w for w in _re.split(r"\s+", query.strip()) if len(w) >= 2]
+            if not words:
+                return safe
+            try:
+                pattern = _re.compile(
+                    "(" + "|".join(_re.escape(w) for w in words) + ")",
+                    flags=_re.IGNORECASE,
+                )
+                return pattern.sub(lambda m: f"<mark class='ldi-mark'>{m.group(0)}</mark>", safe)
+            except _re.error:
+                return safe
+
+        def _source_pill(source: str) -> str:
+            colour = {
+                "native_text": "ldi-pill",
+                "ocr_text": "ldi-pill ldi-pill-warning",
+                "image_description": "ldi-pill ldi-pill-success",
+                "table": "ldi-pill ldi-pill-success",
+            }.get(source, "ldi-pill")
+            return f'<span class="{colour}">{source}</span>'
 
         async def _go() -> None:
             out.clear()
-            if not q.value.strip():
+            result_summary.text = ""
+            query = (q.value or "").strip()
+            if not query:
                 return
+            import time as _time
+
             from app.services.search_service import hybrid_search
 
-            hits = await hybrid_search(q.value, rerank=rerank_toggle.value, user=user)
+            t0 = _time.perf_counter()
+            hits = await hybrid_search(query, rerank=rerank_toggle.value, user=user)
+            elapsed = _time.perf_counter() - t0
+
+            result_summary.text = (
+                f"{len(hits)} result(s) for {query!r}"
+                + (" (LLM-reranked)" if rerank_toggle.value else "")
+                + f" · {elapsed * 1000:.0f} ms"
+            )
             with out:
                 if not hits:
-                    ui.label(t("search.no_results", lang)).classes("opacity-70")
+                    with ui.card().classes("w-full p-4"):
+                        ui.icon("search_off").classes("text-4xl opacity-30")
+                        ui.label(t("search.no_results", lang)).classes("opacity-70")
+                        ui.label(
+                            "Try a different phrasing, fewer keywords, or enable LLM reranking."
+                        ).classes("text-caption opacity-60")
                     return
-                for h in hits:
+                for rank, h in enumerate(hits, start=1):
+                    score_pct = max(0.0, min(1.0, float(h.score))) * 100
                     with ui.card().classes("w-full p-3"):
-                        ui.label(f"{h.filename} (p.{h.page_from})").classes("text-h6")
-                        ui.label(h.snippet).classes("text-body2")
-                        with ui.row().classes("gap-2 q-mt-xs"):
-                            ui.label(f"{t('search.score', lang)}: {h.score:.3f}").classes(
-                                "text-caption opacity-70"
+                        # Header row
+                        with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                            ui.label(f"#{rank}").classes("ldi-pill").style(
+                                "min-width: 38px; justify-content: center;"
                             )
-                            ui.label(f"{t('search.source', lang)}: {h.source}").classes(
-                                "text-caption opacity-70"
-                            )
+                            with ui.column().classes("flex-1 gap-0 min-w-0"):
+                                ui.label(h.filename).classes("text-body1").style("font-weight: 600;")
+                                ui.label(h.path).classes("text-caption opacity-60 ellipsis")
+                            ui.label(f"p.{h.page_from}").classes("ldi-pill")
+                            ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
+                        # Snippet with highlighted matches
+                        ui.html(f"<div class='ldi-snippet'>{_highlight(h.snippet, query)}</div>").classes(
+                            "q-mt-sm"
+                        )
+                        # Footer: score bar + actions
+                        with ui.row().classes("items-center gap-3 q-mt-sm w-full no-wrap"):
+                            with ui.column().classes("gap-0").style("min-width: 130px;"):
+                                ui.label(f"{t('search.score', lang)} {h.score:.3f}").classes(
+                                    "text-caption opacity-70"
+                                )
+                                with ui.element("div").classes("ldi-progress").style("height: 4px;"):
+                                    ui.element("div").classes("ldi-progress-fill").style(
+                                        f"width: {score_pct:.1f}%;"
+                                    )
+                            ui.space()
                             ui.button(
                                 t("search.btn_view", lang),
                                 icon="visibility",
-                                on_click=lambda did=h.document_id, pg=h.page_from, qv=q.value: ui.navigate.to(
+                                on_click=lambda did=h.document_id, pg=h.page_from, qv=query: ui.navigate.to(
                                     f"/viewer?doc={did}&page={pg}&q={qv}"
                                 ),
                             ).props("dense flat")
@@ -1138,6 +1278,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         md_el = ui.markdown("")
                     footer = ui.row().classes("items-center gap-2 q-mt-xs")
             return md_el, md_card, footer
+
+        def _link_citations(text: str, sources: list[dict]) -> str:
+            """Replace bracketed citation tokens like ``[1]`` with markdown
+            links to the viewer page for the cited document."""
+            if not sources or not text:
+                return text
+            result = text
+            for s in sources:
+                n = s.get("n")
+                did = s.get("document_id")
+                pg = s.get("page_from") or 1
+                if n is None or did is None:
+                    continue
+                token = f"[{n}]"
+                # Wrap the brackets in a styled markdown link
+                replacement = f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg})"
+                # Replace, but only when not already linked (avoid double-wrap
+                # if the same N appears twice in the answer).
+                result = result.replace(token, replacement)
+            return result
 
         def _render_sources_footer(footer_row, sources: list[dict]) -> None:
             with footer_row:
@@ -1371,6 +1531,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     # remove streaming cursor & wire up sources
                                     md_card.classes(remove="ldi-stream-cursor")
                                     if cites_state:
+                                        # Make [1], [2], … in the answer clickable links
+                                        md_el.content = _link_citations("".join(buffer), cites_state)
                                         _render_sources_footer(footer, cites_state)
                                     _refresh_chats()  # update timestamp on sidebar
                                     _scroll_msgs_to_bottom()
@@ -1410,7 +1572,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 _render_user_message(m.content, when=when_str)
                             elif m.role == "assistant":
                                 md_el, _md_card, footer = _render_assistant_message_open()
-                                md_el.content = m.content
+                                md_el.content = _link_citations(m.content, m.sources or [])
                                 if m.sources:
                                     _render_sources_footer(footer, m.sources)
                                 if when_str:

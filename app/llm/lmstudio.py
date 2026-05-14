@@ -202,54 +202,58 @@ class LMStudioClient:
         # ``{"error": "Unexpected endpoint..."}`` for the wrong path, instead
         # of a 404. Treat any payload that contains a top-level ``error`` key
         # without ``data`` as "wrong path, try the next one".
-        async with await self._client() as c:
-            base = str(c.base_url).rstrip("/")
-            sibling_native = base[: -len("/v1")] + "/api/v0/embeddings" if base.endswith("/v1") else None
-            attempts: list[tuple[str, str]] = []
-            if sibling_native:
-                # LM Studio's native API is the most reliable on builds that
-                # don't ship the OpenAI shim's /v1/embeddings — try it first.
-                attempts.append(("native", sibling_native))
-            attempts += [
-                ("relative", "/embeddings"),
-                ("relative-singular", "/embedding"),
-            ]
+        from urllib.parse import urlsplit
 
-            data: Any = None
-            attempt_log: list[str] = []
-            for kind, ep in attempts:
+        base = self.base_url.rstrip("/")
+        parts = urlsplit(base)
+        host_root = f"{parts.scheme}://{parts.netloc}"
+        # Build *absolute* URLs and POST them through a single fresh client.
+        # Previously we mixed relative paths (resolved against base_url) with
+        # an absolute /api/v0 URL; httpx silently rewrites the absolute URL
+        # back against base_url under some build conditions, so the native
+        # endpoint never got hit. Absolute URLs everywhere = no surprises.
+        attempts: list[tuple[str, str]] = [
+            ("native", f"{host_root}/api/v0/embeddings"),
+            ("openai-compat", f"{base}/embeddings"),
+            ("singular", f"{base}/embedding"),
+        ]
+        payload = {"model": model, "input": items}
+        attempt_log: list[str] = []
+        data: Any = None
+
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers) as ac:
+            for kind, url in attempts:
                 try:
-                    r = await c.post(ep, json={"model": model, "input": items})
+                    r = await ac.post(url, json=payload)
                 except Exception as e:
-                    attempt_log.append(f"{kind}({ep}): {type(e).__name__}: {e}")
+                    attempt_log.append(f"{kind} {url}: {type(e).__name__}: {e}")
                     continue
-                attempt_log.append(f"{kind}({ep}): {r.status_code}")
                 if r.status_code == 404:
+                    attempt_log.append(f"{kind} {url}: 404")
                     continue
                 if r.status_code >= 400:
-                    # 5xx / 400 — surface immediately with raw body
-                    raise LMStudioError(f"embeddings failed: {r.status_code} {r.text[:300]}")
+                    raise LMStudioError(f"embeddings failed at {url}: {r.status_code} {r.text[:300]}")
                 try:
                     candidate = r.json()
                 except Exception as e:
-                    raise LMStudioError(f"invalid embeddings JSON: {e}") from None
-                # Treat "200 OK + error-only payload" as a wrong-path response
-                # (llama.cpp's "Returning 200 anyway" quirk).
+                    attempt_log.append(f"{kind} {url}: invalid JSON: {e}")
+                    continue
                 if (
                     isinstance(candidate, dict)
                     and "error" in candidate
                     and not candidate.get("data")
                     and not candidate.get("embeddings")
                 ):
-                    attempt_log[-1] += f" (200/error: {str(candidate.get('error'))[:80]})"
+                    attempt_log.append(f"{kind} {url}: 200/error {str(candidate.get('error'))[:80]}")
                     continue
+                attempt_log.append(f"{kind} {url}: 200 ✓")
                 data = candidate
                 break
 
-            if data is None:
-                raise LMStudioError(
-                    "no embeddings endpoint responded with vectors. " f"Attempts: {' | '.join(attempt_log)}"
-                )
+        if data is None:
+            raise LMStudioError(
+                "no embeddings endpoint responded with vectors.\n  " + "\n  ".join(attempt_log)
+            )
 
         # The OpenAI standard shape is {"data": [{"embedding": [..]}]}, but
         # some llama.cpp-based backends inside LM Studio emit alternatives:
