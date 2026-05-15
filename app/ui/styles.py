@@ -165,6 +165,19 @@ body, .q-layout, .q-page-container, .q-page {{
   box-shadow: var(--ldi-hover-glow) !important;
   border-color: rgba(125, 164, 255, 0.18) !important;
 }}
+/* Auth + dialog "centered" cards must NOT lift on hover — would visibly jitter */
+.q-card.absolute-center,
+.q-card.ldi-static,
+.q-dialog .q-card {{
+  transform: none !important;
+}}
+.q-card.absolute-center:hover,
+.q-card.ldi-static:hover,
+.q-dialog .q-card:hover {{
+  transform: none !important;
+  box-shadow: var(--ldi-glass-shadow) !important;
+  border-color: var(--ldi-glass-border) !important;
+}}
 
 .q-drawer {{
   border-right: 1px solid var(--ldi-glass-border) !important;

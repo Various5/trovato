@@ -128,70 +128,72 @@ async def index_document(
     )
     catalog_only = phase == "quick"
 
-    try:
-        content_hash = sha256_file(path)
-    except OSError as e:
-        logger.warning("hash failed for {}: {}", path, e)
-        return None
-
-    # Upsert document row (just metadata, status=processing — old chunks stay
-    # intact until the new ones are ready, so a crash mid-process leaves the
-    # previous index usable).
-    with session_scope() as session:
-        doc = session.exec(select(Document).where(Document.path == str(path))).first()
-        # Skip only if the file is unchanged AND we have a usable index for the
-        # phase being requested.  A document that was just catalog-indexed
-        # (``page_count == 0``) still needs the heavier phases to run.
-        has_real_index = doc is not None and (doc.page_count or 0) > 0
-        unchanged = (
-            doc is not None
-            and doc.content_hash == content_hash
-            and not (force_ocr or force_vision or force_embed)
-            and (catalog_only or has_real_index)
-        )
-        if unchanged:
-            return doc.id  # type: ignore[return-value]
-
+    def _hash_and_upsert_sync() -> tuple[str, int | None, bool]:
+        """Returns ``(content_hash, doc_id, unchanged)`` — all SQLite + sha256
+        work runs here so the asyncio event loop isn't blocked."""
         try:
-            stat = path.stat()
+            ch = sha256_file(path)
         except OSError as e:
-            logger.warning("stat failed for {}: {}", path, e)
-            return None
-
-        if doc is None:
-            doc = Document(
-                source_id=source.id,  # type: ignore[arg-type]
-                owner_id=source.owner_id,
-                visibility=source.visibility,
-                path=str(path),
-                filename=path.name,
-                extension=path.suffix.lower().lstrip("."),
-                size_bytes=stat.st_size,
-                content_hash=content_hash,
-                created_at_fs=datetime.fromtimestamp(stat.st_ctime, tz=UTC),
-                modified_at_fs=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-                status=DocumentStatus.processing,
+            logger.warning("hash failed for {}: {}", path, e)
+            return "", None, False
+        with session_scope() as session:
+            doc_row = session.exec(select(Document).where(Document.path == str(path))).first()
+            has_real_index = doc_row is not None and (doc_row.page_count or 0) > 0
+            is_unchanged = (
+                doc_row is not None
+                and doc_row.content_hash == ch
+                and not (force_ocr or force_vision or force_embed)
+                and (catalog_only or has_real_index)
             )
-        else:
-            # Don't yet overwrite content_hash — only after the new index is in.
-            doc.size_bytes = stat.st_size
-            doc.modified_at_fs = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
-            doc.status = DocumentStatus.processing
-        session.add(doc)
-        session.flush()
-        doc_id = doc.id
+            if is_unchanged:
+                return ch, doc_row.id, True
+            try:
+                stat = path.stat()
+            except OSError as e:
+                logger.warning("stat failed for {}: {}", path, e)
+                return ch, None, False
+            if doc_row is None:
+                doc_row = Document(
+                    source_id=source.id,  # type: ignore[arg-type]
+                    owner_id=source.owner_id,
+                    visibility=source.visibility,
+                    path=str(path),
+                    filename=path.name,
+                    extension=path.suffix.lower().lstrip("."),
+                    size_bytes=stat.st_size,
+                    content_hash=ch,
+                    created_at_fs=datetime.fromtimestamp(stat.st_ctime, tz=UTC),
+                    modified_at_fs=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                    status=DocumentStatus.processing,
+                )
+            else:
+                doc_row.size_bytes = stat.st_size
+                doc_row.modified_at_fs = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+                doc_row.status = DocumentStatus.processing
+            session.add(doc_row)
+            session.flush()
+            return ch, doc_row.id, False
+
+    content_hash, doc_id, unchanged = await asyncio.to_thread(_hash_and_upsert_sync)
+    if unchanged:
+        return doc_id
+    if not content_hash or doc_id is None:
+        return None
 
     # Quick / catalog-only phase: just record the file in the index and stop.
     # This lets the user see all PDFs as a browsable list within seconds —
     # text extraction + embeddings can run as a later phase.
     if catalog_only:
-        with session_scope() as session:
-            d = session.get(Document, doc_id)
-            if d:
-                d.status = DocumentStatus.indexed
-                d.content_hash = content_hash
-                d.error = None
-                session.add(d)
+        def _mark_indexed_sync() -> None:
+            with session_scope() as session:
+                d = session.get(Document, doc_id)
+                if d:
+                    d.status = DocumentStatus.indexed
+                    d.content_hash = content_hash
+                    d.error = None
+                    session.add(d)
+
+        await asyncio.to_thread(_mark_indexed_sync)
         logger.info("cataloged {} (quick phase)", path.name)
         return doc_id
 
@@ -199,7 +201,7 @@ async def index_document(
     # rebuild. If embeddings already exist and only force_embed is set, we can
     # short-circuit text extraction by re-using stored chunk text.
     reuse_text_only = (
-        not force_ocr and not force_vision and force_embed and doc is not None and doc_id is not None
+        not force_ocr and not force_vision and force_embed and doc_id is not None
     )
 
     # Extract pages + images
@@ -211,15 +213,19 @@ async def index_document(
 
     if reuse_text_only:
         # Re-embed only: pull existing pages/images from DB; skip extraction.
-        with session_scope() as session:
-            existing_pages = session.exec(
-                select(DocumentPage)
-                .where(DocumentPage.document_id == doc_id)
-                .order_by(DocumentPage.page_number)
-            ).all()
-            existing_images = session.exec(
-                select(DocumentImage).where(DocumentImage.document_id == doc_id)
-            ).all()
+        def _load_existing_sync() -> tuple[list, list]:
+            with session_scope() as session:
+                ep = session.exec(
+                    select(DocumentPage)
+                    .where(DocumentPage.document_id == doc_id)
+                    .order_by(DocumentPage.page_number)
+                ).all()
+                ei = session.exec(
+                    select(DocumentImage).where(DocumentImage.document_id == doc_id)
+                ).all()
+                return list(ep), list(ei)
+
+        existing_pages, existing_images = await asyncio.to_thread(_load_existing_sync)
         for p in existing_pages:
             page_count = max(page_count, p.page_number)
             combined = (p.native_text + "\n" + p.ocr_text).strip()
@@ -563,16 +569,43 @@ async def resume_scan_job(job_id: int) -> int:
     sem = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
+    def _set_current_sync(name: str) -> None:
+        with session_scope() as session:
+            jj = session.get(ScanJob, job_id)
+            if jj:
+                jj.current_file = name
+                session.add(jj)
+
+    def _finalize_item_sync(
+        item_id_v: int | None,
+        doc_id_v: int | None,
+    ) -> None:
+        with session_scope() as session:
+            item = session.get(ScanJobItem, item_id_v)
+            if item:
+                item.document_id = doc_id_v
+                item.status = DocumentStatus.indexed if doc_id_v else DocumentStatus.error
+                item.ended_at = utcnow()
+                session.add(item)
+
+    def _bump_progress_sync(failed: bool) -> None:
+        with session_scope() as session:
+            jj = session.get(ScanJob, job_id)
+            if jj:
+                jj.processed_files = min(
+                    jj.processed_files + 1,
+                    jj.total_files or jj.processed_files + 1,
+                )
+                if failed:
+                    jj.error_count += 1
+                session.add(jj)
+
     async def _process_one(item_id: int | None, item_path: str) -> None:
         async with sem:
             if not await controller.gate():
                 return
 
-            with session_scope() as session:
-                j = session.get(ScanJob, job_id)
-                if j:
-                    j.current_file = Path(item_path).name
-                    session.add(j)
+            await asyncio.to_thread(_set_current_sync, Path(item_path).name)
 
             if source_snapshot is None or options.get("dry_run"):
                 doc_id: int | None = None
@@ -591,24 +624,9 @@ async def resume_scan_job(job_id: int) -> int:
                     logger.exception("index_document crashed for {}: {}", item_path, e)
                     doc_id = None
 
-            with session_scope() as session:
-                item = session.get(ScanJobItem, item_id)
-                if item:
-                    item.document_id = doc_id
-                    item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
-                    item.ended_at = utcnow()
-                    session.add(item)
+            await asyncio.to_thread(_finalize_item_sync, item_id, doc_id)
             async with lock:
-                with session_scope() as session:
-                    j = session.get(ScanJob, job_id)
-                    if j:
-                        j.processed_files = min(
-                            j.processed_files + 1,
-                            j.total_files or j.processed_files + 1,
-                        )
-                        if not doc_id:
-                            j.error_count += 1
-                        session.add(j)
+                await asyncio.to_thread(_bump_progress_sync, not doc_id)
             await asyncio.sleep(0)
 
     try:
@@ -745,26 +763,50 @@ async def run_scan_job(
         errors = 0
         lock = asyncio.Lock()
 
+        def _open_item_sync(remote_path: str, local_name: str) -> int | None:
+            with session_scope() as session:
+                item = ScanJobItem(
+                    job_id=job_id,
+                    path=remote_path,
+                    status=DocumentStatus.processing,
+                    started_at=utcnow(),
+                )
+                session.add(item)
+                session.flush()
+                jj = session.get(ScanJob, job_id)
+                if jj:
+                    jj.current_file = local_name
+                    session.add(jj)
+                return item.id
+
+        def _close_item_sync(
+            item_id_v: int | None,
+            doc_id_v: int | None,
+            snap_processed: int,
+            snap_errors: int,
+        ) -> None:
+            with session_scope() as session:
+                item = session.get(ScanJobItem, item_id_v)
+                if item:
+                    item.document_id = doc_id_v
+                    item.status = DocumentStatus.indexed if doc_id_v else DocumentStatus.error
+                    item.ended_at = utcnow()
+                    session.add(item)
+                jj = session.get(ScanJob, job_id)
+                if jj:
+                    jj.processed_files = snap_processed
+                    jj.error_count = snap_errors
+                    session.add(jj)
+
         async def _process_one(idx: int, df: Any) -> None:
             nonlocal processed, errors
             async with sem:
                 if not await controller.gate():
                     return
 
-                with session_scope() as session:
-                    item = ScanJobItem(
-                        job_id=job_id,
-                        path=df.remote_path,
-                        status=DocumentStatus.processing,
-                        started_at=utcnow(),
-                    )
-                    session.add(item)
-                    session.flush()
-                    item_id = item.id
-                    j = session.get(ScanJob, job_id)
-                    if j:
-                        j.current_file = df.local_path.name
-                        session.add(j)
+                # SQLite writes go through a thread pool so the asyncio loop
+                # stays responsive for the UI websocket and other tasks.
+                item_id = await asyncio.to_thread(_open_item_sync, df.remote_path, df.local_path.name)
 
                 if dry_run:
                     doc_id: int | None = None
@@ -790,18 +832,9 @@ async def run_scan_job(
                     snap_processed = processed
                     snap_errors = errors
 
-                with session_scope() as session:
-                    item = session.get(ScanJobItem, item_id)
-                    if item:
-                        item.document_id = doc_id
-                        item.status = DocumentStatus.indexed if doc_id else DocumentStatus.error
-                        item.ended_at = utcnow()
-                        session.add(item)
-                    j = session.get(ScanJob, job_id)
-                    if j:
-                        j.processed_files = snap_processed
-                        j.error_count = snap_errors
-                        session.add(j)
+                await asyncio.to_thread(
+                    _close_item_sync, item_id, doc_id, snap_processed, snap_errors
+                )
                 await asyncio.sleep(0)
 
         tasks = [

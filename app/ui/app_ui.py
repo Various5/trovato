@@ -39,6 +39,9 @@ from app.services.indexer import start_scan_in_background
 from app.ui.styles import build_global_css
 from app.ui.themes import THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
+from app.utils.secret_store import delete_secret, get_secret, put_secret
+
+REMEMBER_SECRET_NAME = "ui_login_remember"
 
 
 def _current_user() -> User | None:
@@ -387,6 +390,15 @@ def _do_logout() -> None:
         nicegui_app.storage.user.clear()
     except Exception:
         pass
+    # Don't wipe the saved credentials on logout — but disable auto-login so
+    # the user explicitly clicks "Sign in" once before being auto-signed back.
+    try:
+        stored = get_secret(REMEMBER_SECRET_NAME)
+        if stored and stored.get("auto"):
+            stored["auto"] = False
+            put_secret(REMEMBER_SECRET_NAME, stored)
+    except Exception:
+        pass
     ui.navigate.to("/login")
 
 
@@ -409,21 +421,40 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         # Use browser-language as a hint until the user logs in.
         ph_lang = "en"
-        with ui.card().classes("absolute-center w-96 p-6"):
+        # Pre-fill from the encrypted credential store. This survives WebView2
+        # cookie resets and a moved/uninstalled+reinstalled app.
+        stored = get_secret(REMEMBER_SECRET_NAME) or {}
+        remembered_user = stored.get("username", "")
+        remembered_pw = stored.get("password", "")
+        auto_login = bool(stored.get("auto", False))
+
+        # If credentials are stored and "auto" is set, try to log in silently
+        # before painting the form so the user doesn't see it at all.
+        if auto_login and remembered_user and remembered_pw:
+            with session_scope() as session:
+                u = session.exec(select(User).where(User.username == remembered_user)).first()
+                if u and verify_password(remembered_pw, u.password_hash):
+                    nicegui_app.storage.user[SESSION_USER_KEY] = u.id
+                    ui.navigate.to("/")
+                    return
+
+        with ui.card().classes("absolute-center ldi-static w-96 p-6"):
             ui.label(t("login.title", ph_lang)).classes("text-h5 q-mb-md ldi-primary")
-            # Pre-fill from previously-remembered username (per-browser).
-            remembered_user = ""
-            try:
-                remembered_user = nicegui_app.storage.browser.get("remembered_user", "") or ""
-            except Exception:
-                remembered_user = ""
             username = ui.input(t("common.username", ph_lang), value=remembered_user).classes("w-full")
             password = ui.input(
-                t("common.password", ph_lang), password=True, password_toggle_button=True
+                t("common.password", ph_lang),
+                value=remembered_pw,
+                password=True,
+                password_toggle_button=True,
             ).classes("w-full")
-            remember = ui.checkbox("Stay signed in on this device", value=bool(remembered_user)).classes(
-                "q-mt-sm"
-            )
+            remember = ui.checkbox(
+                "Remember username & password on this device",
+                value=bool(remembered_user),
+            ).classes("q-mt-sm")
+            auto = ui.checkbox(
+                "Sign in automatically next time",
+                value=auto_login,
+            ).classes("q-mt-xs")
             err = ui.label("").classes("text-negative q-mt-sm")
 
             def _login() -> None:
@@ -433,14 +464,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         err.text = t("login.invalid", ph_lang)
                         return
                     nicegui_app.storage.user[SESSION_USER_KEY] = u.id
-                # Persist username in the long-lived browser store so the next
-                # launch pre-fills the field. The session cookie itself lives
-                # 14 days (configured in app/main.py).
+                # Encrypted credential persistence — only if the user opted in.
                 try:
                     if remember.value:
-                        nicegui_app.storage.browser["remembered_user"] = username.value
+                        put_secret(
+                            REMEMBER_SECRET_NAME,
+                            {
+                                "username": username.value,
+                                "password": password.value,
+                                "auto": bool(auto.value),
+                            },
+                        )
                     else:
-                        nicegui_app.storage.browser.pop("remembered_user", None)
+                        delete_secret(REMEMBER_SECRET_NAME)
                 except Exception:
                     pass
                 ui.navigate.to("/")
@@ -3119,6 +3155,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.notify(t("update.up_to_date", lang), color="positive")
 
             ui.button(t("update.check_now", lang), icon="system_update", on_click=_check_now).props("outline")
+
+    # Pin NiceGUI's per-user storage to our writable data dir — otherwise it
+    # defaults to ``<cwd>/.nicegui`` which is read-only when the frozen exe
+    # runs from ``C:\\Program Files\\...``, silently dropping login state.
+    try:
+        from pathlib import Path as _P
+
+        s = get_settings()
+        storage_path = _P(s.data_path) / "nicegui_storage"
+        storage_path.mkdir(parents=True, exist_ok=True)
+        nicegui_app.storage.path = storage_path
+    except Exception:
+        pass
 
     # Finally bind NiceGUI to the FastAPI app.
     # Keep the favicon ASCII — an emoji favicon traverses Windows console
