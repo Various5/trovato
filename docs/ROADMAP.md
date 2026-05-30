@@ -60,10 +60,16 @@
 - [x] Hardened logout (keep UI prefs, log failures); backup/restore off-thread
       with error handling + error-aware notify colour
 
+### Post-beta polish (round 2) ✅
+
+- [x] Single-item delete confirmations (sources, tags, chats, saved searches) —
+      parity with bulk delete; fixed a latent `t`-shadowing bug in the tag handler
+- [x] i18n: Sources credentials dialog, Documents bulk-action dialogs/buttons,
+      Tags page, Chat context dialog — all wrapped (EN+DE)
+
 ### Remaining nice-to-haves
 
-- [ ] Single-item delete confirm (sources/tags/chats) for parity with bulk delete
-- [ ] `suggestions` hints + a few admin/settings dialogs still English-only
+- [ ] LM Studio settings diagnostic dialogs still English-only (deep, low-traffic)
 
 ## v1.0 — Polish
 

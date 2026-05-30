@@ -838,22 +838,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             existing = get_secret(f"source-{source_id}") or {}
             with ui.dialog() as dialog, ui.card().classes("w-[460px] p-4"):
-                ui.label(f"Credentials — {source_type.upper()}").classes("text-h6 ldi-primary")
-                ui.label("Stored encrypted; never written to logs.").classes(
-                    "text-caption opacity-70 q-mb-md"
+                ui.label(t("sources.creds_dialog_title", lang).format(type=source_type.upper())).classes(
+                    "text-h6 ldi-primary"
                 )
+                ui.label(t("sources.creds_stored_help", lang)).classes("text-caption opacity-70 q-mb-md")
                 fields: dict[str, Any] = {}
                 if source_type == "webdav":
-                    fields["base_url"] = ui.input("Base URL", value=existing.get("base_url", "")).classes(
-                        "w-full"
-                    )
+                    fields["base_url"] = ui.input(
+                        t("sources.creds_base_url", lang), value=existing.get("base_url", "")
+                    ).classes("w-full")
                 elif source_type == "sftp":
-                    fields["host"] = ui.input("Host", value=existing.get("host", "")).classes("w-full")
+                    fields["host"] = ui.input(
+                        t("sources.creds_host", lang), value=existing.get("host", "")
+                    ).classes("w-full")
                     fields["port"] = ui.number(
-                        "Port", value=existing.get("port", 22), min=1, max=65535
+                        t("sources.creds_port", lang), value=existing.get("port", 22), min=1, max=65535
                     ).classes("w-full")
                     fields["private_key_path"] = ui.input(
-                        "Private key path (optional)",
+                        t("sources.creds_private_key", lang),
                         value=existing.get("private_key_path", ""),
                     ).classes("w-full")
                 elif source_type == "smb":
@@ -863,24 +865,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         parts = default_path.lstrip("\\/").split("/")[0].split("\\")
                         default_server = parts[0] if parts else ""
                     fields["server"] = ui.input(
-                        "Server (e.g. fileserver.local or 192.168.1.10)",
+                        t("sources.creds_smb_server", lang),
                         value=existing.get("server", default_server),
                     ).classes("w-full")
                     fields["domain"] = ui.input(
-                        "Domain (optional)", value=existing.get("domain", "")
+                        t("sources.creds_smb_domain", lang), value=existing.get("domain", "")
                     ).classes("w-full")
-                fields["username"] = ui.input("Username", value=existing.get("username", "")).classes(
-                    "w-full"
-                )
+                fields["username"] = ui.input(
+                    t("common.username", lang), value=existing.get("username", "")
+                ).classes("w-full")
                 fields["password"] = ui.input(
-                    "Password",
+                    t("common.password", lang),
                     value=existing.get("password", ""),
                     password=True,
                     password_toggle_button=True,
                 ).classes("w-full")
 
                 with ui.row().classes("justify-end gap-2 q-mt-md w-full"):
-                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    ui.button(t("common.cancel", lang), on_click=dialog.close).props("flat")
 
                     def _save() -> None:
                         payload = {
@@ -895,10 +897,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             if src:
                                 src.credentials_ref = ref
                                 session.add(src)
-                        ui.notify("Credentials saved", color="positive")
+                        ui.notify(t("sources.creds_saved", lang), color="positive")
                         dialog.close()
 
-                    ui.button("Save", on_click=_save).props("color=primary")
+                    ui.button(t("common.save", lang), on_click=_save).props("color=primary")
                 dialog.open()
 
         # ----- Add-new card ---------------------------------------------
@@ -1085,11 +1087,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     ).props("dense flat")
 
         def _delete_source(sid: int) -> None:
-            with session_scope() as session:
-                src = session.get(DocumentSource, sid)
-                if src:
-                    session.delete(src)
-            _refresh()
+            with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                ui.label(t("sources.delete_confirm", lang)).classes("text-h6 ldi-primary")
+                ui.label(t("sources.delete_help", lang)).classes("text-caption opacity-70")
+
+                def _do() -> None:
+                    with session_scope() as session:
+                        src = session.get(DocumentSource, sid)
+                        if src:
+                            session.delete(src)
+                    d.close()
+                    _refresh()
+
+                with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                    ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                    ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
+            d.open()
 
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("flat dense")
@@ -1174,20 +1187,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
             if not selection:
                 return
             with bulk_bar:
-                ui.label(f"{len(selection)} document(s) selected").classes("text-body2 ldi-primary")
+                ui.label(t("docs.bulk_selected", lang).format(n=len(selection))).classes(
+                    "text-body2 ldi-primary"
+                )
                 ui.space()
 
                 async def _bulk_tag() -> None:
                     from app.models import DocumentTagLink, Tag
 
                     with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
-                        ui.label(f"Add tag to {len(selection)} document(s)").classes("text-h6 ldi-primary")
-                        name_in = ui.input("Tag name").classes("w-full")
+                        ui.label(t("docs.bulk_add_tag_title", lang).format(n=len(selection))).classes(
+                            "text-h6 ldi-primary"
+                        )
+                        name_in = ui.input(t("docs.bulk_tag_name_input", lang)).classes("w-full")
 
                         def _apply() -> None:
                             tname = (name_in.value or "").strip()
                             if not tname:
-                                ui.notify("Enter a tag name", color="warning")
+                                ui.notify(t("docs.bulk_tag_name_required", lang), color="warning")
                                 return
                             with session_scope() as sess:
                                 tag = sess.exec(select(Tag).where(Tag.name == tname)).first()
@@ -1211,7 +1228,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                             )
                                         )
                             ui.notify(
-                                f"Tag '{tname}' added to {len(selection)} doc(s)",
+                                t("docs.bulk_tag_added", lang).format(name=tname, n=len(selection)),
                                 color="positive",
                             )
                             d.close()
@@ -1219,8 +1236,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             _refresh()
 
                         with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
-                            ui.button("Cancel", on_click=d.close).props("flat")
-                            ui.button("Apply", on_click=_apply).props("color=primary")
+                            ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                            ui.button(t("common.apply", lang), on_click=_apply).props("color=primary")
                     d.open()
 
                 async def _bulk_reindex() -> None:
@@ -1240,7 +1257,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             ).all()
                         }
                         doc_data = [(d.id, d.path, sources_by_id.get(d.source_id)) for d in docs]
-                    ui.notify(f"Re-indexing {len(doc_data)} document(s)…", color="positive")
+                    ui.notify(t("docs.bulk_reindexing", lang).format(n=len(doc_data)), color="positive")
 
                     import asyncio as _aio
 
@@ -1265,10 +1282,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     from app.vectorstore import delete_for_document
 
                     with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
-                        ui.label(f"Delete {len(selection)} document(s)?").classes("text-h6 ldi-primary")
-                        ui.label(
-                            "The original PDF files on disk are not touched — only " "the index entries here."
-                        ).classes("text-caption opacity-70")
+                        ui.label(t("docs.bulk_delete_confirm", lang).format(n=len(selection))).classes(
+                            "text-h6 ldi-primary"
+                        )
+                        ui.label(t("docs.bulk_delete_help", lang)).classes("text-caption opacity-70")
 
                         def _do_delete() -> None:
                             with session_scope() as sess:
@@ -1291,7 +1308,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     if doc_obj:
                                         sess.delete(doc_obj)
                             ui.notify(
-                                f"Deleted {len(selection)} document(s)",
+                                t("docs.bulk_deleted", lang).format(n=len(selection)),
                                 color="positive",
                             )
                             d.close()
@@ -1299,15 +1316,21 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             _refresh()
 
                         with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
-                            ui.button("Cancel", on_click=d.close).props("flat")
-                            ui.button("Delete", on_click=_do_delete).props("color=negative")
+                            ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                            ui.button(t("common.delete", lang), on_click=_do_delete).props("color=negative")
                     d.open()
 
-                ui.button("Add tag", icon="label", on_click=_bulk_tag).props("dense")
-                ui.button("Re-index", icon="refresh", on_click=_bulk_reindex).props("dense")
-                ui.button("Delete", icon="delete", on_click=_bulk_delete).props("dense color=negative")
+                ui.button(t("docs.bulk_add_tag_button", lang), icon="label", on_click=_bulk_tag).props(
+                    "dense"
+                )
+                ui.button(t("docs.bulk_reindex_button", lang), icon="refresh", on_click=_bulk_reindex).props(
+                    "dense"
+                )
+                ui.button(t("common.delete", lang), icon="delete", on_click=_bulk_delete).props(
+                    "dense color=negative"
+                )
                 ui.button(
-                    "Clear",
+                    t("common.clear", lang),
                     icon="close",
                     on_click=lambda: (selection.clear(), _refresh()),
                 ).props("flat dense")
@@ -1397,9 +1420,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                                         _aio.create_task(index_document(snap, _P(dpath), force_ocr=True))
 
-                                    ui.button("Re-OCR", icon="text_fields", on_click=_reocr).props(
-                                        "dense flat"
-                                    )
+                                    ui.button(
+                                        t("docs.bulk_reocr_button", lang),
+                                        icon="text_fields",
+                                        on_click=_reocr,
+                                    ).props("dense flat")
 
         with ui.row().classes("items-center gap-2"):
             q_input.on("change", lambda _: _refresh())
@@ -1413,7 +1438,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             selection.add(d.id)
                 _refresh()
 
-            ui.button("Select all (200)", icon="select_all", on_click=_select_all).props("dense flat")
+            ui.button(
+                t("docs.select_all_button", lang).format(n=200),
+                icon="select_all",
+                on_click=_select_all,
+            ).props("dense flat")
 
         _refresh()
 
@@ -1493,12 +1522,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ui.button(s.name, on_click=_load).props("flat dense no-caps").classes("ldi-pill")
 
                         def _delete_saved(sid=s.id) -> None:
-                            with session_scope() as sess:
-                                row = sess.get(SavedSearch, sid)
-                                if row and row.user_id == user.id:
-                                    sess.delete(row)
-                            _refresh_saved()
-                            ui.notify(t("search.saved_removed", lang), color="positive")
+                            with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                                ui.label(t("search.delete_saved_confirm", lang)).classes(
+                                    "text-h6 ldi-primary"
+                                )
+
+                                def _do() -> None:
+                                    with session_scope() as sess:
+                                        row = sess.get(SavedSearch, sid)
+                                        if row and row.user_id == user.id:
+                                            sess.delete(row)
+                                    d.close()
+                                    _refresh_saved()
+                                    ui.notify(t("search.saved_removed", lang), color="positive")
+
+                                with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                                    ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                                    ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
+                            d.open()
 
                         ui.button(icon="close", on_click=_delete_saved).props(
                             "flat dense round size=xs"
@@ -2055,20 +2096,32 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     _refresh_msgs()
 
                 def _delete_chat(cid: int) -> None:
-                    with session_scope() as session:
-                        for m in session.exec(select(ChatMessage).where(ChatMessage.chat_id == cid)).all():
-                            session.delete(m)
-                        for c in session.exec(
-                            select(ChatContextItem).where(ChatContextItem.chat_id == cid)
-                        ).all():
-                            session.delete(c)
-                        ch = session.get(Chat, cid)
-                        if ch:
-                            session.delete(ch)
-                    if chat_state.get("chat_id") == cid:
-                        chat_state["chat_id"] = None
-                    _refresh_chats()
-                    _refresh_msgs()
+                    with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                        ui.label(t("chat.delete_confirm", lang)).classes("text-h6 ldi-primary")
+
+                        def _do() -> None:
+                            with session_scope() as session:
+                                for m in session.exec(
+                                    select(ChatMessage).where(ChatMessage.chat_id == cid)
+                                ).all():
+                                    session.delete(m)
+                                for c in session.exec(
+                                    select(ChatContextItem).where(ChatContextItem.chat_id == cid)
+                                ).all():
+                                    session.delete(c)
+                                ch = session.get(Chat, cid)
+                                if ch:
+                                    session.delete(ch)
+                            if chat_state.get("chat_id") == cid:
+                                chat_state["chat_id"] = None
+                            d.close()
+                            _refresh_chats()
+                            _refresh_msgs()
+
+                        with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                            ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                            ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
+                    d.open()
 
             # ============ Right: chat conversation ============
             with ui.column().classes("flex-1 gap-2").style("min-width: 0;"):
@@ -2146,17 +2199,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                                     value=tname,
                                                 )
                                             )
-                                ui.notify("Context updated", color="positive")
+                                ui.notify(t("chat.context_updated", lang), color="positive")
                                 dialog.close()
 
                             with ui.row().classes("justify-end w-full gap-2 q-mt-md"):
-                                ui.button("Cancel", on_click=dialog.close).props("flat")
-                                ui.button("Apply", on_click=_apply).props("color=primary")
+                                ui.button(t("common.cancel", lang), on_click=dialog.close).props("flat")
+                                ui.button(t("common.apply", lang), on_click=_apply).props("color=primary")
                         dialog.open()
 
                     ui.button(icon="filter_alt", on_click=_show_context_dialog).props(
                         "flat round dense"
-                    ).tooltip("Restrict context")
+                    ).tooltip(t("chat.restrict_context", lang))
                     ui.icon("auto_awesome").classes("ldi-accent text-xl")
 
                 # Message scroll area
@@ -2333,9 +2386,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.icon("local_offer").classes("ldi-accent")
                     ui.label(f"{len(tags)} tags · cloud").classes("text-h6 flex-1")
                 if not tags:
-                    ui.label("Tags appear automatically when documents are scanned.").classes(
-                        "text-caption opacity-70"
-                    )
+                    ui.label(t("tags.auto_generated_help", lang)).classes("text-caption opacity-70")
                 else:
                     from urllib.parse import quote as _quote
 
@@ -2360,7 +2411,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             # ------ Plain list (sortable, deletable) ------
             with list_card:
-                ui.label("All tags").classes("text-h6 q-mb-sm")
+                ui.label(t("tags.all_tags_heading", lang)).classes("text-h6 q-mb-sm")
                 if not tags:
                     return
                 with session_scope() as session:
@@ -2369,7 +2420,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     cnt = counts.get(tag.id, 0)
                     with ui.row().classes("items-center gap-2 w-full"):
                         ui.label(tag.name).classes("flex-1")
-                        ui.label(f"{cnt} doc(s)").classes("text-caption opacity-70").style("min-width: 70px;")
+                        ui.label(t("tags.doc_count", lang).format(n=cnt)).classes(
+                            "text-caption opacity-70"
+                        ).style("min-width: 70px;")
                         if tag.auto:
                             ui.label(t("tags.auto", lang)).classes("ldi-pill text-caption")
                         ui.button(icon="delete", on_click=lambda tid=tag.id: _delete(tid)).props(
@@ -2377,13 +2430,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         )
 
         def _delete(tid: int) -> None:
-            with session_scope() as session:
-                for link in session.exec(select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)).all():
-                    session.delete(link)
-                t = session.get(Tag, tid)
-                if t:
-                    session.delete(t)
-            _refresh()
+            with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
+                ui.label(t("tags.delete_confirm", lang)).classes("text-h6 ldi-primary")
+                ui.label(t("tags.delete_help", lang)).classes("text-caption opacity-70")
+
+                def _do() -> None:
+                    with session_scope() as session:
+                        for link in session.exec(
+                            select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)
+                        ).all():
+                            session.delete(link)
+                        tag_obj = session.get(Tag, tid)  # was `t` — shadowed the i18n t()
+                        if tag_obj:
+                            session.delete(tag_obj)
+                    d.close()
+                    _refresh()
+
+                with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                    ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
+                    ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
+            d.open()
 
         _refresh()
 
