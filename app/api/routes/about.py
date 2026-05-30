@@ -40,5 +40,5 @@ def about() -> dict[str, Any]:
         "chroma_chunks": collection_size(),
         "license": "MIT",
         "privacy": "All processing is local. No cloud calls unless you point a source at a cloud-sync folder.",
-        "github": "https://github.com/varous555/localdoc-intelligence",
+        "github": "https://github.com/Various5/localdoc-intelligence",
     }

@@ -7,7 +7,7 @@
 PaperVault is the working repository name; the product ships as **LocalDoc
 Intelligence**.
 
-**Status: Beta (v0.4.0b1).** Feature-complete and stabilising toward 1.0. The
+**Status: Beta (v0.4.0b2).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 
 ---
@@ -110,6 +110,6 @@ MIT — see [LICENSE](LICENSE).
 ## About
 
 - Author: **Varous 555** · `varous555@gmail.com` · `@varous555`
-- GitHub: _placeholder_
+- GitHub: <https://github.com/Various5/localdoc-intelligence>
 - Privacy: all processing is local. The app never contacts the internet
   unless you point a source at a cloud-sync folder you own.

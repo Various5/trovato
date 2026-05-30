@@ -3215,7 +3215,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(f"{t('about.contact', lang)}: {__contact__}")
             ui.label(f"{t('about.handle', lang)}: {__handle__}")
             ui.link(
-                t("about.github", lang), "https://github.com/varous555/localdoc-intelligence", new_tab=True
+                t("about.github", lang), "https://github.com/Various5/localdoc-intelligence", new_tab=True
             )
             ui.separator().classes("q-my-md")
             ui.label(t("about.license", lang)).classes("text-caption")

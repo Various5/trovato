@@ -80,7 +80,7 @@ Add to `%APPDATA%/LocalDocIntelligence/settings.json`:
 
 ```json
 {
-  "update_check_url": "https://api.github.com/repos/varous555/localdoc-intelligence/releases/latest"
+  "update_check_url": "https://api.github.com/repos/Various5/localdoc-intelligence/releases/latest"
 }
 ```
 

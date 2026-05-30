@@ -20,7 +20,7 @@ from app import __version__
 from app.config import get_settings, load_user_settings
 from app.utils.logging import logger
 
-DEFAULT_UPDATE_URL = "https://api.github.com/repos/varous555/localdoc-intelligence/releases/latest"
+DEFAULT_UPDATE_URL = "https://api.github.com/repos/Various5/localdoc-intelligence/releases/latest"
 INSTALLER_ASSET_HINTS = ("installer", "setup", ".exe")
 
 # release (padded to 4 parts), pre-release rank, pre-release number
