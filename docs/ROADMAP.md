@@ -49,13 +49,21 @@
 - [x] Diagnostics fixes: no more duplicated cards on Refresh; dead no-op loop
       removed; `cpu_count()` None-guard; deep-linked `/compare?a=&b=` honoured
 
-### Deferred follow-ups (tracked, not beta blockers)
+### Post-beta polish ✅
 
-- [ ] `/search?tag=` tag-only browse (needs tag-only retrieval in `_go()`)
-- [ ] Search export should honour active filters + rerank (factor a shared helper)
-- [ ] Finish the i18n sweep — remaining hardcoded English in dashboard/search/chat
-- [ ] `near_dup` batch-fetch (avoid one DB session per document on Diagnostics)
-- [ ] Replace `len(session.exec(select(...)).all())` counts with `func.count()`
+- [x] `/search?tag=` tag-only browse (`browse_documents()`, chip pre-select, auto-run)
+- [x] Search export honours active filters + rerank (shared `_compute_hits()`)
+- [x] i18n sweep — Search fully wrapped; Dashboard + Chat dialog/suggestions;
+      language-aware chat starters (no more German prompts for EN users)
+- [x] `near_dup` batch-fetch (one chunk query instead of a session per document)
+- [x] Replaced `len(session.exec(select(...)).all())` counts with `func.count()`
+- [x] Hardened logout (keep UI prefs, log failures); backup/restore off-thread
+      with error handling + error-aware notify colour
+
+### Remaining nice-to-haves
+
+- [ ] Single-item delete confirm (sources/tags/chats) for parity with bulk delete
+- [ ] `suggestions` hints + a few admin/settings dialogs still English-only
 
 ## v1.0 — Polish
 
