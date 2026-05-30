@@ -1089,7 +1089,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         with ui.row().classes("items-center gap-2 q-mb-md"):
             ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("flat dense")
-            ui.label("Auto-refresh: 2 s").classes("text-caption opacity-60")
+            ui.label("Auto-refresh: 3 s").classes("text-caption opacity-60")
 
         _refresh()
         # Live progress poll — only refreshes the table area, doesn't reload the page.
@@ -2233,7 +2233,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     if not cid:
                         from app.services.suggestions import suggested_starters
 
-                        starters = suggested_starters(limit=6)
+                        starters = suggested_starters(limit=6, lang=lang)
                         with (
                             msg_area,
                             ui.column().classes("items-center w-full").style("padding-top: 32px; gap: 18px;"),
