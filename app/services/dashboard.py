@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.database import session_scope
@@ -35,10 +36,12 @@ def docs_per_source(limit: int = 8) -> list[tuple[str, int]]:
     by count descending."""
     with session_scope() as session:
         sources = session.exec(select(DocumentSource)).all()
-        out: list[tuple[str, int]] = []
-        for src in sources:
-            cnt = len(session.exec(select(Document).where(Document.source_id == src.id)).all())
-            out.append((src.name, cnt))
+        # One grouped count instead of a query (and full materialisation) per source.
+        rows = session.exec(
+            select(Document.source_id, func.count()).group_by(Document.source_id)  # type: ignore[arg-type]
+        ).all()
+        counts = dict(rows)
+        out = [(src.name, counts.get(src.id, 0)) for src in sources]
     out.sort(key=lambda x: x[1], reverse=True)
     return out[:limit]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from sqlalchemy import func
 from sqlmodel import select
 
 from app import __version__
@@ -27,9 +28,9 @@ def ping() -> dict[str, Any]:
 def health() -> dict[str, Any]:
     s = get_settings()
     with session_scope() as session:
-        doc_count = len(session.exec(select(Document)).all())
-        chunk_count = len(session.exec(select(DocumentChunk)).all())
-        chat_count = len(session.exec(select(Chat)).all())
+        doc_count = session.exec(select(func.count()).select_from(Document)).one()
+        chunk_count = session.exec(select(func.count()).select_from(DocumentChunk)).one()
+        chat_count = session.exec(select(func.count()).select_from(Chat)).one()
     return {
         "ok": True,
         "version": __version__,

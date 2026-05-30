@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.config import get_settings
@@ -97,9 +98,9 @@ def cleanup_orphan_caches() -> dict[str, int]:
 
 def index_overview() -> dict[str, Any]:
     with session_scope() as session:
-        doc_count = len(session.exec(select(Document)).all())
-        chunk_count = len(session.exec(select(DocumentChunk)).all())
-        image_count = len(session.exec(select(DocumentImage)).all())
+        doc_count = session.exec(select(func.count()).select_from(Document)).one()
+        chunk_count = session.exec(select(func.count()).select_from(DocumentChunk)).one()
+        image_count = session.exec(select(func.count()).select_from(DocumentImage)).one()
     return {
         "documents": doc_count,
         "chunks": chunk_count,

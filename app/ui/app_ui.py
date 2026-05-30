@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI
 from nicegui import app as nicegui_app
 from nicegui import ui
+from sqlalchemy import func
 from sqlmodel import select
 
 from app import __app_name__, __version__
@@ -39,6 +40,7 @@ from app.services.indexer import start_scan_in_background
 from app.ui.styles import build_global_css
 from app.ui.themes import THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
+from app.utils.logging import logger
 from app.utils.secret_store import delete_secret, get_secret, put_secret
 
 REMEMBER_SECRET_NAME = "ui_login_remember"
@@ -384,12 +386,12 @@ def _layout(user: User, current: str) -> None:
 
 
 def _do_logout() -> None:
+    # Clear only the auth/session key — NOT storage.user.clear(), which also
+    # wiped UI prefs like dismissed update banners (they'd reappear on re-login).
     try:
         nicegui_app.storage.user.pop(SESSION_USER_KEY, None)
-        # also clear any cached user data
-        nicegui_app.storage.user.clear()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("logout: clearing session failed: {}", e)
     # Don't wipe the saved credentials on logout — but disable auto-login so
     # the user explicitly clicks "Sign in" once before being auto-signed back.
     try:
@@ -397,8 +399,8 @@ def _do_logout() -> None:
         if stored and stored.get("auto"):
             stored["auto"] = False
             put_secret(REMEMBER_SECRET_NAME, stored)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("logout: disabling auto-login failed: {}", e)
     ui.navigate.to("/login")
 
 
@@ -477,8 +479,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         )
                     else:
                         delete_secret(REMEMBER_SECRET_NAME)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("login: persisting remember-me failed: {}", e)
                 ui.navigate.to("/")
 
             ui.button(t("btn.login", ph_lang), on_click=_login).props("color=primary").classes(
@@ -586,9 +588,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _layout(user, "/")
         lang = _user_lang(user)
         with session_scope() as session:
-            doc_count = len(session.exec(select(Document)).all())
-            source_count = len(session.exec(select(DocumentSource)).all())
-            chat_count = len(session.exec(select(Chat).where(Chat.user_id == user.id)).all())
+            doc_count = session.exec(select(func.count()).select_from(Document)).one()
+            source_count = session.exec(select(func.count()).select_from(DocumentSource)).one()
+            chat_count = session.exec(
+                select(func.count()).select_from(Chat).where(Chat.user_id == user.id)
+            ).one()
         from app.vectorstore import collection_size
 
         chunks = collection_size()
@@ -1250,8 +1254,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             try:
                                 await index_document(snap, _P(dpath), force_ocr=False, force_embed=True)
                             except Exception as e:
-                                logger_local = (__import__("app.utils.logging", fromlist=["logger"])).logger
-                                logger_local.warning("bulk re-index failed for {}: {}", dpath, e)
+                                logger.warning("bulk re-index failed for {}: {}", dpath, e)
 
                     _aio.create_task(_runner())
                     selection.clear()
@@ -2407,12 +2410,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "w-full"
             )
 
-            def _do_backup() -> None:
+            async def _do_backup() -> None:
                 comps = [k for k, c in checks.items() if c.value]
                 if not comps:
                     ui.notify(t("backup.select_at_least_one", lang), color="negative")
                     return
-                res = create_backup(comps, encrypt_password=pw.value or None)
+                import asyncio as _aio
+
+                # Off the event loop so the UI stays responsive while zipping.
+                try:
+                    res = await _aio.to_thread(create_backup, comps, encrypt_password=pw.value or None)
+                except Exception as e:
+                    logger.warning("backup failed: {}", e)
+                    ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
+                    return
                 ui.notify(f"{t('backup.written_to', lang)} {res.path}", color="positive")
                 _refresh()
 
@@ -2435,11 +2446,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ).classes("text-caption opacity-70")
 
                         async def _restore(p=b["path"]) -> None:
-                            res = restore_backup(p)
+                            import asyncio as _aio
+
+                            try:
+                                res = await _aio.to_thread(restore_backup, p)
+                            except Exception as e:
+                                logger.warning("restore failed for {}: {}", p, e)
+                                ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
+                                return
+                            # Green only when nothing errored; otherwise warn.
                             ui.notify(
                                 f"{t('backup.restored', lang)}: {res['restored']}; "
                                 f"{t('backup.errors', lang)}: {res['errors']}",
-                                color="positive",
+                                color="warning" if res.get("errors") else "positive",
                             )
 
                         ui.button(t("backup.restore", lang), on_click=_restore).props("dense")
