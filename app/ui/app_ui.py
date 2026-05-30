@@ -584,6 +584,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         if not user:
             return
         _layout(user, "/")
+        lang = _user_lang(user)
         with session_scope() as session:
             doc_count = len(session.exec(select(Document)).all())
             source_count = len(session.exec(select(DocumentSource)).all())
@@ -618,7 +619,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with active_card:
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("radio_button_checked").classes("ldi-accent")
-                    ui.label("Active scans").classes("text-h6 flex-1")
+                    ui.label(t("dash.active_scans", lang)).classes("text-h6 flex-1")
                     ui.button(
                         icon="open_in_new",
                         on_click=lambda: ui.navigate.to("/sources"),
@@ -626,9 +627,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         "flat dense"
                     ).tooltip("Open Sources")
                 if not running and not paused:
-                    ui.label("No scans running. Trigger one from the Sources page.").classes(
-                        "text-caption opacity-70"
-                    )
+                    ui.label(t("dash.no_scans", lang)).classes("text-caption opacity-70")
                     return
                 for j in running + paused:
                     total = max(j.total_files or 0, j.processed_files)
@@ -671,7 +670,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with ui.card().classes("p-3").style("flex: 1; min-width: 220px;"):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("trending_up").classes("ldi-accent")
-                    ui.label("This week").classes("text-h6 flex-1")
+                    ui.label(t("dash.this_week", lang)).classes("text-h6 flex-1")
                 ui.label(str(trend.get("this_week", 0))).classes("text-h3").style("line-height: 1.05;")
                 pct = trend.get("pct_change")
                 if pct is None:
@@ -699,10 +698,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with ui.card().classes("p-3").style("flex: 2; min-width: 360px;"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("show_chart").classes("ldi-accent")
-                    ui.label("Indexed documents (last 14 days)").classes("text-h6 flex-1")
+                    ui.label(t("dash.indexed_14d", lang)).classes("text-h6 flex-1")
                 per_day = agg["per_day"]
                 if not per_day or sum(c for _, c in per_day) == 0:
-                    ui.label("No documents indexed yet.").classes("text-caption opacity-60")
+                    ui.label(t("dash.no_docs_indexed", lang)).classes("text-caption opacity-60")
                 else:
                     max_v = max(c for _, c in per_day) or 1
                     with ui.row().classes("items-end gap-1 w-full q-mt-sm").style("height: 90px;"):
@@ -725,10 +724,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with ui.card().classes("p-3").style("flex: 1; min-width: 280px;"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("folder").classes("ldi-accent")
-                    ui.label("Documents per source").classes("text-h6 flex-1")
+                    ui.label(t("dash.docs_per_source", lang)).classes("text-h6 flex-1")
                 per_src = agg["per_source"]
                 if not per_src:
-                    ui.label("No sources yet.").classes("text-caption opacity-60")
+                    ui.label(t("dash.no_sources", lang)).classes("text-caption opacity-60")
                 else:
                     max_v = max(c for _, c in per_src) or 1
                     for name, count in per_src:
@@ -745,10 +744,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with ui.card().classes("p-3").style("flex: 1; min-width: 260px;"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("category").classes("ldi-accent")
-                    ui.label("Document types").classes("text-h6 flex-1")
+                    ui.label(t("dash.doc_types", lang)).classes("text-h6 flex-1")
                 types = agg["doc_types"]
                 if not types:
-                    ui.label("Auto-classification kicks in on scan.").classes("text-caption opacity-60")
+                    ui.label(t("dash.auto_class", lang)).classes("text-caption opacity-60")
                 else:
                     max_v = max(c for _, c in types) or 1
                     for tname, count in types:
@@ -1416,7 +1415,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _refresh()
 
     @ui.page("/search")
-    def page_search() -> None:
+    def page_search(tag: str = "", q: str = "") -> None:
         user = _require_login()
         if not user:
             return
@@ -1424,14 +1423,21 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         ui.label(t("search.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
 
+        # Deep-link params: ?tag=X (browse a tag, e.g. from the Tags page) and
+        # ?q=… (pre-filled query). Captured before the input element shadows `q`.
+        initial_tag = (tag or "").strip()
+        initial_query = (q or "").strip()
+
         # Search bar with embedded icon-button
         with ui.row().classes("w-full gap-2 items-center no-wrap"):
-            q = ui.input(t("search.placeholder", lang)).classes("flex-1")
+            q = ui.input(t("search.placeholder", lang), value=initial_query).classes("flex-1")
             q.props("autofocus dense outlined")
             rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
 
         # Filter state — read by _go() before each search
         filter_state: dict[str, list] = {"source_ids": [], "tags": [], "doc_types": []}
+        if initial_tag:
+            filter_state["tags"].append(initial_tag)
 
         # ----- Saved searches row -----
         from app.models import SavedSearch
@@ -1448,11 +1454,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     .limit(12)
                 ).all()
                 if not rows:
-                    ui.label("No saved searches yet — run a query then click the bookmark icon.").classes(
-                        "text-caption opacity-60"
-                    )
+                    ui.label(t("search.no_saved", lang)).classes("text-caption opacity-60")
                     return
-                ui.label("Saved:").classes("text-caption opacity-60")
+                ui.label(t("search.saved_label", lang)).classes("text-caption opacity-60")
                 for s in rows:
 
                     def _load(
@@ -1491,7 +1495,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 if row and row.user_id == user.id:
                                     sess.delete(row)
                             _refresh_saved()
-                            ui.notify("Saved search removed", color="positive")
+                            ui.notify(t("search.saved_removed", lang), color="positive")
 
                         ui.button(icon="close", on_click=_delete_saved).props(
                             "flat dense round size=xs"
@@ -1500,10 +1504,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
         def _save_current() -> None:
             query = (q.value or "").strip()
             if not query:
-                ui.notify("Enter a search query first", color="warning")
+                ui.notify(t("search.enter_query_first", lang), color="warning")
                 return
             with ui.dialog() as d, ui.card().classes("w-[400px] p-4"):
-                ui.label("Save this search").classes("text-h6 ldi-primary")
+                ui.label(t("search.save_dialog_title", lang)).classes("text-h6 ldi-primary")
                 ui.label(f"Query: {query!r}").classes("text-caption opacity-70")
                 if any(filter_state.values()):
                     parts = []
@@ -1530,7 +1534,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 rerank=bool(rerank_toggle.value),
                             )
                         )
-                    ui.notify(f"Saved as '{nm}'", color="positive")
+                    ui.notify(t("search.saved_as", lang).format(name=nm), color="positive")
                     d.close()
                     _refresh_saved()
 
@@ -1558,9 +1562,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             with ui.column().classes("ldi-glass gap-3 q-pa-md").style("min-width: 240px; max-width: 260px;"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("filter_list").classes("ldi-accent")
-                    ui.label("Filters").classes("text-h6 flex-1")
+                    ui.label(t("search.filters", lang)).classes("text-h6 flex-1")
                 if sources_for_filter:
-                    ui.label("SOURCES").classes("text-caption opacity-60 q-mt-xs").style(
+                    ui.label(t("search.sources", lang)).classes("text-caption opacity-60 q-mt-xs").style(
                         "letter-spacing: 0.12em;"
                     )
                     for sid, sname in sources_for_filter:
@@ -1573,7 +1577,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                         ui.checkbox(sname).classes("text-body2").on("update:model-value", _toggle_src)
                 if doc_types_for_filter:
-                    ui.label("DOCUMENT TYPE").classes("text-caption opacity-60 q-mt-md").style(
+                    ui.label(t("search.doc_type", lang)).classes("text-caption opacity-60 q-mt-md").style(
                         "letter-spacing: 0.12em;"
                     )
                     for dt in doc_types_for_filter:
@@ -1586,34 +1590,35 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                         ui.checkbox(dt).classes("text-body2").on("update:model-value", _toggle_dt)
                 if tags_for_filter:
-                    ui.label("TAGS").classes("text-caption opacity-60 q-mt-md").style(
+                    ui.label(t("search.tags", lang)).classes("text-caption opacity-60 q-mt-md").style(
                         "letter-spacing: 0.12em;"
                     )
                     tag_chip_row = ui.row().classes("gap-1 flex-wrap")
                     with tag_chip_row:
                         for tname in tags_for_filter[:30]:
-                            active = {"v": False}
+                            active = {"v": tname in filter_state["tags"]}
+                            chip = ui.button(tname).props("flat dense no-caps").classes("ldi-pill")
 
-                            def _toggle_tag(_tname=tname, _state=active, _row=tag_chip_row) -> None:
+                            def _toggle_tag(_e=None, _tname=tname, _state=active, _chip=chip) -> None:
                                 _state["v"] = not _state["v"]
                                 if _state["v"]:
                                     if _tname not in filter_state["tags"]:
                                         filter_state["tags"].append(_tname)
+                                    _chip.props("color=primary")
                                 else:
                                     if _tname in filter_state["tags"]:
                                         filter_state["tags"].remove(_tname)
+                                    _chip.props(remove="color")
 
-                            chip = (
-                                ui.button(tname, on_click=_toggle_tag)
-                                .props("flat dense no-caps")
-                                .classes("ldi-pill")
-                            )
-                            _ = chip
+                            chip.on("click", _toggle_tag)
+                            # Reflect a pre-seeded (deep-linked ?tag=) selection.
+                            if active["v"]:
+                                chip.props("color=primary")
                 ui.separator().classes("q-my-sm")
                 ui.button(
-                    "Clear filters",
+                    t("search.clear_filters", lang),
                     icon="restart_alt",
-                    on_click=lambda: ui.navigate.reload(),
+                    on_click=lambda: ui.navigate.to("/search"),
                 ).props("flat dense")
 
             out = ui.column().classes("flex-1 gap-2 min-w-0")
@@ -1647,52 +1652,92 @@ def register_ui(fastapi_app: FastAPI) -> None:
             }.get(source, "ldi-pill")
             return f'<span class="{colour}">{source}</span>'
 
+        async def _compute_hits(top_k: int = 15) -> tuple[str, list, bool]:
+            """Resolve hits honouring the live filters. Returns (query, hits, browse).
+
+            With a query → hybrid search (+ client-side doc-type filter). With no
+            query but active filters → metadata browse (tag/source/type). Shared by
+            _go() and _export() so exports match what's on screen.
+            """
+            import asyncio as _aio
+
+            from app.services.search_service import browse_documents, hybrid_search
+
+            query = (q.value or "").strip()
+            src = list(filter_state["source_ids"]) or None
+            tg = list(filter_state["tags"]) or None
+            dts = list(filter_state["doc_types"]) or None
+            if query:
+                hits = await hybrid_search(
+                    query,
+                    top_k=top_k,
+                    rerank=rerank_toggle.value,
+                    user=user,
+                    source_ids=src,
+                    tags=tg,
+                )
+                # Apply doc-type filter client-side (hybrid_search has no native one)
+                if dts:
+                    wanted = set(dts)
+                    with session_scope() as session:
+                        docs = session.exec(
+                            select(Document).where(
+                                Document.id.in_(list({h.document_id for h in hits}))  # type: ignore[attr-defined]
+                            )
+                        ).all()
+                        by_id = {d.id: d for d in docs}
+                    hits = [
+                        h
+                        for h in hits
+                        if (by_id.get(h.document_id) and by_id[h.document_id].doc_type in wanted)
+                    ]
+                return query, hits, False
+            if src or tg or dts:
+                hits = await _aio.to_thread(
+                    browse_documents,
+                    user=user,
+                    source_ids=src,
+                    tags=tg,
+                    doc_types=dts,
+                    top_k=max(top_k, 50),
+                )
+                return "", hits, True
+            return "", [], False
+
         async def _go() -> None:
             out.clear()
             result_summary.text = ""
-            query = (q.value or "").strip()
-            if not query:
-                return
             import time as _time
 
-            from app.services.search_service import hybrid_search
-
             t0 = _time.perf_counter()
-            hits = await hybrid_search(
-                query,
-                rerank=rerank_toggle.value,
-                user=user,
-                source_ids=list(filter_state["source_ids"]) or None,
-                tags=list(filter_state["tags"]) or None,
-            )
-            # Apply doc-type filter client-side (hybrid_search has no native one)
-            if filter_state["doc_types"]:
-                wanted = set(filter_state["doc_types"])
-                with session_scope() as session:
-                    docs = session.exec(
-                        select(Document).where(
-                            Document.id.in_(list({h.document_id for h in hits}))  # type: ignore[attr-defined]
-                        )
-                    ).all()
-                    by_id = {d.id: d for d in docs}
-                hits = [
-                    h for h in hits if (by_id.get(h.document_id) and by_id[h.document_id].doc_type in wanted)
-                ]
+            query, hits, browse = await _compute_hits()
             elapsed = _time.perf_counter() - t0
+            if not query and not browse:
+                return
 
-            result_summary.text = (
-                f"{len(hits)} result(s) for {query!r}"
-                + (" (LLM-reranked)" if rerank_toggle.value else "")
-                + f" · {elapsed * 1000:.0f} ms"
-            )
+            if browse:
+                parts = []
+                if filter_state["tags"]:
+                    parts.append("tags: " + ", ".join(filter_state["tags"]))
+                if filter_state["source_ids"]:
+                    parts.append(f"{len(filter_state['source_ids'])} source(s)")
+                if filter_state["doc_types"]:
+                    parts.append(", ".join(filter_state["doc_types"]))
+                result_summary.text = t("search.browse_count", lang).format(n=len(hits)) + (
+                    " — " + " · ".join(parts) if parts else ""
+                )
+            else:
+                result_summary.text = (
+                    t("search.result_count", lang).format(n=len(hits), q=repr(query))
+                    + (" " + t("search.reranked", lang) if rerank_toggle.value else "")
+                    + f" · {elapsed * 1000:.0f} ms"
+                )
             with out:
                 if not hits:
                     with ui.card().classes("w-full p-4"):
                         ui.icon("search_off").classes("text-4xl opacity-30")
                         ui.label(t("search.no_results", lang)).classes("opacity-70")
-                        ui.label(
-                            "Try a different phrasing, fewer keywords, or enable LLM reranking."
-                        ).classes("text-caption opacity-60")
+                        ui.label(t("search.no_results_hint", lang)).classes("text-caption opacity-60")
                     return
                 for rank, h in enumerate(hits, start=1):
                     score_pct = max(0.0, min(1.0, float(h.score))) * 100
@@ -1737,13 +1782,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         with ui.row().classes("gap-2"):
             ui.button(t("search.go", lang), icon="search", on_click=_go).props("color=primary")
-            ui.button("Save search", icon="bookmark_add", on_click=_save_current).props("dense")
+            ui.button(t("search.save", lang), icon="bookmark_add", on_click=_save_current).props("dense")
 
             async def _export(fmt: str) -> None:
                 from app.services.exports import search_hits_to_csv, search_hits_to_json
-                from app.services.search_service import hybrid_search
 
-                hits = await hybrid_search(q.value, top_k=100, user=user)
+                # Honour the same query + filters + rerank as the on-screen results.
+                _query, hits, _browse = await _compute_hits(top_k=100)
+                if not hits:
+                    ui.notify(t("search.nothing_to_export", lang), color="warning")
+                    return
                 payload = search_hits_to_csv(hits) if fmt == "csv" else search_hits_to_json(hits)
                 ui.download(
                     payload.encode("utf-8"),
@@ -1759,6 +1807,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             )
         q.on("keydown.enter", lambda _: _go())
         _refresh_saved()
+        # Auto-run when deep-linked with a tag or query (e.g. a Tags-page chip).
+        if initial_tag or initial_query:
+            ui.timer(0.1, _go, once=True)
 
     @ui.page("/chat")
     def page_chat() -> None:
@@ -2050,20 +2101,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             existing_tag = {it.value for it in existing if it.kind == "tag" and it.value}
 
                         with ui.dialog() as dialog, ui.card().classes("w-[520px] p-4"):
-                            ui.label("Restrict this chat to…").classes("text-h6 ldi-primary")
-                            ui.label(
-                                "Pick the sources or tags the assistant may use. "
-                                "Leave empty to search everything."
-                            ).classes("text-caption opacity-70 q-mb-md")
-                            ui.label("SOURCES").classes("text-caption opacity-60").style(
+                            ui.label(t("chat.restrict_to", lang)).classes("text-h6 ldi-primary")
+                            ui.label(t("chat.restrict_help", lang)).classes("text-caption opacity-70 q-mb-md")
+                            ui.label(t("chat.flt_sources", lang)).classes("text-caption opacity-60").style(
                                 "letter-spacing: 0.12em;"
                             )
                             src_checks: dict[int, Any] = {}
                             for sr in all_sources:
                                 src_checks[sr.id] = ui.checkbox(f"{sr.name}", value=sr.id in existing_src)
-                            ui.label("TAGS").classes("text-caption opacity-60 q-mt-md").style(
-                                "letter-spacing: 0.12em;"
-                            )
+                            ui.label(t("chat.flt_tags", lang)).classes(
+                                "text-caption opacity-60 q-mt-md"
+                            ).style("letter-spacing: 0.12em;")
                             tag_checks: dict[str, Any] = {}
                             with ui.row().classes("flex-wrap gap-1"):
                                 for tag in all_tags[:50]:
@@ -2194,7 +2242,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             ui.label(t("chat.start_or_pick", lang)).classes("opacity-70 text-body1")
                             ui.label(f"💡 {t('chat.ph_ask', lang)}").classes("text-caption opacity-50")
                             if starters:
-                                ui.label("Try one of these:").classes(
+                                ui.label(t("chat.try_one", lang)).classes(
                                     "text-caption opacity-70 q-mt-md"
                                 ).style("letter-spacing: 0.06em;")
                                 with (
@@ -2286,6 +2334,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         "text-caption opacity-70"
                     )
                 else:
+                    from urllib.parse import quote as _quote
+
                     max_count = max(counts.values()) if counts else 1
                     with ui.row().classes("flex-wrap gap-2 q-py-sm").style("line-height: 2.2;"):
                         for tag in tags:
@@ -2296,9 +2346,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             chip = (
                                 ui.button(
                                     f"{tag.name}  · {count}",
-                                    on_click=lambda tn=tag.name: ui.navigate.to(
-                                        f"/search?tag={tn}"  # placeholder; honoured below
-                                    ),
+                                    on_click=lambda tn=tag.name: ui.navigate.to(f"/search?tag={_quote(tn)}"),
                                 )
                                 .props("flat no-caps")
                                 .classes("ldi-pill")

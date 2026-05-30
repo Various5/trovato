@@ -165,3 +165,81 @@ async def hybrid_search(
         except Exception as e:
             logger.warning("rerank pipeline failed: {}", e)
     return hits
+
+
+def browse_documents(
+    *,
+    user: User | None = None,  # noqa: F821 — forward ref to avoid circular
+    source_ids: list[int] | None = None,
+    tags: list[str] | None = None,
+    doc_types: list[str] | None = None,
+    top_k: int = 50,
+) -> list[SearchHit]:
+    """List documents matching metadata filters, newest first, as ``SearchHit``s.
+
+    Used for query-less browsing from the Search page (e.g. clicking a tag chip
+    links to ``/search?tag=X``). Returns one hit per document so the existing
+    results renderer can show + open them; ``score`` is 0 since there's no
+    ranking. ACL-filtered when ``user`` is given.
+    """
+    with session_scope() as session:
+        stmt = select(Document)
+        if user is not None:
+            from app.auth.acl import filter_documents
+
+            stmt = filter_documents(stmt, user)
+        docs = list(session.exec(stmt).all())
+
+        if source_ids:
+            ss = {int(i) for i in source_ids}
+            docs = [d for d in docs if d.source_id in ss]
+        if doc_types:
+            dd = set(doc_types)
+            docs = [d for d in docs if d.doc_type in dd]
+        if tags:
+            tag_rows = session.exec(select(Tag).where(Tag.name.in_(tags))).all()  # type: ignore
+            tag_ids = [t.id for t in tag_rows if t.id is not None]
+            doc_ids_with_tag: set[int] = set()
+            if tag_ids:
+                links = session.exec(
+                    select(DocumentTagLink).where(DocumentTagLink.tag_id.in_(tag_ids))  # type: ignore
+                ).all()
+                doc_ids_with_tag = {link.document_id for link in links}
+            docs = [d for d in docs if d.id in doc_ids_with_tag]
+
+        docs.sort(key=lambda d: d.id or 0, reverse=True)
+        docs = docs[:top_k]
+        if not docs:
+            return []
+
+        # Batch-fetch chunks for the selected docs; pick the first chunk per doc
+        # for the snippet / open-at-page target.
+        doc_ids = [d.id for d in docs if d.id is not None]
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id.in_(doc_ids))  # type: ignore
+        ).all()
+        first_chunk: dict[int, DocumentChunk] = {}
+        for c in chunks:
+            cur = first_chunk.get(c.document_id)
+            if cur is None or (c.page_from or 0) < (cur.page_from or 0):
+                first_chunk[c.document_id] = c
+
+        hits: list[SearchHit] = []
+        for d in docs:
+            fc = first_chunk.get(d.id)
+            snippet = (fc.text[:220] if fc and fc.text else "") or f"{d.filename}"
+            hits.append(
+                SearchHit(
+                    chunk_id=fc.id if fc else 0,
+                    document_id=d.id,
+                    filename=d.filename,
+                    path=d.path,
+                    page_from=fc.page_from if fc else 1,
+                    page_to=fc.page_to if fc else 1,
+                    snippet=snippet,
+                    score=0.0,
+                    source=getattr(fc.source, "value", str(fc.source)) if fc else "native_text",
+                    tags=list(fc.tags or []) if fc else [],
+                )
+            )
+        return hits
