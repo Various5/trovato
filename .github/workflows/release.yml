@@ -191,3 +191,7 @@ jobs:
             ${{ env.INSTALLER_EXE }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Mark pre-release tags (PEP440 aN / bN / rcN, e.g. v0.4.0b4) as
+          # prereleases so they don't show as the stable "Latest" release.
+          # Final tags are numeric-only (vX.Y.Z) and stay full releases.
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
