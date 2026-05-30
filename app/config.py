@@ -70,7 +70,13 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     ocr_min_text_chars: int = 60  # below this we trigger OCR for a page
     max_file_size_mb: int = 512
-    parallel_workers: int = 2
+    # Performance auto-tuning. ``performance_profile`` is auto|low|balanced|high;
+    # ``auto`` sizes the pipeline to the detected CPU/RAM/GPU (see
+    # app/services/hardware.py). ``parallel_workers`` is a manual override:
+    # 0 (default) defers to the profile, any positive value pins the heavy
+    # worker count.
+    performance_profile: str = "auto"
+    parallel_workers: int = 0
 
     # ---- Resolved at runtime (not env-bound) ----
     @property
@@ -182,6 +188,7 @@ def get_settings() -> Settings:
         "chunk_size",
         "chunk_overlap",
         "ocr_min_text_chars",
+        "performance_profile",
         "parallel_workers",
         "allow_lan",
         "log_level",

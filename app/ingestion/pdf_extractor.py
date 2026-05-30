@@ -66,6 +66,9 @@ def extract_pdf(
     ``settings.ocr_min_text_chars`` or when ``force_ocr`` is True.
     """
     s = get_settings()
+    from app.services.hardware import active_tuning
+
+    tuning = active_tuning()
     cache_dir = s.cache_path / "pages" / str(doc_id_for_cache)
     img_cache_dir = s.cache_path / "images" / str(doc_id_for_cache)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +131,7 @@ def extract_pdf(
             need_ocr = force_ocr or len(native) < s.ocr_min_text_chars
             if need_ocr:
                 try:
-                    png = render_page_to_png(page, dpi=220)
+                    png = render_page_to_png(page, dpi=tuning.page_dpi)
                     rendered_path = cache_dir / f"page_{i:04d}.png"
                     rendered_path.write_bytes(png)
                     content.rendered_image_path = str(rendered_path)
@@ -136,9 +139,10 @@ def extract_pdf(
                 except Exception as e:
                     logger.warning("OCR failed page {} of {}: {}", i, pdf_path, e)
 
-            # OCR per image (small ones only, to keep it cheap)
+            # OCR per image (small ones only, to keep it cheap). The pixel cap
+            # scales with the machine — low-spec boxes skip larger images.
             for img in content.images:
-                if img.width * img.height > 0 and img.width * img.height < 4_000_000:
+                if 0 < img.width * img.height < tuning.image_ocr_max_pixels:
                     try:
                         img.ocr_text = ocr_image_bytes(img.bytes_)
                     except Exception:

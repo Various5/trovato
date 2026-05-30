@@ -7,6 +7,9 @@
 PaperVault is the working repository name; the product ships as **LocalDoc
 Intelligence**.
 
+**Status: Beta (v0.4.0b1).** Feature-complete and stabilising toward 1.0. The
+pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
+
 ---
 
 ## Highlights
@@ -25,6 +28,25 @@ Intelligence**.
 - **Backup / Restore**: granular ZIP backups, optional encryption
 - **UI**: NiceGUI desktop-style app, 6 themes, PDF viewer with page jump
 - **Windows installer**: PyInstaller + Inno Setup recipe
+- **Hardware auto-tuning**: scan concurrency, OCR render DPI and embedding
+  batch size scale to the machine — from a 2-core laptop to a 16-core box
+
+## Performance profiles
+
+The same build runs on a low-end laptop and a workstation. Settings → **Performance**
+exposes a profile:
+
+| Profile    | When                          | Effect                                              |
+|------------|-------------------------------|-----------------------------------------------------|
+| **Auto**   | default                       | detects CPU cores + RAM (+ GPU) and picks a tier    |
+| **Low**    | ≤2 cores or <6 GB RAM         | 1 worker, 150 DPI, small embedding batches          |
+| **Balanced** | mid-range (the old defaults)| ~2–4 workers, 220 DPI, 128-text batches             |
+| **High**   | 8+ cores, 16 GB+              | up to 8 workers, 300 DPI, 256-text batches          |
+
+`Auto` is recommended. The resolved knobs (workers, DPI, batch size) and the
+detected hardware are shown live in Settings and on the **Diagnostics** page
+(`GET /api/diagnostics/hardware`). A manual `parallel_workers` override (0 = auto)
+still wins for the worker count if you set it.
 
 ## Quick start (development)
 

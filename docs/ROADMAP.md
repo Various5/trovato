@@ -34,6 +34,29 @@
 - [x] ACL, audit, rate-limit, near-dup, secret-store, i18n, exports tests
 - [x] Playwright smoke-test scaffolding (`tests/e2e`)
 
+## v0.4 — Beta ✅
+
+- [x] **Hardware-aware performance auto-tuning** (`app/services/hardware.py`):
+      detects CPU cores / RAM / GPU, classifies a tier, and resolves every
+      pipeline knob (scan workers, quick-phase concurrency, embedding batch,
+      OCR render DPI, per-image OCR pixel cap, vision concurrency, LLM timeout)
+- [x] `performance_profile` setting (auto/low/balanced/high) — config → API
+      (validated server-side) → Settings UI (live preview) → Diagnostics
+- [x] `GET /api/diagnostics/hardware` — detected hardware + resolved tuning
+- [x] Beta version bump (0.4.0b1) across package, pyproject and installer
+- [x] Pre-release-aware update version comparison (`0.4.0b1 < 0.4.0`)
+- [x] Fixed update-check URL (was pinging the wrong GitHub owner, silently)
+- [x] Diagnostics fixes: no more duplicated cards on Refresh; dead no-op loop
+      removed; `cpu_count()` None-guard; deep-linked `/compare?a=&b=` honoured
+
+### Deferred follow-ups (tracked, not beta blockers)
+
+- [ ] `/search?tag=` tag-only browse (needs tag-only retrieval in `_go()`)
+- [ ] Search export should honour active filters + rerank (factor a shared helper)
+- [ ] Finish the i18n sweep — remaining hardcoded English in dashboard/search/chat
+- [ ] `near_dup` batch-fetch (avoid one DB session per document on Diagnostics)
+- [ ] Replace `len(session.exec(select(...)).all())` counts with `func.count()`
+
 ## v1.0 — Polish
 
 - [x] In-app metrics dashboard (CPU/RAM, queue depth, watcher status)

@@ -38,6 +38,7 @@ from app.models import (
     ScanJobStatus,
     Tag,
 )
+from app.services.hardware import active_tuning
 from app.services.tagging import auto_tags, detect_doc_type, detect_language
 from app.utils.hashing import sha256_file
 from app.utils.logging import logger
@@ -417,7 +418,7 @@ async def index_document(
     embeddings: list[list[float]] = []
     if embedding_inputs:
         try:
-            batch = 128
+            batch = active_tuning().embed_batch
             for i in range(0, len(embedding_inputs), batch):
                 if controller and not await controller.gate():
                     return None
@@ -535,7 +536,6 @@ async def index_document(
 async def resume_scan_job(job_id: int) -> int:
     """Continue an existing job: process every ScanJobItem still in ``pending``
     or ``processing`` status. Used at startup to recover from crashes."""
-    s = get_settings()
     with session_scope() as session:
         job = session.get(ScanJob, job_id)
         if not job:
@@ -562,10 +562,8 @@ async def resume_scan_job(job_id: int) -> int:
     controller = JobController(job_id=job_id)
     JOB_CONTROLLER[job_id] = controller
 
-    if phase == "quick":
-        concurrency = max(4, min(16, (s.parallel_workers or 2) * 4))
-    else:
-        concurrency = max(1, s.parallel_workers or 2)
+    tuning = active_tuning()
+    concurrency = tuning.quick_workers if phase == "quick" else tuning.workers
     sem = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
@@ -695,7 +693,6 @@ async def run_scan_job(
     are ``quick``, ``text``, ``ocr`` and ``vision``.
     """
 
-    s = get_settings()
     with session_scope() as session:
         source = session.get(DocumentSource, source_id)
         if not source:
@@ -751,13 +748,11 @@ async def run_scan_job(
                 j.total_files = len(files)
                 session.add(j)
 
-        # Parallel file processing: quick-phase scales widely (just hashing +
-        # SQLite writes), the heavier phases stay bounded by parallel_workers
-        # so OCR/embedding/Chroma don't thrash.
-        if phase == "quick":
-            concurrency = max(4, min(16, (s.parallel_workers or 2) * 4))
-        else:
-            concurrency = max(1, s.parallel_workers or 2)
+        # Parallel file processing: the quick phase scales widely (just hashing
+        # + SQLite writes), the heavier phases stay bounded so OCR/embedding/
+        # Chroma don't thrash. Both counts come from the hardware profile.
+        tuning = active_tuning()
+        concurrency = tuning.quick_workers if phase == "quick" else tuning.workers
         sem = asyncio.Semaphore(concurrency)
         processed = 0
         errors = 0

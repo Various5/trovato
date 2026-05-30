@@ -28,11 +28,17 @@ class LMStudioClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> None:
         s = get_settings()
         self.base_url = (base_url or s.lmstudio_base_url).rstrip("/")
         self.api_key = api_key or s.lmstudio_api_key or "lm-studio"
+        if timeout is None:
+            # Slower (CPU-only) backends get a longer grace; fast machines
+            # fail quicker. Resolved from the active performance profile.
+            from app.services.hardware import active_tuning
+
+            timeout = active_tuning().http_timeout
         self.timeout = timeout
 
     # ---- helpers ----------------------------------------------------------

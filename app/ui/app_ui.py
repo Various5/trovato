@@ -2738,6 +2738,37 @@ def register_ui(fastapi_app: FastAPI) -> None:
             coverlap = ui.number(t("settings.chunk_overlap", lang), value=s.chunk_overlap).classes("w-32")
 
         with ui.card().classes("w-full p-3 q-mt-md"):
+            ui.label(t("settings.performance", lang)).classes("text-h6")
+            from app.services.hardware import detect_hardware, resolve_tuning
+
+            _hw = detect_hardware()
+            _ram = f"{_hw.total_ram_gb:.0f} GB" if _hw.total_ram_gb else "?"
+
+            def _perf_text(profile: str) -> str:
+                tn = resolve_tuning(profile or "auto", _hw, worker_override=s.parallel_workers or 0)
+                gpu = f" · {_hw.gpu}" if _hw.has_gpu else ""
+                return (
+                    f"{_hw.physical_cores} cores · {_ram} RAM{gpu}  →  "
+                    f"{tn.tier} · {tn.workers} workers · DPI {tn.page_dpi} · batch {tn.embed_batch}"
+                )
+
+            perf = ui.select(
+                {
+                    "auto": t("settings.perf_auto", lang),
+                    "low": t("settings.perf_low", lang),
+                    "balanced": t("settings.perf_balanced", lang),
+                    "high": t("settings.perf_high", lang),
+                },
+                value=s.performance_profile,
+                label=t("settings.performance_profile", lang),
+                on_change=lambda e: perf_summary.set_text(_perf_text(e.value)),
+            ).classes("w-72")
+            ui.label(t("settings.perf_hint", lang)).classes("text-caption opacity-70")
+            perf_summary = ui.label(_perf_text(s.performance_profile)).classes(
+                "text-caption ldi-primary q-mt-xs"
+            )
+
+        with ui.card().classes("w-full p-3 q-mt-md"):
             ui.label(t("settings.appearance", lang)).classes("text-h6")
             theme = ui.select(
                 {k: v.label for k, v in THEMES.items()},
@@ -2766,6 +2797,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     "ocr_lang": _str(tlang.value) or s.ocr_lang,
                     "chunk_size": int(csize.value or s.chunk_size),
                     "chunk_overlap": int(coverlap.value or s.chunk_overlap),
+                    "performance_profile": perf.value or s.performance_profile,
                 }
             )
             get_settings.cache_clear()
@@ -2824,7 +2856,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         ui.code(text_blob, language="text").classes("w-full")
 
     @ui.page("/compare")
-    def page_compare() -> None:
+    def page_compare(a: int = 0, b: int = 0) -> None:
         user = _require_login()
         if not user:
             return
@@ -2840,9 +2872,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(t("compare.index_first", lang)).classes("opacity-70")
             return
 
+        # Pre-select when arriving from a deep link (e.g. Diagnostics → Compare,
+        # which links to /compare?a=<id>&b=<id>).
+        pre_a = a if a in options else None
+        pre_b = b if b in options else None
         with ui.row().classes("w-full gap-2"):
-            sel_a = ui.select(options, label=t("compare.doc_a", lang), with_input=True).classes("flex-1")
-            sel_b = ui.select(options, label=t("compare.doc_b", lang), with_input=True).classes("flex-1")
+            sel_a = ui.select(
+                options, value=pre_a, label=t("compare.doc_a", lang), with_input=True
+            ).classes("flex-1")
+            sel_b = ui.select(
+                options, value=pre_b, label=t("compare.doc_b", lang), with_input=True
+            ).classes("flex-1")
 
         output = ui.column().classes("w-full gap-2 q-mt-md")
 
@@ -2881,6 +2921,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         ui.button(t("compare.btn", lang), icon="compare_arrows", on_click=_run).props("color=primary")
 
+        # Auto-run when both documents arrived via the deep link.
+        if pre_a and pre_b and pre_a != pre_b:
+            ui.timer(0.1, _run, once=True)
+
     @ui.page("/diagnostics")
     def page_diagnostics() -> None:
         user = _require_login()
@@ -2905,7 +2949,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             storage_card.clear()
             idx_card.clear()
             lm_card.clear()
+            hw_card.clear()
+            metrics_card.clear()
             dup_card.clear()
+            near_card.clear()
             orph_card.clear()
 
             with storage_card:
@@ -2968,6 +3015,41 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         for d in grp["documents"]:
                             ui.label(f"#{d['id']}  {d['filename']}").classes("text-caption")
                             ui.label(d["path"]).classes("text-caption opacity-60 break-all")
+
+            with hw_card:
+                from app.services.hardware import tuning_summary
+
+                ui.label(t("diag.hardware", lang)).classes("text-h6")
+                summ = tuning_summary()
+                hw = summ["hardware"]
+                tn = summ["tuning"]
+                ram = f"{hw['total_ram_gb']:.0f} GB" if hw["total_ram_gb"] else "?"
+                gpu = hw["gpu"] or "—"
+                with ui.row().classes("gap-4 flex-wrap"):
+                    ui.label(
+                        f"{t('diag.hw_cpu', lang)}: {hw['physical_cores']} cores "
+                        f"({hw['logical_cores']} threads)"
+                    ).classes("text-caption")
+                    ui.label(f"{t('diag.hw_ram', lang)}: {ram}").classes("text-caption")
+                    ui.label(f"{t('diag.hw_gpu', lang)}: {gpu}").classes("text-caption")
+                profile_label = tn["profile"]
+                if tn["auto_resolved"]:
+                    profile_label = f"auto → {tn['tier']}"
+                with ui.row().classes("gap-4 flex-wrap q-mt-xs"):
+                    ui.label(f"{t('diag.hw_profile', lang)}: {profile_label}").classes(
+                        "text-caption ldi-primary"
+                    )
+                    ui.label(
+                        f"{t('diag.hw_workers', lang)}: {tn['workers']} "
+                        f"(quick {tn['quick_workers']})"
+                        + ("  ⚙" if tn["worker_override"] else "")
+                    ).classes("text-caption")
+                    ui.label(f"{t('diag.hw_embed_batch', lang)}: {tn['embed_batch']}").classes(
+                        "text-caption"
+                    )
+                    ui.label(f"{t('diag.hw_page_dpi', lang)}: {tn['page_dpi']}").classes("text-caption")
+                if not hw["psutil_available"]:
+                    ui.label(t("diag.metrics_disabled", lang)).classes("text-caption opacity-70")
 
             with metrics_card:
                 from app.services.metrics import queue_metrics, system_metrics
@@ -3043,6 +3125,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             storage_card = ui.card().classes("p-3").style("min-width: 320px; flex: 1")
             idx_card = ui.card().classes("p-3").style("min-width: 220px")
             lm_card = ui.card().classes("p-3").style("min-width: 280px; flex: 1")
+        hw_card = ui.card().classes("w-full p-3 q-mt-md")
         metrics_card = ui.card().classes("w-full p-3 q-mt-md")
         dup_card = ui.card().classes("w-full p-3 q-mt-md")
         near_card = ui.card().classes("w-full p-3 q-mt-md")

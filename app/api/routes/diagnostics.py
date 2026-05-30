@@ -69,6 +69,14 @@ def metrics(_user: User = Depends(login_required)) -> dict[str, Any]:
     return {"system": system_metrics(), "queue": queue_metrics()}
 
 
+@router.get("/hardware")
+def hardware(_user: User = Depends(login_required)) -> dict[str, Any]:
+    """Detected hardware + the resolved performance tuning for this machine."""
+    from app.services.hardware import tuning_summary
+
+    return tuning_summary()
+
+
 @router.get("/audit")
 def audit_log(
     limit: int = 100,

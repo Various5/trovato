@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -20,10 +21,6 @@ def _dir_size_bytes(path: Path) -> int:
     if not path.exists():
         return 0
     total = 0
-    for root, _dirs, files in (("", [], []),):  # type: ignore
-        pass
-    import os
-
     for root, _dirs, files in os.walk(path):
         for f in files:
             try:

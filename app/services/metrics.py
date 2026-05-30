@@ -33,7 +33,7 @@ def system_metrics() -> dict[str, Any]:
                 "process_rss_bytes": mem.rss,
                 "process_threads": proc.num_threads(),
                 "system_cpu_percent": psutil.cpu_percent(interval=0.05),
-                "system_cpu_count": psutil.cpu_count(logical=True),
+                "system_cpu_count": psutil.cpu_count(logical=True) or os.cpu_count() or 1,
                 "system_memory_total": psutil.virtual_memory().total,
                 "system_memory_used": psutil.virtual_memory().used,
                 "system_memory_percent": psutil.virtual_memory().percent,

@@ -28,10 +28,17 @@ _ALLOWED_KEYS = {
     "chunk_size",
     "chunk_overlap",
     "ocr_min_text_chars",
+    "performance_profile",
     "parallel_workers",
     "allow_lan",
     "log_level",
 }
+
+# Keys whose value is constrained to a fixed set — validated server-side so a
+# bad PATCH can't poison settings.json (the UI only enforces this client-side).
+from app.services.hardware import PROFILES as _PROFILES
+
+_ENUM_KEYS: dict[str, set[str]] = {"performance_profile": set(_PROFILES)}
 
 
 class SettingsPatch(BaseModel):
@@ -65,6 +72,7 @@ def read_settings(_user: User = Depends(login_required)) -> dict[str, Any]:
         "chunk_size": s.chunk_size,
         "chunk_overlap": s.chunk_overlap,
         "ocr_min_text_chars": s.ocr_min_text_chars,
+        "performance_profile": s.performance_profile,
         "parallel_workers": s.parallel_workers,
         "allow_lan": s.allow_lan,
         "log_level": s.log_level,
@@ -81,6 +89,13 @@ def update_settings(body: SettingsPatch, _user: User = Depends(login_required)) 
     bad = set(body.updates) - _ALLOWED_KEYS
     if bad:
         raise HTTPException(status_code=400, detail=f"keys not allowed: {bad}")
+    for key, allowed in _ENUM_KEYS.items():
+        val = body.updates.get(key)
+        if val is not None and val not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} must be one of {sorted(allowed)}, got {val!r}",
+            )
     save_user_settings(body.updates)
     get_settings.cache_clear()
     reset_client_cache()
