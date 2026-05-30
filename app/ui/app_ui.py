@@ -974,6 +974,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         f"{t('sources.last_scan', lang)} {s.last_scan_at:%Y-%m-%d %H:%M}"
                                     ).classes("text-caption opacity-60")
                             with ui.row().classes("gap-1 flex-shrink-0"):
+
                                 def _start(
                                     sid: int,
                                     phase: str,
@@ -983,9 +984,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     ui.notify(t(note_key, lang))
                                     _refresh()
 
-                                with ui.button(icon="play_arrow").props(
-                                    "color=primary dense round"
-                                ).tooltip(t("sources.scan", lang)):
+                                with (
+                                    ui.button(icon="play_arrow")
+                                    .props("color=primary dense round")
+                                    .tooltip(t("sources.scan", lang))
+                                ):
                                     with ui.menu():
                                         ui.menu_item(
                                             t("sources.phase_quick", lang),
@@ -1020,23 +1023,15 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         )
                                 ui.button(
                                     icon="bolt",
-                                    on_click=lambda sid=s.id: _start(
-                                        sid, "quick", "sources.scan_started"
-                                    ),
-                                ).props("flat dense round").tooltip(
-                                    t("sources.phase_quick", lang)
-                                )
+                                    on_click=lambda sid=s.id: _start(sid, "quick", "sources.scan_started"),
+                                ).props("flat dense round").tooltip(t("sources.phase_quick", lang))
                                 ui.button(
                                     icon="text_fields",
-                                    on_click=lambda sid=s.id: _start(
-                                        sid, "ocr", "sources.ocr_started"
-                                    ),
+                                    on_click=lambda sid=s.id: _start(sid, "ocr", "sources.ocr_started"),
                                 ).props("flat dense round").tooltip(t("sources.force_ocr", lang))
                                 ui.button(
                                     icon="image",
-                                    on_click=lambda sid=s.id: _start(
-                                        sid, "vision", "sources.vision_started"
-                                    ),
+                                    on_click=lambda sid=s.id: _start(sid, "vision", "sources.vision_started"),
                                 ).props("flat dense round").tooltip(t("sources.vision", lang))
                                 ui.button(
                                     icon="science",
@@ -2877,12 +2872,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
         pre_a = a if a in options else None
         pre_b = b if b in options else None
         with ui.row().classes("w-full gap-2"):
-            sel_a = ui.select(
-                options, value=pre_a, label=t("compare.doc_a", lang), with_input=True
-            ).classes("flex-1")
-            sel_b = ui.select(
-                options, value=pre_b, label=t("compare.doc_b", lang), with_input=True
-            ).classes("flex-1")
+            sel_a = ui.select(options, value=pre_a, label=t("compare.doc_a", lang), with_input=True).classes(
+                "flex-1"
+            )
+            sel_b = ui.select(options, value=pre_b, label=t("compare.doc_b", lang), with_input=True).classes(
+                "flex-1"
+            )
 
         output = ui.column().classes("w-full gap-2 q-mt-md")
 
@@ -3041,12 +3036,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     )
                     ui.label(
                         f"{t('diag.hw_workers', lang)}: {tn['workers']} "
-                        f"(quick {tn['quick_workers']})"
-                        + ("  ⚙" if tn["worker_override"] else "")
+                        f"(quick {tn['quick_workers']})" + ("  ⚙" if tn["worker_override"] else "")
                     ).classes("text-caption")
-                    ui.label(f"{t('diag.hw_embed_batch', lang)}: {tn['embed_batch']}").classes(
-                        "text-caption"
-                    )
+                    ui.label(f"{t('diag.hw_embed_batch', lang)}: {tn['embed_batch']}").classes("text-caption")
                     ui.label(f"{t('diag.hw_page_dpi', lang)}: {tn['page_dpi']}").classes("text-caption")
                 if not hw["psutil_available"]:
                     ui.label(t("diag.metrics_disabled", lang)).classes("text-caption opacity-70")

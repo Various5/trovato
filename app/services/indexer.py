@@ -116,17 +116,8 @@ async def index_document(
     client = get_client()
 
     # Phase resolution — what each phase enables/disables:
-    do_ocr = (
-        force_ocr
-        or phase == "ocr"
-        or phase == "vision"
-        or (phase == "full" and force_ocr)
-    )
-    do_vision = (
-        force_vision
-        or phase == "vision"
-        or (phase == "full" and force_vision)
-    )
+    do_ocr = force_ocr or phase == "ocr" or phase == "vision" or (phase == "full" and force_ocr)
+    do_vision = force_vision or phase == "vision" or (phase == "full" and force_vision)
     catalog_only = phase == "quick"
 
     def _hash_and_upsert_sync() -> tuple[str, int | None, bool]:
@@ -185,6 +176,7 @@ async def index_document(
     # This lets the user see all PDFs as a browsable list within seconds —
     # text extraction + embeddings can run as a later phase.
     if catalog_only:
+
         def _mark_indexed_sync() -> None:
             with session_scope() as session:
                 d = session.get(Document, doc_id)
@@ -201,9 +193,7 @@ async def index_document(
     # If we got here with the same content hash but force_* is set, we still
     # rebuild. If embeddings already exist and only force_embed is set, we can
     # short-circuit text extraction by re-using stored chunk text.
-    reuse_text_only = (
-        not force_ocr and not force_vision and force_embed and doc_id is not None
-    )
+    reuse_text_only = not force_ocr and not force_vision and force_embed and doc_id is not None
 
     # Extract pages + images
     all_pages_text: list[tuple[int, str]] = []
@@ -221,9 +211,7 @@ async def index_document(
                     .where(DocumentPage.document_id == doc_id)
                     .order_by(DocumentPage.page_number)
                 ).all()
-                ei = session.exec(
-                    select(DocumentImage).where(DocumentImage.document_id == doc_id)
-                ).all()
+                ei = session.exec(select(DocumentImage).where(DocumentImage.document_id == doc_id)).all()
                 return list(ep), list(ei)
 
         existing_pages, existing_images = await asyncio.to_thread(_load_existing_sync)
@@ -628,10 +616,7 @@ async def resume_scan_job(job_id: int) -> int:
             await asyncio.sleep(0)
 
     try:
-        tasks = [
-            asyncio.create_task(_process_one(it_id, it_path))
-            for it_id, it_path in item_snapshots
-        ]
+        tasks = [asyncio.create_task(_process_one(it_id, it_path)) for it_id, it_path in item_snapshots]
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
@@ -827,15 +812,10 @@ async def run_scan_job(
                     snap_processed = processed
                     snap_errors = errors
 
-                await asyncio.to_thread(
-                    _close_item_sync, item_id, doc_id, snap_processed, snap_errors
-                )
+                await asyncio.to_thread(_close_item_sync, item_id, doc_id, snap_processed, snap_errors)
                 await asyncio.sleep(0)
 
-        tasks = [
-            asyncio.create_task(_process_one(idx, df))
-            for idx, df in enumerate(files, start=1)
-        ]
+        tasks = [asyncio.create_task(_process_one(idx, df)) for idx, df in enumerate(files, start=1)]
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
