@@ -57,11 +57,38 @@ def _current_user() -> User | None:
         return None
 
 
+def _bridge_session_cookie(uid: int | None) -> None:
+    """Mirror the UI login into the Starlette session cookie.
+
+    The UI authenticates via ``app.storage.user`` (server-side), but the REST
+    API — page-image previews (``/api/documents/{id}/page/{n}/image``) and PDF
+    open/download (``/api/documents/{id}/file``) — authenticates via
+    ``request.session`` (``login_required``). Browser-issued requests for those
+    URLs can't reach ``app.storage.user`` (it's unavailable outside NiceGUI's
+    request context), so without this they look unauthenticated → 401 → broken
+    thumbnails and "login required" on open.
+
+    ``app.storage.browser`` *is* ``request.session``; writing the uid here
+    during a page build sets the session cookie, so the browser then sends it
+    on those sub-requests. Best-effort: browser storage is only writable while
+    a page is being built, so guard against the read-only (event-handler) case.
+    """
+    if uid is None:
+        return
+    try:
+        if nicegui_app.storage.browser.get(SESSION_USER_KEY) != uid:
+            nicegui_app.storage.browser[SESSION_USER_KEY] = uid
+    except Exception:
+        # Read-only outside an initial page request — nothing to do.
+        pass
+
+
 def _require_login() -> User | None:
     u = _current_user()
     if not u:
         ui.navigate.to("/login")
         return None
+    _bridge_session_cookie(u.id)
     return u
 
 
