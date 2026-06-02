@@ -187,9 +187,7 @@ def fts_insert(
     engine = get_engine()
     if not _fts_available or not engine.url.drivername.startswith("sqlite"):
         return
-    stmt = text(
-        "INSERT INTO chunks_fts(chunk_id, document_id, text, tags) VALUES (:cid, :did, :t, :tg)"
-    )
+    stmt = text("INSERT INTO chunks_fts(chunk_id, document_id, text, tags) VALUES (:cid, :did, :t, :tg)")
     params = {"cid": chunk_id, "did": document_id, "t": content, "tg": " ".join(tags)}
     try:
         if conn is not None:

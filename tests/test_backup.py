@@ -6,9 +6,11 @@ import sqlite3
 import zipfile
 from pathlib import Path
 
+import pytest
 from sqlmodel import select
 
 from app.backup import create_backup, restore_backup
+from app.config import get_settings
 from app.database import init_db, session_scope
 from app.models import (
     Chat,
@@ -22,6 +24,13 @@ from app.models import (
     UserRole,
     Visibility,
 )
+
+
+def _require_sqlite() -> None:
+    """Skip on non-SQLite backends — db-file backup/restore (VACUUM INTO, file
+    copy, sidecars) only applies to the local SQLite database."""
+    if not get_settings().effective_db_url.startswith("sqlite"):
+        pytest.skip("DB-file backup/restore is SQLite-specific")
 
 
 def test_create_and_restore_settings_backup(tmp_path: Path) -> None:
@@ -65,6 +74,7 @@ def test_db_backup_captures_recent_writes(tmp_path: Path) -> None:
     Pre-fix the backup copied localdoc.db but not its -wal sidecar, so a row
     still in the WAL could be silently missing from the backup.
     """
+    _require_sqlite()
     init_db()
     uniq = "wal_probe_hash_0001"
     _seed_document("/srcroot/wal_probe.pdf", uniq)
@@ -79,9 +89,7 @@ def test_db_backup_captures_recent_writes(tmp_path: Path) -> None:
     extracted.write_bytes(data)
     con = sqlite3.connect(str(extracted))
     try:
-        (count,) = con.execute(
-            "SELECT COUNT(*) FROM documents WHERE content_hash = ?", (uniq,)
-        ).fetchone()
+        (count,) = con.execute("SELECT COUNT(*) FROM documents WHERE content_hash = ?", (uniq,)).fetchone()
     finally:
         con.close()
     assert count == 1, "recent write missing from backup — WAL not checkpointed"
@@ -89,6 +97,7 @@ def test_db_backup_captures_recent_writes(tmp_path: Path) -> None:
 
 def test_db_restore_roundtrip(tmp_path: Path) -> None:
     """Back up the index, drop a document, restore db, and see it return."""
+    _require_sqlite()
     init_db()
     uniq = "roundtrip_hash_0002"
     doc_id = _seed_document("/srcroot/roundtrip.pdf", uniq)
@@ -117,6 +126,7 @@ def test_db_restore_roundtrip(tmp_path: Path) -> None:
 
 def test_restore_path_remap(tmp_path: Path) -> None:
     """path_remap rewrites stored document paths for a different machine layout."""
+    _require_sqlite()
     init_db()
     uniq = "remap_hash_0003"
     _seed_document(r"C:\oldroot\reports\a.pdf", uniq)

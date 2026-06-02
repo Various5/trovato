@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from sqlmodel import select
 
+from app.config import get_settings
 from app.database import init_db, session_scope
 from app.database.engine import fts_search
 from app.ingestion.pdf_extractor import PageContent
@@ -49,9 +50,7 @@ def _make_source(tmp_path: Path) -> DocumentSource:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_index_no_database_locked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_concurrent_index_no_database_locked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     src = _make_source(tmp_path)
 
     # 24 files, indexed concurrently — enough overlap to expose the race.
@@ -63,8 +62,7 @@ async def test_concurrent_index_no_database_locked(
 
     def _fake_extract(path: Any, *a: Any, **kw: Any) -> list[PageContent]:
         return [
-            PageContent(page_number=n, native_text=_PAGE_TEXT, width=600, height=800)
-            for n in range(1, 4)
+            PageContent(page_number=n, native_text=_PAGE_TEXT, width=600, height=800) for n in range(1, 4)
         ]
 
     monkeypatch.setattr(indexer, "extract_pdf", _fake_extract)
@@ -90,9 +88,7 @@ async def test_concurrent_index_no_database_locked(
 
     # Run the full text-phase persist path for every file at once. Pre-fix this
     # raised OperationalError('database is locked') from a colliding worker.
-    results = await asyncio.gather(
-        *(indexer.index_document(src, p, phase="text") for p in files)
-    )
+    results = await asyncio.gather(*(indexer.index_document(src, p, phase="text") for p in files))
 
     # Every document indexed (no None = no crash/skip).
     assert all(doc_id is not None for doc_id in results), results
@@ -111,5 +107,7 @@ async def test_concurrent_index_no_database_locked(
     assert len(chunks) >= len(files)  # at least one chunk per document
 
     # The FTS mirror (written via the session connection) is searchable.
-    hits = fts_search("Bauleiter", limit=50)
-    assert hits, "expected FTS hits for an indexed term"
+    # FTS5 is SQLite-only, so only assert it on that backend.
+    if get_settings().effective_db_url.startswith("sqlite"):
+        hits = fts_search("Bauleiter", limit=50)
+        assert hits, "expected FTS hits for an indexed term"
