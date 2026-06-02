@@ -29,6 +29,21 @@ def _get_or_create_collection():
     return client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
 
 
+def ensure_ready() -> None:
+    """Initialize the Chroma client + collection once, single-threaded.
+
+    Call this before fanning indexing work out across worker threads: the very
+    first ``PersistentClient`` construction validates the tenant/database, and
+    several threads hitting that init simultaneously can race with
+    "Could not connect to tenant default_tenant". Warming it once up front means
+    the workers only ever upsert into an already-live collection.
+    """
+    try:
+        _get_or_create_collection()
+    except Exception as e:
+        logger.warning("chroma warm-up failed: {}", e)
+
+
 def add_chunks(
     *,
     ids: list[str],

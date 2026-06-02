@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # worker count.
     performance_profile: str = "auto"
     parallel_workers: int = 0
+    # SQLite busy-timeout (ms): how long a connection waits for a contended
+    # write lock before giving up. The indexer serializes its own writers with
+    # a process-global lock; this is the cross-process / checkpoint backstop.
+    sqlite_busy_timeout_ms: int = 10_000
 
     # ---- Resolved at runtime (not env-bound) ----
     @property

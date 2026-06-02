@@ -18,7 +18,7 @@ from typing import Any
 from sqlmodel import select
 
 from app.config import get_settings
-from app.database import session_scope
+from app.database import session_scope, write_session
 from app.database.engine import fts_delete_for_document, fts_insert
 from app.ingestion.chunker import chunk_text, count_tokens
 from app.ingestion.pdf_extractor import extract_pdf
@@ -42,7 +42,7 @@ from app.services.hardware import active_tuning
 from app.services.tagging import auto_tags, detect_doc_type, detect_language
 from app.utils.hashing import sha256_file
 from app.utils.logging import logger
-from app.vectorstore import add_chunks, delete_for_document
+from app.vectorstore import add_chunks, delete_for_document, ensure_ready
 
 
 def utcnow() -> datetime:
@@ -128,7 +128,7 @@ async def index_document(
         except OSError as e:
             logger.warning("hash failed for {}: {}", path, e)
             return "", None, False
-        with session_scope() as session:
+        with write_session() as session:
             doc_row = session.exec(select(Document).where(Document.path == str(path))).first()
             has_real_index = doc_row is not None and (doc_row.page_count or 0) > 0
             is_unchanged = (
@@ -178,7 +178,7 @@ async def index_document(
     if catalog_only:
 
         def _mark_indexed_sync() -> None:
-            with session_scope() as session:
+            with write_session() as session:
                 d = session.get(Document, doc_id)
                 if d:
                     d.status = DocumentStatus.indexed
@@ -205,7 +205,7 @@ async def index_document(
     if reuse_text_only:
         # Re-embed only: pull existing pages/images from DB; skip extraction.
         def _load_existing_sync() -> tuple[list, list]:
-            with session_scope() as session:
+            with session_scope() as session:  # read-only — no write lock needed
                 ep = session.exec(
                     select(DocumentPage)
                     .where(DocumentPage.document_id == doc_id)
@@ -318,12 +318,19 @@ async def index_document(
             await asyncio.sleep(0)
     except Exception as e:
         logger.exception("extract failed for {}: {}", path, e)
-        with session_scope() as session:
-            d = session.get(Document, doc_id)
-            if d:
-                d.status = DocumentStatus.error
-                d.error = str(e)[:500]
-                session.add(d)
+        err = str(e)[:500]
+
+        def _mark_extract_error_sync() -> None:
+            with write_session() as session:
+                d = session.get(Document, doc_id)
+                if d:
+                    d.status = DocumentStatus.error
+                    d.error = err
+                    session.add(d)
+
+        # Off the event loop: the write lock may be held by a sibling worker,
+        # and blocking the loop on it would stall the UI/websocket.
+        await asyncio.to_thread(_mark_extract_error_sync)
         return None
 
     # Chunk + embed (pages/images are *not yet* persisted — we do that
@@ -421,22 +428,52 @@ async def index_document(
     # If embeddings failed completely we abort — keep the old index intact.
     if chunk_records and not embeddings:
         logger.error("no embeddings produced for {} — aborting; old index preserved", path.name)
-        with session_scope() as session:
-            d = session.get(Document, doc_id)
-            if d:
-                d.status = DocumentStatus.error
-                d.error = "embedding generation failed; previous index kept"
-                session.add(d)
+
+        def _mark_embed_error_sync() -> None:
+            with write_session() as session:
+                d = session.get(Document, doc_id)
+                if d:
+                    d.status = DocumentStatus.error
+                    d.error = "embedding generation failed; previous index kept"
+                    session.add(d)
+
+        await asyncio.to_thread(_mark_embed_error_sync)
         return None
 
     # Atomic swap: delete old chunks/pages/images, then insert new ones.
     # All synchronous; runs off the event loop so the UI stays responsive
     # for big documents (1000+ chunks = lots of SQLite writes + Chroma upserts).
     def _persist_index_sync() -> None:
+        # Heavy/slow work is deliberately kept OUT of the write transaction so
+        # the global write lock (held by write_session below) isn't pinned
+        # across it: tag detection is pure CPU on the aggregated text, and the
+        # Chroma vector store is a *separate* database that needs no SQLite
+        # lock. The lock therefore wraps only the SQLite writes — concurrent
+        # indexer workers serialize for milliseconds, not across the Chroma
+        # upsert, which is what previously tripped "database is locked".
+        agg_text = "\n".join(t for _, t in all_pages_text)[:50_000]
+        vision_text = "\n".join((img.vision_description or "") for img in image_rows)[:20_000]
+        tags = auto_tags(agg_text, vision_text=vision_text)
+        language = detect_language(agg_text)
+        doc_type = detect_doc_type(agg_text)
+
         if doc_id is not None:
-            delete_for_document(doc_id)
-            fts_delete_for_document(doc_id)
-        with session_scope() as session:
+            delete_for_document(doc_id)  # Chroma — outside the SQLite write lock
+
+        # Collected inside the transaction (needs the flushed chunk ids) but
+        # upserted to Chroma *after* the SQLite commit, so the lock isn't held
+        # across the vector write.
+        chroma_ids: list[str] = []
+        chroma_docs: list[str] = []
+        chroma_embeddings: list[list[float]] = []
+        chroma_metas: list[dict[str, Any]] = []
+
+        with write_session() as session:
+            conn = session.connection()
+            if doc_id is not None:
+                # Same transaction as the chunk rows → atomic, and (crucially)
+                # no second connection fighting the session for the write lock.
+                fts_delete_for_document(doc_id, conn=conn)
             for table in (DocumentChunk, DocumentPage, DocumentImage, DocumentTagLink):
                 rows = session.exec(
                     select(table).where(table.document_id == doc_id)  # type: ignore[arg-type]
@@ -454,14 +491,13 @@ async def index_document(
             session.flush()
 
             if embeddings and len(embeddings) == len(chunk_records):
-                ids: list[str] = []
-                docs_for_chroma: list[str] = []
-                metas: list[dict[str, Any]] = []
-                for rec, _vec in zip(chunk_records, embeddings, strict=False):
+                for rec, vec in zip(chunk_records, embeddings, strict=False):
                     rec.embedding_id = str(rec.id)
-                    ids.append(str(rec.id))
-                    docs_for_chroma.append(rec.text)
-                    metas.append(
+                    session.add(rec)
+                    chroma_ids.append(str(rec.id))
+                    chroma_docs.append(rec.text)
+                    chroma_embeddings.append(vec)
+                    chroma_metas.append(
                         {
                             "document_id": int(doc_id) if doc_id else 0,
                             "source_id": int(source.id) if source.id else 0,
@@ -470,25 +506,10 @@ async def index_document(
                             "filename": path.name,
                         }
                     )
-                    session.add(rec)
-                try:
-                    add_chunks(
-                        ids=ids,
-                        embeddings=embeddings,
-                        documents=docs_for_chroma,
-                        metadatas=metas,
-                    )
-                except Exception as e:
-                    logger.warning("chroma upsert failed: {}", e)
-
-                for rec in chunk_records:
                     if rec.id is not None and doc_id is not None:
-                        fts_insert(rec.id, doc_id, rec.text, rec.tags or [])
+                        fts_insert(rec.id, doc_id, rec.text, rec.tags or [], conn=conn)
 
             # Auto-tagging on aggregated text + vision descriptions
-            agg_text = "\n".join(t for _, t in all_pages_text)[:50_000]
-            vision_text = "\n".join((img.vision_description or "") for img in image_rows)[:20_000]
-            tags = auto_tags(agg_text, vision_text=vision_text)
             for tag_name in tags:
                 tag_obj = session.exec(select(Tag).where(Tag.name == tag_name)).first()
                 if not tag_obj:
@@ -505,10 +526,24 @@ async def index_document(
                 d.indexed_at = utcnow()
                 d.status = DocumentStatus.indexed
                 d.error = None
-                d.language = detect_language(agg_text)
-                d.doc_type = detect_doc_type(agg_text)
+                d.language = language
+                d.doc_type = doc_type
                 d.content_hash = content_hash  # commit the new hash only on success
                 session.add(d)
+
+        # Vector upsert after the SQLite commit: the lock is released, and a
+        # Chroma failure can no longer roll back the (now durable) chunk rows —
+        # it just means those chunks aren't vector-searchable until a reindex.
+        if chroma_ids:
+            try:
+                add_chunks(
+                    ids=chroma_ids,
+                    embeddings=chroma_embeddings,
+                    documents=chroma_docs,
+                    metadatas=chroma_metas,
+                )
+            except Exception as e:
+                logger.warning("chroma upsert failed: {}", e)
 
     await asyncio.to_thread(_persist_index_sync)
 
@@ -524,7 +559,7 @@ async def index_document(
 async def resume_scan_job(job_id: int) -> int:
     """Continue an existing job: process every ScanJobItem still in ``pending``
     or ``processing`` status. Used at startup to recover from crashes."""
-    with session_scope() as session:
+    with write_session() as session:
         job = session.get(ScanJob, job_id)
         if not job:
             raise ValueError(f"job {job_id} not found")
@@ -555,8 +590,13 @@ async def resume_scan_job(job_id: int) -> int:
     sem = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
+    # Warm the vector store once so the resumed workers don't race its
+    # first-time client/tenant initialization (quick phase never embeds).
+    if phase != "quick" and not options.get("dry_run"):
+        await asyncio.to_thread(ensure_ready)
+
     def _set_current_sync(name: str) -> None:
-        with session_scope() as session:
+        with write_session() as session:
             jj = session.get(ScanJob, job_id)
             if jj:
                 jj.current_file = name
@@ -566,7 +606,7 @@ async def resume_scan_job(job_id: int) -> int:
         item_id_v: int | None,
         doc_id_v: int | None,
     ) -> None:
-        with session_scope() as session:
+        with write_session() as session:
             item = session.get(ScanJobItem, item_id_v)
             if item:
                 item.document_id = doc_id_v
@@ -575,7 +615,7 @@ async def resume_scan_job(job_id: int) -> int:
                 session.add(item)
 
     def _bump_progress_sync(failed: bool) -> None:
-        with session_scope() as session:
+        with write_session() as session:
             jj = session.get(ScanJob, job_id)
             if jj:
                 jj.processed_files = min(
@@ -625,7 +665,7 @@ async def resume_scan_job(job_id: int) -> int:
             raise
 
         if controller.abort_event.is_set():
-            with session_scope() as session:
+            with write_session() as session:
                 j = session.get(ScanJob, job_id)
                 if j:
                     j.status = ScanJobStatus.aborted
@@ -633,7 +673,7 @@ async def resume_scan_job(job_id: int) -> int:
                     session.add(j)
             return job_id
 
-        with session_scope() as session:
+        with write_session() as session:
             j = session.get(ScanJob, job_id)
             if j:
                 j.status = ScanJobStatus.completed
@@ -647,7 +687,7 @@ async def resume_scan_job(job_id: int) -> int:
 
 async def recover_unfinished_jobs() -> int:
     """Mark ``running`` jobs as ``paused`` on startup and queue resume tasks."""
-    with session_scope() as session:
+    with write_session() as session:
         unfinished = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
         ids = [j.id for j in unfinished if j.id is not None]
         for j in unfinished:
@@ -678,7 +718,7 @@ async def run_scan_job(
     are ``quick``, ``text``, ``ocr`` and ``vision``.
     """
 
-    with session_scope() as session:
+    with write_session() as session:
         source = session.get(DocumentSource, source_id)
         if not source:
             raise ValueError(f"source {source_id} not found")
@@ -715,7 +755,7 @@ async def run_scan_job(
             ok, message = await client.preflight_embed()
             if not ok:
                 logger.error("scan {} aborted on preflight: {}", job_id, message)
-                with session_scope() as session:
+                with write_session() as session:
                     j = session.get(ScanJob, job_id)
                     if j:
                         j.status = ScanJobStatus.error
@@ -727,11 +767,16 @@ async def run_scan_job(
 
         provider = get_provider(source_snapshot)
         files = list(provider.iter_files(source_snapshot))
-        with session_scope() as session:
+        with write_session() as session:
             j = session.get(ScanJob, job_id)
             if j:
                 j.total_files = len(files)
                 session.add(j)
+
+        # Warm the vector store once so concurrent workers don't race its
+        # first-time client/tenant initialization (quick phase never embeds).
+        if not dry_run and phase != "quick":
+            await asyncio.to_thread(ensure_ready)
 
         # Parallel file processing: the quick phase scales widely (just hashing
         # + SQLite writes), the heavier phases stay bounded so OCR/embedding/
@@ -744,7 +789,7 @@ async def run_scan_job(
         lock = asyncio.Lock()
 
         def _open_item_sync(remote_path: str, local_name: str) -> int | None:
-            with session_scope() as session:
+            with write_session() as session:
                 item = ScanJobItem(
                     job_id=job_id,
                     path=remote_path,
@@ -765,7 +810,7 @@ async def run_scan_job(
             snap_processed: int,
             snap_errors: int,
         ) -> None:
-            with session_scope() as session:
+            with write_session() as session:
                 item = session.get(ScanJobItem, item_id_v)
                 if item:
                     item.document_id = doc_id_v
@@ -824,7 +869,7 @@ async def run_scan_job(
             raise
 
         if controller.abort_event.is_set():
-            with session_scope() as session:
+            with write_session() as session:
                 j = session.get(ScanJob, job_id)
                 if j:
                     j.status = ScanJobStatus.aborted
@@ -832,7 +877,7 @@ async def run_scan_job(
                     session.add(j)
             return job_id
 
-        with session_scope() as session:
+        with write_session() as session:
             source = session.get(DocumentSource, source_id)
             if source:
                 source.last_scan_at = utcnow()
@@ -845,7 +890,7 @@ async def run_scan_job(
                 session.add(j)
     except Exception as e:
         logger.exception("scan job failed: {}", e)
-        with session_scope() as session:
+        with write_session() as session:
             j = session.get(ScanJob, job_id)
             if j:
                 j.status = ScanJobStatus.error

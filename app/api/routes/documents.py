@@ -11,7 +11,7 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.auth.security import login_required
-from app.database import get_session
+from app.database import get_session, write_session
 from app.models import Document, DocumentImage, DocumentPage, User
 
 router = APIRouter()
@@ -166,9 +166,17 @@ def get_page_image(
                 out.write_bytes(pix.tobytes("png"))
             finally:
                 d.close()
-            if page is not None:
-                page.rendered_image_path = str(out)
-                session.add(page)
+            if page is not None and page.id is not None:
+                # Persist the cache pointer through the serialized write path:
+                # this endpoint runs on a request worker thread and can fire
+                # while a scan is indexing, so a lock-free write here would race
+                # the indexer and hit "database is locked". The fitz render
+                # above stays outside the lock.
+                with write_session() as ws:
+                    p = ws.get(DocumentPage, page.id)
+                    if p is not None:
+                        p.rendered_image_path = str(out)
+                        ws.add(p)
         return FileResponse(str(out), media_type="image/png")
     except HTTPException:
         raise
