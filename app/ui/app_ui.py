@@ -2524,6 +2524,28 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "color=primary"
             ).classes("q-mt-md")
 
+        # One-click preset for transferring the index to another machine
+        # (scan once on a fast box, search on the others — no re-scan).
+        with ui.card().classes("w-full p-3 q-mt-md"):
+            ui.label(t("backup.portable_title", lang)).classes("text-h6")
+            ui.label(t("backup.portable_hint", lang)).classes("text-caption opacity-70")
+
+            async def _do_portable_backup() -> None:
+                import asyncio as _aio
+
+                try:
+                    res = await _aio.to_thread(create_backup, ["db", "vector", "settings"])
+                except Exception as e:
+                    logger.warning("portable backup failed: {}", e)
+                    ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
+                    return
+                ui.notify(f"{t('backup.written_to', lang)} {res.path}", color="positive")
+                _refresh()
+
+            ui.button(
+                t("backup.portable_btn", lang), icon="drive_file_move", on_click=_do_portable_backup
+            ).props("color=primary").classes("q-mt-md")
+
         listing = ui.column().classes("w-full gap-2 q-mt-md")
 
         def _refresh() -> None:

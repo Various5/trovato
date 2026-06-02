@@ -177,6 +177,12 @@ _DICT: dict[str, dict[str, str]] = {
         "backup.restore": "Restore",
         "backup.restored": "Restored",
         "backup.errors": "errors",
+        "backup.portable_title": "Portable index (move to another machine)",
+        "backup.portable_hint": "Bundles the search index (database + vectors) and settings so you can "
+        "restore it on another machine and search immediately — no re-scanning. "
+        "Use the same embedding model there. Opening the original PDFs needs the "
+        "files present (use the same folder, or remap paths on restore).",
+        "backup.portable_btn": "Create portable index backup",
         # settings
         "settings.title": "Settings",
         "settings.lmstudio": "LM Studio",
@@ -505,6 +511,13 @@ _DICT: dict[str, dict[str, str]] = {
         "backup.restore": "Wiederherstellen",
         "backup.restored": "Wiederhergestellt",
         "backup.errors": "Fehler",
+        "backup.portable_title": "Portabler Index (auf anderen Rechner übertragen)",
+        "backup.portable_hint": "Bündelt den Suchindex (Datenbank + Vektoren) und die Einstellungen, "
+        "damit du ihn auf einem anderen Rechner wiederherstellen und sofort suchen "
+        "kannst — ohne erneuten Scan. Dort dasselbe Embedding-Modell verwenden. "
+        "Zum Öffnen der Original-PDFs müssen die Dateien vorhanden sein (gleicher "
+        "Ordner oder Pfade beim Wiederherstellen umschreiben).",
+        "backup.portable_btn": "Portable Index-Sicherung erstellen",
         # settings
         "settings.title": "Einstellungen",
         "settings.lmstudio": "LM Studio",
