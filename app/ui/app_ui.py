@@ -2560,21 +2560,70 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             f"{', '.join(b['components'])} · encrypted: {b['encrypted']}"
                         ).classes("text-caption opacity-70")
 
-                        async def _restore(p=b["path"]) -> None:
-                            import asyncio as _aio
+                        async def _restore(b=b) -> None:
+                            # Open a dialog to choose components, supply a
+                            # decryption password, and optionally remap file
+                            # paths for this machine before restoring.
+                            with ui.dialog() as dialog, ui.card().classes("w-96 p-4 gap-2"):
+                                ui.label(t("backup.restore_options", lang)).classes("text-h6")
+                                ui.label(b["filename"]).classes("text-caption opacity-70 break-words")
 
-                            try:
-                                res = await _aio.to_thread(restore_backup, p)
-                            except Exception as e:
-                                logger.warning("restore failed for {}: {}", p, e)
-                                ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
-                                return
-                            # Green only when nothing errored; otherwise warn.
-                            ui.notify(
-                                f"{t('backup.restored', lang)}: {res['restored']}; "
-                                f"{t('backup.errors', lang)}: {res['errors']}",
-                                color="warning" if res.get("errors") else "positive",
-                            )
+                                ui.label(t("backup.components_label", lang)).classes("text-body2 q-mt-sm")
+                                rchecks: dict[str, ui.checkbox] = {}
+                                with ui.row().classes("gap-3 flex-wrap"):
+                                    for comp in b["components"]:
+                                        rchecks[comp] = ui.checkbox(comp, value=True)
+
+                                rpw = (
+                                    ui.input(
+                                        t("backup.password_dec", lang),
+                                        password=True,
+                                        password_toggle_button=True,
+                                    ).classes("w-full")
+                                    if b.get("encrypted")
+                                    else None
+                                )
+
+                                ui.label(t("backup.remap_hint", lang)).classes(
+                                    "text-caption opacity-70 q-mt-sm"
+                                )
+                                remap_old = ui.input(t("backup.remap_old", lang)).classes("w-full")
+                                remap_new = ui.input(t("backup.remap_new", lang)).classes("w-full")
+
+                                async def _confirm() -> None:
+                                    import asyncio as _aio
+
+                                    comps = [k for k, c in rchecks.items() if c.value] or None
+                                    remap = (
+                                        (remap_old.value, remap_new.value)
+                                        if remap_old.value and remap_new.value
+                                        else None
+                                    )
+                                    try:
+                                        res = await _aio.to_thread(
+                                            restore_backup,
+                                            b["path"],
+                                            components=comps,
+                                            password=(rpw.value or None) if rpw else None,
+                                            path_remap=remap,
+                                        )
+                                    except Exception as e:
+                                        logger.warning("restore failed for {}: {}", b["path"], e)
+                                        ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
+                                        return
+                                    dialog.close()
+                                    ui.notify(
+                                        f"{t('backup.restored', lang)}: {res['restored']}; "
+                                        f"{t('backup.errors', lang)}: {res['errors']}",
+                                        color="warning" if res.get("errors") else "positive",
+                                    )
+
+                                with ui.row().classes("justify-end w-full q-mt-md"):
+                                    ui.button(t("common.cancel", lang), on_click=dialog.close).props("flat")
+                                    ui.button(t("backup.restore", lang), on_click=_confirm).props(
+                                        "color=primary"
+                                    )
+                            dialog.open()
 
                         ui.button(t("backup.restore", lang), on_click=_restore).props("dense")
 

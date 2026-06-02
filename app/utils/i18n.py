@@ -183,6 +183,13 @@ _DICT: dict[str, dict[str, str]] = {
         "Use the same embedding model there. Opening the original PDFs needs the "
         "files present (use the same folder, or remap paths on restore).",
         "backup.portable_btn": "Create portable index backup",
+        "backup.restore_options": "Restore options",
+        "backup.components_label": "Components to restore",
+        "backup.password_dec": "Decryption password",
+        "backup.remap_old": "Original path prefix (optional)",
+        "backup.remap_new": "New path prefix",
+        "backup.remap_hint": "If the original files live in a different folder on this machine, rewrite "
+        "their stored path prefix so opening/previewing works. Leave blank to keep paths.",
         # settings
         "settings.title": "Settings",
         "settings.lmstudio": "LM Studio",
@@ -518,6 +525,14 @@ _DICT: dict[str, dict[str, str]] = {
         "Zum Öffnen der Original-PDFs müssen die Dateien vorhanden sein (gleicher "
         "Ordner oder Pfade beim Wiederherstellen umschreiben).",
         "backup.portable_btn": "Portable Index-Sicherung erstellen",
+        "backup.restore_options": "Wiederherstellungs-Optionen",
+        "backup.components_label": "Komponenten zum Wiederherstellen",
+        "backup.password_dec": "Entschlüsselungs-Passwort",
+        "backup.remap_old": "Ursprünglicher Pfad-Präfix (optional)",
+        "backup.remap_new": "Neuer Pfad-Präfix",
+        "backup.remap_hint": "Wenn die Originaldateien auf diesem Rechner in einem anderen Ordner liegen, "
+        "den gespeicherten Pfad-Präfix umschreiben, damit Öffnen/Vorschau funktioniert. "
+        "Leer lassen, um die Pfade zu behalten.",
         # settings
         "settings.title": "Einstellungen",
         "settings.lmstudio": "LM Studio",
