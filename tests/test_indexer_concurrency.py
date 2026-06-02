@@ -98,9 +98,14 @@ async def test_concurrent_index_no_database_locked(
     assert all(doc_id is not None for doc_id in results), results
     assert len(set(results)) == len(files)  # distinct documents
 
+    # Scope to the ids produced here — the session-shared test DB may hold rows
+    # from other tests.
+    doc_ids = [r for r in results if r is not None]
     with session_scope() as session:
-        docs = session.exec(select(Document)).all()
-        chunks = session.exec(select(DocumentChunk)).all()
+        docs = session.exec(select(Document).where(Document.id.in_(doc_ids))).all()  # type: ignore
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id.in_(doc_ids))  # type: ignore
+        ).all()
     assert len(docs) == len(files)
     assert all(d.status.value == "indexed" for d in docs)
     assert len(chunks) >= len(files)  # at least one chunk per document

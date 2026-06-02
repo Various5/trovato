@@ -29,8 +29,8 @@ from sqlmodel import select
 
 from app import __version__
 from app.config import get_settings
-from app.database import session_scope
-from app.models import Backup, Chat, ChatMessage, Document, DocumentChunk, UserMemory
+from app.database import session_scope, write_session
+from app.models import Backup, Chat, ChatMessage, Document, DocumentChunk, DocumentPage, UserMemory
 from app.utils.logging import logger
 from app.utils.paths import safe_filename
 
@@ -48,6 +48,30 @@ class BackupResult:
 def _derive_key(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=200_000)
     return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def _consistent_db_snapshot(db_path: Path, dest_dir: Path) -> Path:
+    """Return a consistent, fully self-contained copy of the SQLite DB.
+
+    Uses ``VACUUM INTO``, which writes a checkpointed standalone database (no
+    ``-wal`` sidecar) reflecting all *committed* data — even while the app keeps
+    reading and writing. This is immune to the failure mode of a raw file copy:
+    in WAL mode a concurrent reader can block a checkpoint, leaving recent
+    commits only in the (uncopied) ``-wal`` and yielding a stale or unreadable
+    backup. The caller must delete the returned file's parent directory.
+    """
+    import sqlite3
+    import tempfile
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=str(dest_dir))) / "localdoc.db"
+    literal = str(tmp).replace("'", "''")  # SQL string literal; double any quote
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute(f"VACUUM INTO '{literal}'")
+    finally:
+        con.close()
+    return tmp
 
 
 def _zip_dir(zf: zipfile.ZipFile, src: Path, arcprefix: str) -> int:
@@ -96,9 +120,15 @@ def create_backup(
             "encrypted": bool(encrypt_password),
         }
 
-        # DB (snapshot via shutil; SQLite WAL safe enough for offline tools)
+        # DB — a VACUUM INTO snapshot (consistent + self-contained, all
+        # committed data, no -wal needed) rather than a raw file copy that could
+        # miss recently-committed rows still sitting in the WAL.
         if "db" in components and s.db_path.exists():
-            zf.write(s.db_path, arcname="db/localdoc.db")
+            snapshot = _consistent_db_snapshot(s.db_path, s.cache_path)
+            try:
+                zf.write(snapshot, arcname="db/localdoc.db")
+            finally:
+                shutil.rmtree(snapshot.parent, ignore_errors=True)
 
         # Vector store
         if "vector" in components and s.chroma_path.exists():
@@ -201,13 +231,42 @@ def _decrypt_if_needed(path: Path, password: str | None) -> bytes:
     return f.decrypt(payload)
 
 
+def _merge_rows(session: Any, model: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """``merge()`` each row in its own SAVEPOINT; return ``(ok, skipped)``.
+
+    A row that violates a constraint — e.g. a chat or memory whose ``user_id``
+    doesn't exist on this machine (foreign_keys are ON) — is rolled back to its
+    savepoint and skipped, instead of aborting the entire batch and leaving
+    nothing restored.
+    """
+    ok = skipped = 0
+    for row in rows:
+        try:
+            with session.begin_nested():
+                session.merge(model.model_validate(row))
+            ok += 1
+        except Exception as e:
+            skipped += 1
+            logger.debug("restore skipped a {} row: {}", getattr(model, "__name__", model), e)
+    return ok, skipped
+
+
 def restore_backup(
     archive_path: str | Path,
     *,
     components: Iterable[str] | None = None,
     password: str | None = None,
     make_safety_copy: bool = True,
+    path_remap: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
+    """Restore selected components from a backup archive.
+
+    ``path_remap=(old_prefix, new_prefix)`` rewrites every ``Document.path`` that
+    starts with ``old_prefix`` to ``new_prefix`` after a DB restore — use it when
+    moving an index to a machine that stores the original files in a different
+    folder, so opening/previewing the PDFs works there. Search/browse never need
+    the files and work regardless.
+    """
     s = get_settings()
     archive_path = Path(archive_path)
     if not archive_path.exists():
@@ -235,14 +294,35 @@ def restore_backup(
         manifest = json.loads(manifest_raw or b"{}")
         present = set(manifest.get("components", []))
 
-        # DB
+        # DB — extract to a temp file then atomically swap it in. The atomic
+        # os.replace() means a concurrent reader never sees a half-written/0-byte
+        # database, and we drop the old DB's -wal/-shm sidecars so SQLite can't
+        # replay stale frames onto the freshly restored file.
         if (selected is None or "db" in selected) and "db" in present:
+            from app.database.engine import reset_engine
+
+            tmp_db = s.db_path.with_name(s.db_path.name + ".restore-tmp")
             try:
-                with zf.open("db/localdoc.db") as src, s.db_path.open("wb") as dst:
+                with zf.open("db/localdoc.db") as src, tmp_db.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
+                # Release pooled handles (Windows blocks replace/unlink on open
+                # files); the next get_engine() reconnects to the new DB — no
+                # restart needed.
+                reset_engine()
+                for sfx in ("-wal", "-shm"):
+                    sidecar = s.db_path.with_name(s.db_path.name + sfx)
+                    try:
+                        sidecar.unlink()
+                    except FileNotFoundError:
+                        pass
+                os.replace(tmp_db, s.db_path)  # atomic
                 restored.append("db")
             except Exception as e:
                 errors.append(f"db: {e}")
+                try:
+                    tmp_db.unlink()
+                except FileNotFoundError:
+                    pass
 
         # Vector
         if (selected is None or "vector" in selected) and "vector" in present:
@@ -271,4 +351,67 @@ def restore_backup(
             except Exception as e:
                 errors.append(f"settings: {e}")
 
-    return {"restored": restored, "errors": errors, "manifest": manifest}
+        # Chats + memory (JSON). Skipped when the whole DB was just restored —
+        # those tables already came in with the .db file; the JSON path is for
+        # selectively merging chats/memory into an existing database.
+        db_restored = "db" in restored
+        if (
+            not db_restored
+            and (selected is None or "chats" in selected)
+            and "chats/chats.json" in zf.namelist()
+        ):
+            try:
+                payload = json.loads(zf.read("chats/chats.json") or b"{}")
+                with write_session() as session:
+                    _, c_skip = _merge_rows(session, Chat, payload.get("chats", []))
+                    session.flush()  # chats must exist before their messages (FK)
+                    _, m_skip = _merge_rows(session, ChatMessage, payload.get("messages", []))
+                restored.append("chats")
+                if c_skip or m_skip:
+                    errors.append(
+                        f"chats: skipped {c_skip} chat(s) / {m_skip} message(s) "
+                        "with no matching user/chat on this machine"
+                    )
+            except Exception as e:
+                errors.append(f"chats: {e}")
+
+        if (
+            not db_restored
+            and (selected is None or "memory" in selected)
+            and "memory/memory.json" in zf.namelist()
+        ):
+            try:
+                rows = json.loads(zf.read("memory/memory.json") or b"[]")
+                with write_session() as session:
+                    _, skip = _merge_rows(session, UserMemory, rows)
+                restored.append("memory")
+                if skip:
+                    errors.append(f"memory: skipped {skip} item(s) with no matching user on this machine")
+            except Exception as e:
+                errors.append(f"memory: {e}")
+
+    out: dict[str, Any] = {"restored": restored, "errors": errors, "manifest": manifest}
+
+    # Optional cross-machine path remap (after the DB is in place).
+    if path_remap and "db" in restored:
+        old, new = path_remap
+        try:
+            with write_session() as session:
+                remapped = 0
+                if old:
+                    for d in session.exec(select(Document)).all():
+                        if d.path.startswith(old):
+                            d.path = new + d.path[len(old) :]
+                            session.add(d)
+                            remapped += 1
+                # Cached page renders point at the source machine's cache dir;
+                # clear the pointers so the viewer re-renders from the (remapped)
+                # originals on this machine.
+                session.connection().exec_driver_sql(
+                    f"UPDATE {DocumentPage.__tablename__} SET rendered_image_path = NULL"
+                )
+            out["path_remapped"] = remapped
+        except Exception as e:
+            errors.append(f"path_remap: {e}")
+
+    return out

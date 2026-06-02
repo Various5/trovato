@@ -25,6 +25,9 @@ class RestoreBody(BaseModel):
     archive_path: str
     components: list[str] | None = None
     password: str | None = None
+    # [old_prefix, new_prefix] — rewrite document paths when the originals live
+    # in a different folder on this machine (so opening/previewing them works).
+    path_remap: list[str] | None = None
 
 
 @router.get("/components")
@@ -57,4 +60,7 @@ def restore(body: RestoreBody, _user: User = Depends(login_required)) -> dict[st
     p = Path(body.archive_path)
     if not p.exists():
         raise HTTPException(status_code=404, detail="archive not found")
-    return restore_backup(p, components=body.components, password=body.password)
+    remap: tuple[str, str] | None = None
+    if body.path_remap and len(body.path_remap) == 2:
+        remap = (body.path_remap[0], body.path_remap[1])
+    return restore_backup(p, components=body.components, password=body.password, path_remap=remap)

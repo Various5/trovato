@@ -76,6 +76,23 @@ def get_engine() -> Engine:
     return _engine
 
 
+def reset_engine() -> None:
+    """Dispose the cached engine so the next ``get_engine()`` rebuilds it.
+
+    Used when the database file is replaced underneath the app (restore from
+    backup): pooled connections still point at the old file — and on Windows
+    keep it open, blocking the overwrite — so the file must be closed first.
+    After this, the next ``get_engine()`` reconnects to whatever is now on disk.
+    """
+    global _engine
+    if _engine is not None:
+        try:
+            _engine.dispose()
+        except Exception as e:
+            logger.debug("engine dispose failed: {}", e)
+    _engine = None
+
+
 def init_db() -> None:
     """Create all tables and the FTS5 mirror for full-text search."""
     from app import models  # noqa: F401 — register tables
