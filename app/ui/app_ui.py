@@ -2852,8 +2852,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         from app.backup import BACKUP_COMPONENTS, create_backup, list_backups, restore_backup
 
-        with ui.card().classes("w-full p-3"):
-            ui.label(t("backup.create", lang)).classes("text-h6")
+        with section_card(lang, title_key="backup.create", icon="save"):
             checks: dict[str, ui.checkbox] = {}
             with ui.row().classes("gap-3 flex-wrap"):
                 for comp in BACKUP_COMPONENTS:
@@ -2887,8 +2886,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         # One-click preset for transferring the index to another machine
         # (scan once on a fast box, search on the others — no re-scan).
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("backup.portable_title", lang)).classes("text-h6")
+        with section_card(lang, title_key="backup.portable_title", icon="drive_file_move", extra="q-mt-md"):
             ui.label(t("backup.portable_hint", lang)).classes("text-caption opacity-70")
 
             async def _do_portable_backup() -> None:
@@ -2913,7 +2911,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             listing.clear()
             with listing:
                 ui.label(t("backup.existing", lang)).classes("text-h6")
-                for b in list_backups():
+                _existing = list_backups()
+                if not _existing:
+                    empty_state("inventory_2", "backup.empty_title", "backup.empty_hint", lang)
+                for b in _existing:
                     with ui.card().classes("w-full p-2"):
                         ui.label(b["filename"]).classes("text-body1")
                         ui.label(
@@ -3000,8 +3001,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         page_header("settings.title", lang)
         s = get_settings()
 
-        with ui.card().classes("w-full p-3"):
-            ui.label(t("settings.lmstudio", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.lmstudio", icon="memory"):
             url = ui.input(t("settings.base_url", lang), value=s.lmstudio_base_url).classes("w-full")
 
             # Free-text inputs so any model id can be typed in regardless of
@@ -3279,8 +3279,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.button("Browse models", icon="list", on_click=_browse_models).props("dense")
                 ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
 
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("settings.ocr", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.ocr", icon="document_scanner", extra="q-mt-md"):
             tcmd = ui.input(t("settings.tesseract", lang), value=s.tesseract_cmd).classes("w-full")
             tlang = ui.input(t("settings.ocr_langs", lang), value=s.ocr_lang).classes("w-full")
             tess_status = ui.label("").classes("text-caption opacity-80 q-mt-xs")
@@ -3319,13 +3318,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     new_tab=True,
                 ).classes("text-caption q-pa-sm")
 
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("settings.indexing", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.indexing", icon="tune", extra="q-mt-md"):
             csize = ui.number(t("settings.chunk_size", lang), value=s.chunk_size).classes("w-32")
             coverlap = ui.number(t("settings.chunk_overlap", lang), value=s.chunk_overlap).classes("w-32")
 
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("settings.performance", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.performance", icon="speed", extra="q-mt-md"):
             from app.services.hardware import detect_hardware, resolve_tuning
 
             _hw = detect_hardware()
@@ -3355,8 +3352,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "text-caption ldi-primary q-mt-xs"
             )
 
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("settings.appearance", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.appearance", icon="palette", extra="q-mt-md"):
             theme = ui.select(
                 {k: v.label for k, v in THEMES.items()},
                 value=_user_theme(user),
@@ -3402,8 +3398,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             "q-mt-md"
         )
 
-        with ui.card().classes("w-full p-3 q-mt-md"):
-            ui.label(t("settings.change_pw", lang)).classes("text-h6")
+        with section_card(lang, title_key="settings.change_pw", icon="lock", extra="q-mt-md"):
             old = ui.input(
                 t("common.current_password", lang), password=True, password_toggle_button=True
             ).classes("w-full")
@@ -3596,7 +3591,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.label(t("diag.duplicates", lang)).classes("text-h6")
                 dups = find_duplicates()
                 if not dups:
-                    ui.label(t("diag.dup_none", lang)).classes("text-caption opacity-70")
+                    empty_state("content_copy", "diag.dup_none_title", "diag.dup_none", lang)
                 for grp in dups[:50]:
                     with ui.expansion(f"{len(grp['documents'])} docs share hash {grp['content_hash'][:12]}…"):
                         for d in grp["documents"]:
@@ -3671,7 +3666,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 pairs = find_near_duplicates(threshold=0.7)
                 if not pairs:
-                    ui.label(t("diag.near_dup_none", lang)).classes("text-caption opacity-70")
+                    empty_state("join_full", "diag.near_dup_none_title", "diag.near_dup_none", lang)
                 for p in pairs[:30]:
                     with ui.row().classes("items-center w-full"):
                         ui.label(f"{p.a_filename}  ⇔  {p.b_filename}  ({p.similarity:.0%})").classes(
