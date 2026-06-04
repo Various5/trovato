@@ -230,6 +230,84 @@ async def hybrid_search(
     return hits
 
 
+def document_facets(hits: list[SearchHit]) -> dict[str, Any]:
+    """Count the distinct documents in ``hits`` by source, doc-type and tag.
+
+    Powers the result-driven search facets: instead of a static dump of every
+    source/tag/type in the library, the filter sidebar shows only what actually
+    appears in the current results, each with a hit count. Returns::
+
+        {"sources": [(source_id, name, count), ...],   # desc by count
+         "doc_types": [(doc_type, count), ...],
+         "tags": [(tag_name, count), ...],
+         "meta": {doc_id: {"source_id", "source_name", "doc_type", "tags"}}}
+
+    ``meta`` lets the caller filter the same hit set client-side (by source/
+    type/tag) without re-querying. Counts are per distinct document.
+    """
+    from collections import Counter
+
+    from app.models import DocumentSource
+
+    doc_ids = list({h.document_id for h in hits})
+    meta: dict[int, dict[str, Any]] = {}
+    empty = {"sources": [], "doc_types": [], "tags": [], "meta": meta}
+    if not doc_ids:
+        return empty
+
+    with session_scope() as session:
+        docs = session.exec(select(Document).where(Document.id.in_(doc_ids))).all()  # type: ignore
+        src_ids = {d.source_id for d in docs if d.source_id is not None}
+        src_name: dict[int, str] = {}
+        if src_ids:
+            for srow in session.exec(
+                select(DocumentSource).where(DocumentSource.id.in_(src_ids))  # type: ignore
+            ).all():
+                src_name[srow.id] = srow.name
+        links = session.exec(
+            select(DocumentTagLink).where(DocumentTagLink.document_id.in_(doc_ids))  # type: ignore
+        ).all()
+        tag_ids = {link.tag_id for link in links}
+        tag_name: dict[int, str] = {}
+        if tag_ids:
+            for trow in session.exec(select(Tag).where(Tag.id.in_(tag_ids))).all():  # type: ignore
+                tag_name[trow.id] = trow.name
+        tags_by_doc: dict[int, set[str]] = {}
+        for link in links:
+            nm = tag_name.get(link.tag_id)
+            if nm:
+                tags_by_doc.setdefault(link.document_id, set()).add(nm)
+        for d in docs:
+            meta[d.id] = {
+                "source_id": d.source_id,
+                "source_name": src_name.get(d.source_id, ""),
+                "doc_type": d.doc_type or "",
+                "tags": tags_by_doc.get(d.id, set()),
+            }
+
+    src_counter: Counter = Counter()
+    dt_counter: Counter = Counter()
+    tag_counter: Counter = Counter()
+    for did in doc_ids:
+        m = meta.get(did)
+        if not m:
+            continue
+        if m["source_id"] is not None:
+            src_counter[m["source_id"]] += 1
+        if m["doc_type"]:
+            dt_counter[m["doc_type"]] += 1
+        for tnm in m["tags"]:
+            tag_counter[tnm] += 1
+
+    sources = sorted(
+        ((sid, src_name.get(sid, str(sid)), c) for sid, c in src_counter.items()),
+        key=lambda x: (-x[2], x[1].lower()),
+    )
+    doc_types = sorted(dt_counter.items(), key=lambda x: (-x[1], x[0]))
+    tags = sorted(tag_counter.items(), key=lambda x: (-x[1], x[0].lower()))
+    return {"sources": sources, "doc_types": doc_types, "tags": tags, "meta": meta}
+
+
 def browse_documents(
     *,
     user: User | None = None,  # noqa: F821 — forward ref to avoid circular

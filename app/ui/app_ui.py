@@ -1965,84 +1965,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.button("Save", on_click=_do_save).props("color=primary")
             d.open()
 
-        from app.models import Tag
-
-        with session_scope() as session:
-            sources_for_filter = [
-                (sr.id, sr.name)
-                for sr in session.exec(select(DocumentSource).order_by(DocumentSource.name)).all()
-            ]
-            tags_for_filter = [t_.name for t_ in session.exec(select(Tag).order_by(Tag.name)).all()]
-            doc_types_for_filter = sorted(
-                {d.doc_type for d in session.exec(select(Document)).all() if d.doc_type}
-            )
-
         result_summary = ui.label("").classes("text-caption opacity-70 q-mt-sm")
 
-        # Layout: filter sidebar (left) + results (right)
+        # Active-filter chips (removable) shown above the results.
+        chips_box = ui.row().classes("items-center gap-1 flex-wrap w-full q-mt-xs")
+
+        # Cache the (unfiltered) result universe for the current query so toggling
+        # a facet re-filters instantly without re-embedding the query.
+        search_cache: dict[str, Any] = {"key": None, "universe": [], "facets": None, "browse": False}
+
+        # Layout: result-driven facet sidebar (left) + results (right).
         with ui.row().classes("w-full gap-3 no-wrap q-mt-sm items-start"):
-            with ui.column().classes("ldi-glass gap-3 q-pa-md").style("min-width: 240px; max-width: 260px;"):
+            with ui.column().classes("ldi-glass gap-2 q-pa-md").style("min-width: 250px; max-width: 280px;"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("filter_list").classes("ldi-accent")
                     ui.label(t("search.filters", lang)).classes("text-h6 flex-1")
-                if sources_for_filter:
-                    ui.label(t("search.sources", lang)).classes("text-caption opacity-60 q-mt-xs").style(
-                        "letter-spacing: 0.12em;"
-                    )
-                    for sid, sname in sources_for_filter:
-
-                        def _toggle_src(e, _sid=sid) -> None:
-                            if e.value and _sid not in filter_state["source_ids"]:
-                                filter_state["source_ids"].append(_sid)
-                            elif not e.value and _sid in filter_state["source_ids"]:
-                                filter_state["source_ids"].remove(_sid)
-
-                        ui.checkbox(sname).classes("text-body2").on("update:model-value", _toggle_src)
-                if doc_types_for_filter:
-                    ui.label(t("search.doc_type", lang)).classes("text-caption opacity-60 q-mt-md").style(
-                        "letter-spacing: 0.12em;"
-                    )
-                    for dt in doc_types_for_filter:
-
-                        def _toggle_dt(e, _dt=dt) -> None:
-                            if e.value and _dt not in filter_state["doc_types"]:
-                                filter_state["doc_types"].append(_dt)
-                            elif not e.value and _dt in filter_state["doc_types"]:
-                                filter_state["doc_types"].remove(_dt)
-
-                        ui.checkbox(dt).classes("text-body2").on("update:model-value", _toggle_dt)
-                if tags_for_filter:
-                    ui.label(t("search.tags", lang)).classes("text-caption opacity-60 q-mt-md").style(
-                        "letter-spacing: 0.12em;"
-                    )
-                    tag_chip_row = ui.row().classes("gap-1 flex-wrap")
-                    with tag_chip_row:
-                        for tname in tags_for_filter[:30]:
-                            active = {"v": tname in filter_state["tags"]}
-                            chip = ui.button(tname).props("flat dense no-caps").classes("ldi-pill")
-
-                            def _toggle_tag(_e=None, _tname=tname, _state=active, _chip=chip) -> None:
-                                _state["v"] = not _state["v"]
-                                if _state["v"]:
-                                    if _tname not in filter_state["tags"]:
-                                        filter_state["tags"].append(_tname)
-                                    _chip.props("color=primary")
-                                else:
-                                    if _tname in filter_state["tags"]:
-                                        filter_state["tags"].remove(_tname)
-                                    _chip.props(remove="color")
-
-                            chip.on("click", _toggle_tag)
-                            # Reflect a pre-seeded (deep-linked ?tag=) selection.
-                            if active["v"]:
-                                chip.props("color=primary")
-                ui.separator().classes("q-my-sm")
-                ui.button(
-                    t("search.clear_filters", lang),
-                    icon="restart_alt",
-                    on_click=lambda: ui.navigate.to("/search"),
-                ).props("flat dense")
-
+                    ui.button(icon="restart_alt", on_click=lambda: _clear_filters()).props(
+                        "flat dense round size=sm"
+                    ).tooltip(t("search.clear_filters", lang))
+                ui.label(t("search.facets_hint", lang)).classes("text-caption opacity-50")
+                facet_box = ui.column().classes("w-full gap-2 q-mt-xs")
             out = ui.column().classes("flex-1 gap-2 min-w-0")
 
         import html as _html
@@ -2074,80 +2016,174 @@ def register_ui(fastapi_app: FastAPI) -> None:
             }.get(source, "ldi-pill")
             return f'<span class="{colour}">{source}</span>'
 
-        async def _compute_hits(top_k: int = 15) -> tuple[str, list, bool]:
-            """Resolve hits honouring the live filters. Returns (query, hits, browse).
+        DISPLAY_K = 15
 
-            With a query → hybrid search (+ client-side doc-type filter). With no
-            query but active filters → metadata browse (tag/source/type). Shared by
-            _go() and _export() so exports match what's on screen.
-            """
+        def _match_filters(h, meta, src, tg, dts) -> bool:
+            m = meta.get(h.document_id)
+            if m is None:
+                return not (src or dts or tg)
+            return (
+                (not src or m["source_id"] in src)
+                and (not dts or m["doc_type"] in dts)
+                and (not tg or bool(tg & m["tags"]))  # any selected tag present
+            )
+
+        async def _ensure_universe() -> None:
+            """Fetch the unfiltered result set for the current query (or a library
+            browse when there's no query) and compute its facets, caching by
+            (query, rerank) so facet toggles don't re-embed."""
             import asyncio as _aio
 
-            from app.services.search_service import browse_documents, hybrid_search
+            from app.services.search_service import (
+                browse_documents,
+                document_facets,
+                hybrid_search,
+            )
 
             query = (q.value or "").strip()
-            src = list(filter_state["source_ids"]) or None
-            tg = list(filter_state["tags"]) or None
-            dts = list(filter_state["doc_types"]) or None
+            key = (query, bool(rerank_toggle.value))
+            if search_cache["key"] == key and search_cache["facets"] is not None:
+                return
             if query:
-                hits = await hybrid_search(
-                    query,
-                    top_k=top_k,
-                    rerank=rerank_toggle.value,
-                    user=user,
-                    source_ids=src,
-                    tags=tg,
-                )
-                # Apply doc-type filter client-side (hybrid_search has no native one)
-                if dts:
-                    wanted = set(dts)
-                    with session_scope() as session:
-                        docs = session.exec(
-                            select(Document).where(
-                                Document.id.in_(list({h.document_id for h in hits}))  # type: ignore[attr-defined]
+                universe = await hybrid_search(query, top_k=150, rerank=rerank_toggle.value, user=user)
+                browse = False
+            else:
+                universe = await _aio.to_thread(browse_documents, user=user, top_k=400)
+                browse = True
+            search_cache.update(key=key, universe=universe, facets=document_facets(universe), browse=browse)
+
+        def _filtered(limit: int) -> list:
+            facets = search_cache["facets"]
+            if not facets:
+                return []
+            meta = facets["meta"]
+            src = set(filter_state["source_ids"])
+            tg = set(filter_state["tags"])
+            dts = set(filter_state["doc_types"])
+            res = [h for h in search_cache["universe"] if _match_filters(h, meta, src, tg, dts)]
+            return res[:limit]
+
+        async def _facet_click(kind, value) -> None:
+            lst = filter_state[kind]
+            if value in lst:
+                lst.remove(value)
+            else:
+                lst.append(value)
+            await _go()
+
+        async def _chip_remove(kind, value) -> None:
+            if value in filter_state[kind]:
+                filter_state[kind].remove(value)
+            await _go()
+
+        async def _clear_filters() -> None:
+            filter_state["source_ids"] = []
+            filter_state["tags"] = []
+            filter_state["doc_types"] = []
+            await _go()
+
+        def _render_chips() -> None:
+            chips_box.clear()
+            facets = search_cache["facets"] or {}
+            src_name = {sid: nm for sid, nm, _ in facets.get("sources", [])}
+            active = (
+                [("source_ids", sid, src_name.get(sid, str(sid))) for sid in filter_state["source_ids"]]
+                + [("doc_types", dt, dt) for dt in filter_state["doc_types"]]
+                + [("tags", tn, tn) for tn in filter_state["tags"]]
+            )
+            if not active:
+                return
+            with chips_box:
+                ui.label(t("search.active_filters", lang)).classes("text-caption opacity-60")
+                for kind, value, label in active:
+                    with (
+                        ui.row()
+                        .classes("ldi-pill ldi-pill-success items-center gap-1 no-wrap")
+                        .style("padding: 2px 8px;")
+                    ):
+                        ui.label(str(label)).classes("text-caption")
+                        ui.icon("close").classes("cursor-pointer").style("font-size: 14px;").on(
+                            "click", lambda _e, k=kind, v=value: _chip_remove(k, v)
+                        )
+
+        def _render_facets() -> None:
+            facet_box.clear()
+            facets = search_cache["facets"]
+            with facet_box:
+                if not facets or not (facets["sources"] or facets["doc_types"] or facets["tags"]):
+                    ui.label(t("search.no_facets", lang)).classes("text-caption opacity-60")
+                    return
+                groups = [
+                    (
+                        "search.sources",
+                        "source_ids",
+                        [(sid, nm, c) for sid, nm, c in facets["sources"]],
+                        False,
+                    ),
+                    ("search.doc_type", "doc_types", [(dt, dt, c) for dt, c in facets["doc_types"]], False),
+                    ("search.tags", "tags", [(tn, tn, c) for tn, c in facets["tags"]], True),
+                ]
+                for title_key, kind, items, searchable in groups:
+                    if not items:
+                        continue
+                    n_active = sum(1 for it in items if it[0] in filter_state[kind])
+                    title = t(title_key, lang) + (f"  ·  {n_active}" if n_active else "")
+                    with ui.expansion(title, value=True).classes("w-full").props("dense"):
+                        refs: list = []
+                        if searchable and len(items) > 8:
+
+                            def _filter_rows(e, _refs=refs) -> None:
+                                term = (e.value or "").lower()
+                                shown = 0
+                                for row, lbl in _refs:
+                                    if term:
+                                        row.set_visibility(term in lbl)
+                                    else:
+                                        row.set_visibility(shown < 40)
+                                        shown += 1
+
+                            ui.input(placeholder=t("search.filter_within", lang)).props(
+                                "dense borderless clearable"
+                            ).classes("w-full").on("update:model-value", _filter_rows)
+                        for i, (key, label, count) in enumerate(items):
+                            active = key in filter_state[kind]
+                            row = (
+                                ui.row()
+                                .classes("items-center gap-2 w-full no-wrap cursor-pointer")
+                                .style("padding: 1px 2px; border-radius: 6px;")
                             )
-                        ).all()
-                        by_id = {d.id: d for d in docs}
-                    hits = [
-                        h
-                        for h in hits
-                        if (by_id.get(h.document_id) and by_id[h.document_id].doc_type in wanted)
-                    ]
-                return query, hits, False
-            if src or tg or dts:
-                hits = await _aio.to_thread(
-                    browse_documents,
-                    user=user,
-                    source_ids=src,
-                    tags=tg,
-                    doc_types=dts,
-                    top_k=max(top_k, 50),
-                )
-                return "", hits, True
-            return "", [], False
+                            with row:
+                                ui.icon("check_box" if active else "check_box_outline_blank").classes(
+                                    "text-sm " + ("ldi-accent" if active else "opacity-40")
+                                )
+                                ui.label(str(label)).classes("text-body2 flex-1 ellipsis").style(
+                                    "" if active else "opacity: 0.85;"
+                                )
+                                ui.label(str(count)).classes("ldi-pill text-caption")
+                            row.on("click", lambda _e, k=kind, v=key: _facet_click(k, v))
+                            refs.append((row, str(label).lower()))
+                            if searchable and len(items) > 40 and i >= 40:
+                                row.set_visibility(False)
 
         async def _go() -> None:
-            out.clear()
-            result_summary.text = ""
             import time as _time
 
-            t0 = _time.perf_counter()
-            query, hits, browse = await _compute_hits()
-            elapsed = _time.perf_counter() - t0
-            if not query and not browse:
+            await _ensure_universe()
+            query = (q.value or "").strip()
+            _render_facets()
+            _render_chips()
+            out.clear()
+            result_summary.text = ""
+            has_filter = bool(filter_state["source_ids"] or filter_state["tags"] or filter_state["doc_types"])
+            if not query and not has_filter:
+                with out:
+                    empty_state("manage_search", "search.start_title", "search.start_hint", lang)
                 return
-
-            if browse:
-                parts = []
-                if filter_state["tags"]:
-                    parts.append("tags: " + ", ".join(filter_state["tags"]))
-                if filter_state["source_ids"]:
-                    parts.append(f"{len(filter_state['source_ids'])} source(s)")
-                if filter_state["doc_types"]:
-                    parts.append(", ".join(filter_state["doc_types"]))
-                result_summary.text = t("search.browse_count", lang).format(n=len(hits)) + (
-                    " — " + " · ".join(parts) if parts else ""
-                )
+            t0 = _time.perf_counter()
+            hits = _filtered(DISPLAY_K)
+            elapsed = _time.perf_counter() - t0
+            if search_cache["browse"]:
+                result_summary.text = t("search.browse_count", lang).format(n=len(hits))
             else:
                 result_summary.text = (
                     t("search.result_count", lang).format(n=len(hits), q=repr(query))
@@ -2207,7 +2243,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 from app.services.exports import search_hits_to_csv, search_hits_to_json
 
                 # Honour the same query + filters + rerank as the on-screen results.
-                _query, hits, _browse = await _compute_hits(top_k=100)
+                await _ensure_universe()
+                hits = _filtered(100)
                 if not hits:
                     ui.notify(t("search.nothing_to_export", lang), color="warning")
                     return
@@ -2226,9 +2263,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             )
         q.on("keydown.enter", lambda _: _go())
         _refresh_saved()
-        # Auto-run when deep-linked with a tag or query (e.g. a Tags-page chip).
-        if initial_tag or initial_query:
-            ui.timer(0.1, _go, once=True)
+        # Run once on load: populates the result-driven facet sidebar (library-wide
+        # when there's no query) and auto-runs any deep-linked ?tag= / ?q= search.
+        ui.timer(0.1, _go, once=True)
 
     @ui.page("/chat")
     def page_chat() -> None:
