@@ -6,10 +6,11 @@
 
 #define MyAppName      "LocalDoc Intelligence"
 #define MyAppShort     "LocalDocIntelligence"
-#define MyAppVersion   "0.4.0b8"
+#define MyAppVersion   "0.4.0"
 ; Numeric quad for Windows version-info / uninstall comparison (pre-release
-; suffix maps to the 4th component: 0.4.0b8 -> 0.4.0.8).
-#define MyAppVersionInfo "0.4.0.8"
+; suffix maps to the 4th component: pre-releases use 1-99, final uses 100 so
+; the GA file-version sorts above all 0.4.0bN betas: 0.4.0 -> 0.4.0.100).
+#define MyAppVersionInfo "0.4.0.100"
 #define MyAppPublisher "Varous 555"
 #define MyAppURL       "https://github.com/Various5/localdoc-intelligence"
 #define MyAppExeName   "LocalDocIntelligence.exe"
