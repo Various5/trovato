@@ -1305,7 +1305,29 @@ def register_ui(fastapi_app: FastAPI) -> None:
         # ----- Source list (live updating) ------------------------------
         table_container = ui.column().classes("w-full gap-2")
 
-        def _refresh() -> None:
+        def _sources_sig(session) -> tuple:
+            """A lightweight fingerprint of everything the rows display, so the
+            auto-refresh only rebuilds (tearing down any open scan dropdown) when
+            something actually changed."""
+            out = []
+            for s in session.exec(select(DocumentSource).order_by(DocumentSource.id)).all():
+                j = _latest_job_for(session, s.id)
+                out.append(
+                    (
+                        s.id,
+                        s.name,
+                        s.path,
+                        str(s.last_scan_at),
+                        str(getattr(j, "status", None)),
+                        getattr(j, "processed_files", 0) or 0,
+                        getattr(j, "total_files", 0) or 0,
+                    )
+                )
+            return tuple(out)
+
+        _last_sig: dict[str, object] = {"v": None}
+
+        def _refresh(force: bool = True) -> None:
             from app.services.watcher import (
                 is_watching as _is_watching,
             )
@@ -1315,6 +1337,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.services.watcher import (
                 stop_watcher as _stop_watch,
             )
+
+            with session_scope() as _sess:
+                sig = _sources_sig(_sess)
+            if not force and sig == _last_sig["v"]:
+                return  # nothing changed — keep any open scan dropdown alive
+            _last_sig["v"] = sig
 
             table_container.clear()
             with table_container, session_scope() as session:
@@ -1474,8 +1502,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label("Auto-refresh: 3 s").classes("text-caption opacity-60")
 
         _refresh()
-        # Live progress poll — only refreshes the table area, doesn't reload the page.
-        ui.timer(3.0, _refresh)
+        # Live progress poll — rebuilds only when source/scan state changed, so an
+        # open scan dropdown isn't torn down every 3 s while you're using it.
+        ui.timer(3.0, lambda: _refresh(force=False))
 
     @ui.page("/documents")
     def page_documents() -> None:
