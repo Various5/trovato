@@ -100,3 +100,64 @@ def test_page_image_enforces_per_document_acl() -> None:
     # but 401/403 proves authorization passed.
     r_owner = client.get(f"/api/documents/{doc_id}/page/1/image", params={"t": make_media_token(owner_id)})
     assert r_owner.status_code not in (401, 403)
+
+
+def test_extracted_image_route_serves_and_acls(tmp_path) -> None:
+    """The embedded-image endpoint serves the cached file to the owner, applies
+    the per-document ACL, and 404s an unknown image."""
+    from app.models import (
+        Document,
+        DocumentImage,
+        DocumentSource,
+        DocumentStatus,
+        SourceType,
+        UserRole,
+        Visibility,
+    )
+
+    init_db()
+    imgfile = tmp_path / "logo.png"
+    imgfile.write_bytes(b"\x89PNG\r\n\x1a\nFAKE-IMAGE-BYTES")
+    with session_scope() as session:
+        owner = create_user(session, username="img-owner", password="pw-123456", role=UserRole.user)
+        other = create_user(session, username="img-other", password="pw-123456", role=UserRole.user)
+        session.flush()
+        owner_id, other_id = owner.id, other.id
+        src = DocumentSource(
+            name="img-src",
+            type=SourceType.local,
+            path="/tmp/img",
+            owner_id=owner_id,
+            visibility=Visibility.private,
+        )
+        session.add(src)
+        session.flush()
+        doc = Document(
+            source_id=src.id,
+            path="/tmp/img/x.pdf",
+            filename="x.pdf",
+            content_hash="img-route-hash",
+            status=DocumentStatus.indexed,
+            page_count=1,
+            owner_id=owner_id,
+            visibility=Visibility.private,
+        )
+        session.add(doc)
+        session.flush()
+        img = DocumentImage(
+            document_id=doc.id, page_number=1, image_index=0, image_hash="ih1", cache_path=str(imgfile)
+        )
+        session.add(img)
+        session.flush()
+        doc_id, img_id = doc.id, img.id
+
+    client = _client()
+    r = client.get(f"/api/documents/{doc_id}/img/{img_id}", params={"t": make_media_token(owner_id)})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/")
+
+    r_other = client.get(f"/api/documents/{doc_id}/img/{img_id}", params={"t": make_media_token(other_id)})
+    assert r_other.status_code == 403
+
+    r_missing = client.get(f"/api/documents/{doc_id}/img/999999", params={"t": make_media_token(owner_id)})
+    assert r_missing.status_code == 404

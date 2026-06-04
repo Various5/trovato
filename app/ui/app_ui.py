@@ -153,6 +153,34 @@ def media_image_url(document_id: int, page: int = 1) -> str:
     return f"{base}?t={tok}" if tok else base
 
 
+def doc_image_url(document_id: int, image_id: int) -> str:
+    """Token-authorized URL for an embedded image extracted during a vision scan."""
+    tok = _media_token()
+    base = f"/api/documents/{document_id}/img/{image_id}"
+    return f"{base}?t={tok}" if tok else base
+
+
+def _images_by_page(doc_ids: set[int]) -> dict[tuple[int, int], list[int]]:
+    """Map (document_id, page_number) -> [DocumentImage id, …] for the given docs,
+    so result cards can show the embedded pictures on a matched page. Empty until
+    a vision scan has extracted images."""
+    from collections import defaultdict
+
+    from app.models import DocumentImage
+
+    out: dict[tuple[int, int], list[int]] = defaultdict(list)
+    ids = [d for d in doc_ids if d is not None]
+    if not ids:
+        return out
+    with session_scope() as session:
+        rows = session.exec(
+            select(DocumentImage).where(DocumentImage.document_id.in_(ids))  # type: ignore[attr-defined]
+        ).all()
+    for im in rows:
+        out[(im.document_id, im.page_number)].append(im.id)
+    return out
+
+
 def open_pdf(document_id: int, page: int | None = None) -> None:
     """Open the PDF in a new browser tab (token-authorized) on the given page."""
     ui.run_javascript(f"window.open({pdf_url(document_id, page, _media_token())!r}, '_blank')")
@@ -2232,6 +2260,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 if not hits:
                     empty_state("search_off", "search.no_results", "search.no_results_hint", lang)
                     return
+                _img_map = _images_by_page({h.document_id for h in hits})
                 for rank, h in enumerate(hits, start=1):
                     score_pct = max(0.0, min(1.0, float(h.score))) * 100
                     with ui.card().classes("w-full p-3"):
@@ -2259,6 +2288,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
                                 # Snippet with highlighted matches
                                 ui.html(f"<div class='ldi-snippet'>{_highlight(h.snippet, query)}</div>")
+                                # Embedded images on the matched page (after a vision scan)
+                                _imgs = _img_map.get((h.document_id, h.page_from), [])
+                                if _imgs:
+                                    with ui.row().classes("gap-1 flex-wrap q-mt-xs"):
+                                        for _iid in _imgs[:6]:
+                                            ui.html(
+                                                f"<img src='{doc_image_url(h.document_id, _iid)}' "
+                                                f"loading='lazy' referrerpolicy='no-referrer' "
+                                                f"style='height:60px;width:auto;border-radius:6px;"
+                                                f"border:1px solid var(--ldi-glass-border);'/>"
+                                            )
                                 # Footer: score bar + actions
                                 with ui.row().classes("items-center gap-3 w-full no-wrap"):
                                     with ui.column().classes("gap-0").style("min-width: 130px;"):
@@ -2408,6 +2448,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             """Horizontal scroller of source cards beneath an assistant bubble.
             Each card shows index, filename, page and a short snippet, with
             View/PDF actions on hover."""
+            _img_map = _images_by_page({s.get("document_id") for s in sources})
             with footer_row:
                 with (
                     ui.expansion(
@@ -2455,6 +2496,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     "-webkit-box-orient: vertical; "
                                     "overflow: hidden;"
                                 )
+                                _imgs = _img_map.get((s.get("document_id"), s.get("page_from")), [])
+                                if _imgs:
+                                    with ui.row().classes("gap-1 flex-wrap q-mt-xs"):
+                                        for _iid in _imgs[:4]:
+                                            ui.html(
+                                                f"<img src='{doc_image_url(s.get('document_id'), _iid)}' "
+                                                f"loading='lazy' referrerpolicy='no-referrer' "
+                                                f"style='height:52px;width:auto;border-radius:6px;"
+                                                f"border:1px solid var(--ldi-glass-border);'/>"
+                                            )
 
         # --- Layout: two-column grid -----------------------------------
         with (

@@ -211,3 +211,33 @@ def get_page_image(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"render failed: {e}")
+
+
+@router.get("/{doc_id}/img/{image_id}")
+def get_extracted_image(
+    doc_id: int,
+    image_id: int,
+    user: User = Depends(media_user),
+    session: Session = Depends(get_session),
+) -> FileResponse:
+    """Serve an embedded image extracted from the PDF during a vision scan.
+
+    Used by search/chat result cards to show the actual pictures (logos,
+    figures) that live on a matched page. ACL-gated like download_document.
+    """
+    from app.auth.acl import can_see_document
+
+    doc = session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    if not can_see_document(user, doc):
+        raise HTTPException(status_code=403, detail="forbidden")
+    img = session.get(DocumentImage, image_id)
+    if not img or img.document_id != doc_id:
+        raise HTTPException(status_code=404, detail="image not found")
+    p = Path(img.cache_path)
+    if not p.exists():
+        raise HTTPException(status_code=410, detail="image no longer available on disk")
+    suffix = p.suffix.lower().lstrip(".") or "png"
+    media = "image/jpeg" if suffix in ("jpg", "jpeg") else f"image/{suffix}"
+    return FileResponse(str(p), media_type=media)
