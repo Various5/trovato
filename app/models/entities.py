@@ -84,7 +84,7 @@ class UserSetting(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", index=True)
-    theme: str = "dark"
+    theme: str = "emerald"
     language: str = "en"
     answer_length: str = "medium"  # short | medium | long
     preferred_tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))

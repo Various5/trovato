@@ -14,7 +14,7 @@ Motion principles:
 
 from __future__ import annotations
 
-from app.ui.themes import THEMES, Theme
+from app.ui.themes import DEFAULT_THEME, THEMES, Theme
 
 _FONT_IMPORT = (
     "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
@@ -40,7 +40,7 @@ def _background_layers(theme: Theme) -> str:
 
 def build_global_css(theme_name: str) -> str:
     """Return the full <style> body for the active theme."""
-    t = THEMES.get(theme_name) or THEMES["slate"]
+    t = THEMES.get(theme_name) or THEMES[DEFAULT_THEME]
     bg = _background_layers(t)
     if t.is_dark:
         glass_bg = "rgba(255,255,255,0.025)"
@@ -79,7 +79,7 @@ def build_global_css(theme_name: str) -> str:
   --ldi-glass-shadow: {glass_shadow};
   --ldi-hover-glow: {hover_glow};
   --ldi-focus-glow: {focus_glow};
-  --ldi-radius: 14px;
+  --ldi-radius: 16px;
   --ldi-radius-sm: 9px;
   --ldi-radius-lg: 20px;
   --ldi-blur: 18px;
@@ -526,8 +526,8 @@ pre {{
   width: 100%;
   justify-content: flex-start !important;
   border-radius: var(--ldi-radius-sm) !important;
-  padding: 8px 12px !important;
-  margin-bottom: 2px;
+  padding: 7px 12px !important;
+  margin-bottom: 1px;
   transition: background var(--ldi-trans),
               color var(--ldi-trans),
               padding var(--ldi-trans);

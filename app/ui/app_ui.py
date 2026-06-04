@@ -41,7 +41,7 @@ from app.services.hardware import detect_hardware
 from app.services.indexer import start_scan_in_background
 from app.ui.components import page_header, section_card
 from app.ui.styles import build_global_css
-from app.ui.themes import THEMES
+from app.ui.themes import DEFAULT_THEME, THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
 from app.utils.logging import logger
 from app.utils.secret_store import delete_secret, get_secret, put_secret
@@ -233,15 +233,13 @@ def _render_citation(c: dict) -> None:
             ).props("dense flat")
 
 
-def _apply_theme(theme_name: str = "slate") -> None:
-    theme = THEMES.get(theme_name) or THEMES["slate"]
+def _apply_theme(theme_name: str = DEFAULT_THEME) -> None:
+    theme = THEMES.get(theme_name) or THEMES[DEFAULT_THEME]
     ui.dark_mode().set_value(theme.is_dark)
     ui.add_head_html(f"<style>{build_global_css(theme_name)}</style>")
 
 
 def _user_theme(user: User) -> str:
-    from app.ui.themes import DEFAULT_THEME
-
     with session_scope() as session:
         s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
         return s.theme if s and s.theme in THEMES else DEFAULT_THEME
@@ -353,6 +351,9 @@ def _layout(user: User, current: str) -> None:
         def _cycle_theme() -> None:
             # Cycle through professional themes first, then legacy.
             order = [
+                "emerald",
+                "indigo",
+                "royal",
                 "slate",
                 "pearl",
                 "obsidian",
@@ -365,7 +366,7 @@ def _layout(user: User, current: str) -> None:
                 "highcontrast",
             ]
             cur = _user_theme(user)
-            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "slate"
+            nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else DEFAULT_THEME
             with session_scope() as session:
                 us = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
                 if not us:
@@ -449,7 +450,7 @@ def _do_logout() -> None:
 def register_ui(fastapi_app: FastAPI) -> None:
     @ui.page("/login")
     def page_login() -> None:
-        _apply_theme("dark")
+        _apply_theme(DEFAULT_THEME)
         if _current_user():
             ui.navigate.to("/")
             return
@@ -531,7 +532,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
     @ui.page("/first-run")
     def page_first_run() -> None:
-        _apply_theme("dark")
+        _apply_theme(DEFAULT_THEME)
         with session_scope() as session:
             if has_users(session):
                 ui.navigate.to("/login")
@@ -861,7 +862,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
     @ui.page("/recover")
     def page_recover() -> None:
-        _apply_theme("dark")
+        _apply_theme(DEFAULT_THEME)
         rl = "en"
         with (
             ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),

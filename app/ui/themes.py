@@ -69,6 +69,40 @@ THEMES: dict[str, Theme] = {
         accent="#a1abbb",
         border="#262a31",
     ),
+    # ----- Bold identities (vivid accent, deep surfaces) -----
+    "indigo": Theme(
+        "indigo",
+        "Indigo (bold)",
+        True,
+        bg="#0e0f1a",
+        surface="#16182a",
+        text="#e3e4f2",
+        primary="#6366f1",
+        accent="#a78bfa",
+        border="#272b48",
+    ),
+    "emerald": Theme(
+        "emerald",
+        "Emerald (bold)",
+        True,
+        bg="#0a0f0d",
+        surface="#111816",
+        text="#d7e0db",
+        primary="#10b981",
+        accent="#34d399",
+        border="#1d2a26",
+    ),
+    "royal": Theme(
+        "royal",
+        "Royal (bold)",
+        True,
+        bg="#0b1020",
+        surface="#131a2e",
+        text="#dde3ee",
+        primary="#3b82f6",
+        accent="#22d3ee",
+        border="#21283f",
+    ),
     # ----- Legacy / alternative themes (kept for users who prefer them) -----
     "light": Theme(
         "light",
@@ -139,7 +173,7 @@ THEMES: dict[str, Theme] = {
 }
 
 
-DEFAULT_THEME = "slate"
+DEFAULT_THEME = "emerald"
 
 
 def theme_css(theme_name: str) -> str:
