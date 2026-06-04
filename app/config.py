@@ -194,6 +194,8 @@ def get_settings() -> Settings:
         "ocr_min_text_chars",
         "performance_profile",
         "parallel_workers",
+        "host",
+        "port",
         "allow_lan",
         "log_level",
     ):

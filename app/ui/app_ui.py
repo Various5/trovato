@@ -3353,6 +3353,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 label=t("common.language", lang),
             ).classes("w-64")
 
+        with section_card(lang, title_key="settings.network", icon="lan", extra="q-mt-md"):
+            port_in = ui.number(
+                t("settings.app_port", lang), value=s.port, min=1, max=65535, format="%d"
+            ).classes("w-40")
+            lan_sw = ui.switch(t("settings.allow_lan", lang), value=s.allow_lan)
+            help_callout("settings.network_hint", lang, icon="warning")
+            ui.label(t("settings.network_restart", lang)).classes("text-caption opacity-60 q-mt-xs")
+
         def _save() -> None:
             # Stringify and strip — NiceGUI inputs return None when never
             # touched, and trailing whitespace breaks model id lookups.
@@ -3370,6 +3378,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     "chunk_size": int(csize.value or s.chunk_size),
                     "chunk_overlap": int(coverlap.value or s.chunk_overlap),
                     "performance_profile": perf.value or s.performance_profile,
+                    "port": int(port_in.value or s.port),
+                    "allow_lan": bool(lan_sw.value),
                 }
             )
             get_settings.cache_clear()
