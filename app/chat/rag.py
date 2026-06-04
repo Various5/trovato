@@ -302,6 +302,27 @@ async def stream_answer(
         full.append(msg)
         yield {"type": "token", "text": msg}
 
+    # Streaming produced nothing (no error raised) — e.g. a server/model whose
+    # streamed deltas we couldn't parse. Fall back to one non-streamed completion
+    # so the user still gets an answer instead of an empty bubble.
+    if not full:
+        logger.info("rag: streaming yielded no content — trying non-stream fallback")
+        try:
+            import asyncio as _aio
+
+            # Bound it: client.chat() retries up to 3× and each attempt can wait
+            # out a long CPU timeout, so cap the whole fallback so it can't hang
+            # for minutes after the user already saw streaming finish.
+            answer = await _aio.wait_for(client.chat(messages, temperature=0.2, max_tokens=900), timeout=60)
+        except Exception as e:
+            logger.warning("rag non-stream fallback failed: {}", e)
+            answer = ""
+        if answer.strip():
+            full.append(answer)
+            yield {"type": "token", "text": answer}
+        else:
+            logger.warning("rag: non-stream fallback also returned no answer")
+
     answer_text = "".join(full)
     with session_scope() as session:
         sources = [c.__dict__ for c in citations]

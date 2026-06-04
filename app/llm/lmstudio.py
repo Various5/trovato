@@ -23,6 +23,19 @@ class LMStudioError(RuntimeError):
     pass
 
 
+def _message_text(msg: dict[str, Any]) -> str:
+    """Pull the answer out of a chat ``message``/``delta``.
+
+    Reasoning models (Qwen3, DeepSeek-R1, gpt-oss, …) put their output in
+    ``reasoning_content`` (or ``reasoning``) and may leave ``content`` empty, so
+    fall back to those — otherwise the answer looks blank even though the model
+    replied.
+    """
+    if not isinstance(msg, dict):
+        return ""
+    return msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or ""
+
+
 class LMStudioClient:
     def __init__(
         self,
@@ -140,7 +153,7 @@ class LMStudioClient:
             if r.status_code >= 400:
                 raise LMStudioError(f"chat failed: {r.status_code} {r.text[:300]}")
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+            return _message_text(data["choices"][0]["message"])
 
     async def chat_stream(
         self,
@@ -165,21 +178,38 @@ class LMStudioClient:
                 if r.status_code >= 400:
                     text = await r.aread()
                     raise LMStudioError(f"stream failed: {r.status_code} {text[:300]!r}")
+                import json as _json
+
+                content_seen = False
+                reasoning_buf: list[str] = []
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data: "):
                         continue
                     chunk = line[6:].strip()
                     if chunk == "[DONE]":
-                        return
+                        break
                     try:
-                        import json as _json
-
-                        delta = _json.loads(chunk)["choices"][0].get("delta", {})
-                        piece = delta.get("content")
-                        if piece:
-                            yield piece
-                    except Exception:
+                        choices = _json.loads(chunk).get("choices") or []
+                        if not choices:
+                            continue  # role-only / usage-only / keep-alive chunk
+                        delta = choices[0].get("delta") or {}
+                    except Exception as e:
+                        logger.debug("chat_stream: skipped unparseable chunk {!r}: {}", chunk[:120], e)
                         continue
+                    content = delta.get("content")
+                    if content:
+                        content_seen = True
+                        yield content
+                    else:
+                        r_piece = delta.get("reasoning_content") or delta.get("reasoning")
+                        if r_piece:
+                            reasoning_buf.append(r_piece)
+                # Reasoning models stream their chain-of-thought in reasoning_content
+                # before the answer. Only surface it if the model never produced real
+                # answer content — otherwise normal replies stay clean and the hidden
+                # thinking isn't dumped into (and saved with) the answer.
+                if not content_seen and reasoning_buf:
+                    yield "".join(reasoning_buf)
 
     # ---- embeddings -------------------------------------------------------
 
