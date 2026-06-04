@@ -36,6 +36,27 @@ def _message_text(msg: dict[str, Any]) -> str:
     return msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or ""
 
 
+def _normalize_base_url(base: str) -> str:
+    """Ensure the URL targets LM Studio's OpenAI-compatible ``/v1`` API.
+
+    People routinely enter a bare ``host:port`` (e.g. ``http://10.0.1.40:1234``).
+    LM Studio serves the OpenAI API under ``/v1``; a bare ``/chat/completions``
+    then hits its "Unexpected endpoint or method … Returning 200 anyway" handler,
+    so the app gets a 200 with no ``choices`` and chat looks empty. If the URL
+    has a scheme + host but no path, append ``/v1``.
+    """
+    from urllib.parse import urlparse
+
+    base = (base or "").rstrip("/")
+    try:
+        p = urlparse(base)
+    except Exception:
+        return base
+    if p.scheme and p.netloc and not p.path.strip("/"):
+        return base + "/v1"
+    return base
+
+
 class LMStudioClient:
     def __init__(
         self,
@@ -44,7 +65,7 @@ class LMStudioClient:
         timeout: float | None = None,
     ) -> None:
         s = get_settings()
-        self.base_url = (base_url or s.lmstudio_base_url).rstrip("/")
+        self.base_url = _normalize_base_url(base_url or s.lmstudio_base_url)
         self.api_key = api_key or s.lmstudio_api_key or "lm-studio"
         if timeout is None:
             # Slower (CPU-only) backends get a longer grace; fast machines
@@ -128,7 +149,14 @@ class LMStudioClient:
 
     # ---- chat -------------------------------------------------------------
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=4))
+    # Retry only transient transport errors (connect/timeout) — a malformed
+    # response or a config problem won't fix itself on retry, and wrapping it in
+    # a RetryError just hides the real cause.
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=0.5, max=4),
+        retry=retry_if_exception_type(httpx.TransportError),
+    )
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -152,8 +180,23 @@ class LMStudioClient:
             r = await c.post("/chat/completions", json=payload)
             if r.status_code >= 400:
                 raise LMStudioError(f"chat failed: {r.status_code} {r.text[:300]}")
-            data = r.json()
-            return _message_text(data["choices"][0]["message"])
+            try:
+                data = r.json()
+            except Exception:
+                raise LMStudioError(
+                    "LM Studio returned a non-JSON response — check the Base URL points at "
+                    f"the OpenAI API (…/v1). Got: {r.text[:200]!r}"
+                )
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not choices:
+                # The classic 'Unexpected endpoint … Returning 200 anyway' body,
+                # or no model loaded — surface it instead of a blank answer.
+                raise LMStudioError(
+                    "LM Studio returned no completion. Make sure a chat model is loaded "
+                    "and the Base URL ends in /v1 (Settings → LM Studio). "
+                    f"Response: {str(data)[:200]}"
+                )
+            return _message_text(choices[0].get("message") or {})
 
     async def chat_stream(
         self,

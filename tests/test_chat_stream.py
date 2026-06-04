@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from app.llm.lmstudio import LMStudioClient
+from app.llm.lmstudio import LMStudioClient, LMStudioError
 
 
 class _FakeResp:
@@ -107,3 +107,45 @@ async def test_skips_garbage_lines(bad: str, monkeypatch) -> None:
     lines = [bad, "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}), "data: [DONE]"]
     out = await _collect(lines, monkeypatch)
     assert "".join(out) == "hi"
+
+
+class _FakePostResp:
+    def __init__(self, status: int, body: dict) -> None:
+        self.status_code = status
+        self._body = body
+
+    def json(self) -> dict:
+        return self._body
+
+    @property
+    def text(self) -> str:
+        return json.dumps(self._body)
+
+
+class _FakePostClient:
+    def __init__(self, resp: _FakePostResp) -> None:
+        self._resp = resp
+
+    async def __aenter__(self) -> "_FakePostClient":  # noqa: UP037
+        return self
+
+    async def __aexit__(self, *a) -> bool:
+        return False
+
+    async def post(self, *_a, **_k) -> _FakePostResp:
+        return self._resp
+
+
+async def test_chat_clear_error_on_unexpected_endpoint(monkeypatch) -> None:
+    # LM Studio's "Unexpected endpoint … Returning 200 anyway" body: 200, no choices.
+    client = LMStudioClient(base_url="http://localhost:1234/v1")
+    resp = _FakePostResp(200, {"error": "Unexpected endpoint or method. (POST /chat/completions)"})
+
+    async def _fake():
+        return _FakePostClient(resp)
+
+    monkeypatch.setattr(client, "_client", _fake)
+    with pytest.raises(LMStudioError) as ei:
+        await client.chat([{"role": "user", "content": "x"}], model="m")
+    # A clear, actionable message — not a bare KeyError/RetryError.
+    assert "no completion" in str(ei.value).lower() or "/v1" in str(ei.value)
