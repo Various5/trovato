@@ -164,19 +164,18 @@ def _now_utc():
     return datetime.now(UTC)
 
 
-def _maybe_send_on_enter(event, send_fn) -> None:
-    """Send on plain Enter; allow Shift+Enter for newline.
+async def _maybe_send_on_enter(event, send_fn) -> None:
+    """Send on plain Enter; allow Shift+Enter for a newline.
 
-    NiceGUI's `keydown.enter` fires before the textarea inserts the newline,
-    so we only need to prevent / not-prevent based on the modifier flag.
+    ``send_fn`` is awaited here so it runs inside the event's NiceGUI client
+    context. A bare ``asyncio.create_task(send_fn())`` would run it detached in
+    a fresh task whose slot stack is empty, raising "The current slot cannot be
+    determined…" the instant it touches the UI.
     """
     args = getattr(event, "args", {}) or {}
     if args.get("shiftKey"):
         return  # let the textarea grow
-    ui.run_javascript("event && event.preventDefault && event.preventDefault();")
-    import asyncio
-
-    asyncio.create_task(send_fn())
+    await send_fn()
 
 
 # ---------------------------------------------------------------------------
@@ -2696,12 +2695,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ):
                                     for st in starters:
 
-                                        def _use_starter(_q=st["question"]) -> None:
+                                        async def _use_starter(_q=st["question"]) -> None:
                                             _new_chat()
                                             inp.value = _q
-                                            import asyncio as _aio
-
-                                            _aio.create_task(_send())
+                                            await _send()
 
                                         with (
                                             ui.card()
