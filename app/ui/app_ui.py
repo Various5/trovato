@@ -380,10 +380,6 @@ def _layout(user: User, current: str) -> None:
     # --- Drawer ----------------------------------------------------------
     with ui.left_drawer(value=True, bordered=False).props("width=260").classes("q-pa-md gap-1") as drawer:
         with ui.column().classes("gap-0 q-mb-md"):
-            ui.label(t("nav.dashboard", lang).upper() if False else "").classes(
-                "text-caption opacity-50 q-px-sm"
-            )
-            # Section header
             ui.label("MENU").classes("text-caption opacity-50 q-px-sm").style("letter-spacing: 0.12em;")
 
         for key, path, icon in NAV_ITEMS:
@@ -641,7 +637,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         chunks = collection_size()
 
         lang = _user_lang(user)
-        ui.label(t("dash.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("dash.title", lang)
         with ui.row().classes("gap-4 q-mb-md"):
             for label_key, value, icon in [
                 ("dash.documents", doc_count, "description"),
@@ -822,7 +818,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/sources")
         lang = _user_lang(user)
-        ui.label(t("sources.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("sources.title", lang)
 
         from app.models import ScanJob, ScanJobStatus
 
@@ -1162,7 +1158,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/documents")
         lang = _user_lang(user)
-        ui.label(t("docs.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("docs.title", lang)
 
         async def _show_similar(did: int, fname: str) -> None:
             from app.services.similar import find_similar
@@ -1496,7 +1492,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/search")
         lang = _user_lang(user)
-        ui.label(t("search.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("search.title", lang)
 
         # Deep-link params: ?tag=X (browse a tag, e.g. from the Tags page) and
         # ?q=… (pre-filled query). Captured before the input element shadows `q`.
@@ -2404,7 +2400,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/tags")
         lang = _user_lang(user)
-        ui.label(t("tags.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("tags.title", lang)
         from app.models import DocumentTagLink, Tag
 
         cloud_card = ui.card().classes("w-full p-4 q-mb-md")
@@ -2503,7 +2499,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/backup")
         lang = _user_lang(user)
-        ui.label(t("backup.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("backup.title", lang)
 
         from app.backup import BACKUP_COMPONENTS, create_backup, list_backups, restore_backup
 
@@ -2652,7 +2648,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/settings")
         lang = _user_lang(user)
-        ui.label(t("settings.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("settings.title", lang)
         s = get_settings()
 
         with ui.card().classes("w-full p-3"):
@@ -3085,7 +3081,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/logs")
         lang = _user_lang(user)
-        ui.label(t("logs.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("logs.title", lang)
         s = get_settings()
         log_file = s.logs_path / "localdoc.log"
         if log_file.exists():
@@ -3104,7 +3100,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/compare")
         lang = _user_lang(user)
-        ui.label(t("compare.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("compare.title", lang)
 
         with session_scope() as session:
             docs = session.exec(select(Document).order_by(Document.id.desc()).limit(2000)).all()
@@ -3174,7 +3170,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/diagnostics")
         lang = _user_lang(user)
-        ui.label(t("diag.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("diag.title", lang)
 
         import humanize
 
