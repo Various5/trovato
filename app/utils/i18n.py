@@ -95,6 +95,8 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.prev": "Prev",
         "docs.viewer.next": "Next",
         "docs.viewer.page_of": "page",
+        "docs.viewer.back_to_search": "Back to results",
+        "docs.viewer.fit_width": "Fit width",
         # search
         "search.title": "Search",
         "search.placeholder": "Search across content, OCR, image descriptions, tags",
@@ -141,6 +143,7 @@ _DICT: dict[str, dict[str, str]] = {
         "chat.flt_sources": "SOURCES",
         "chat.flt_tags": "TAGS",
         "chat.try_one": "Try one of these:",
+        "chat.no_answer": "_The model returned no answer. Check that a chat model is loaded in LM Studio (Settings → LM Studio)._",
         # sources
         "sources.title": "Sources",
         "sources.add_new": "Add new source",
@@ -515,6 +518,8 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.prev": "Zurück",
         "docs.viewer.next": "Weiter",
         "docs.viewer.page_of": "Seite",
+        "docs.viewer.back_to_search": "Zurück zu den Treffern",
+        "docs.viewer.fit_width": "Breite anpassen",
         # search
         "search.title": "Suche",
         "search.placeholder": "In Inhalt, OCR, Bildbeschreibungen und Tags suchen",
@@ -561,6 +566,7 @@ _DICT: dict[str, dict[str, str]] = {
         "chat.flt_sources": "QUELLEN",
         "chat.flt_tags": "TAGS",
         "chat.try_one": "Versuche eine davon:",
+        "chat.no_answer": "_Das Modell hat keine Antwort geliefert. Prüfe, ob in LM Studio ein Chat-Modell geladen ist (Einstellungen → LM Studio)._",
         # sources
         "sources.title": "Quellen",
         "sources.add_new": "Neue Quelle hinzufügen",

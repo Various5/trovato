@@ -5,16 +5,37 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.auth.security import login_required
+from app.auth.security import current_user_id, login_required, verify_media_token
 from app.database import get_session, write_session
 from app.models import Document, DocumentImage, DocumentPage, User
 
 router = APIRouter()
+
+
+def media_user(
+    request: Request,
+    t: str | None = None,
+    session: Session = Depends(get_session),
+) -> User:
+    """Auth for media URLs: accept the session cookie OR a signed ``?t=`` token.
+
+    PDF "open in browser" (new tab) and page-image previews (``<img>`` src) can't
+    rely on the NiceGUI session being carried, so the UI appends a signed token.
+    """
+    uid = current_user_id(request)
+    if uid is None and t:
+        uid = verify_media_token(t)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="login required")
+    user = session.get(User, uid)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="login required")
+    return user
 
 
 @router.get("")
@@ -70,7 +91,7 @@ def get_document(
 def download_document(
     doc_id: int,
     download: bool = False,
-    user: User = Depends(login_required),
+    user: User = Depends(media_user),
     session: Session = Depends(get_session),
 ) -> FileResponse:
     from app.auth.acl import can_see_document
@@ -131,7 +152,7 @@ async def similar(
 def get_page_image(
     doc_id: int,
     page_no: int,
-    _user: User = Depends(login_required),
+    _user: User = Depends(media_user),
     session: Session = Depends(get_session),
 ) -> FileResponse:
     page = session.exec(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,12 +30,28 @@ class SearchHit:
     tags: list[str]
 
 
+def _query_terms(query: str) -> list[str]:
+    """Distinct meaningful (>1 char) word tokens from the query, lower-cased."""
+    seen: list[str] = []
+    for w in re.findall(r"\w+", query.lower()):
+        if len(w) > 1 and w not in seen:
+            seen.append(w)
+    return seen
+
+
 def _snippet(text: str, query: str, length: int = 220) -> str:
     if not text:
         return ""
     lt = text.lower()
-    q = query.lower()
-    idx = lt.find(q)
+    # Center the snippet on a match so the highlighted term is visible: prefer
+    # the full phrase, then fall back to the first individual term that occurs.
+    idx = lt.find(query.lower())
+    if idx < 0:
+        for w in _query_terms(query):
+            j = lt.find(w)
+            if j >= 0:
+                idx = j
+                break
     if idx < 0:
         return text[:length] + ("…" if len(text) > length else "")
     start = max(0, idx - length // 3)
@@ -42,6 +59,26 @@ def _snippet(text: str, query: str, length: int = 220) -> str:
     pre = "…" if start > 0 else ""
     post = "…" if end < len(text) else ""
     return f"{pre}{text[start:end]}{post}"
+
+
+def _lexical_score(text: str, query: str) -> float:
+    """Lexical relevance in ~[0, 1.5]: fraction of query terms present in the
+    chunk plus a bonus when the full phrase appears verbatim.
+
+    Used as a tie-breaking boost on top of RRF so that results literally
+    containing the searched term surface above purely-semantic neighbours —
+    the user's "I searched X but the top hit has no X anywhere" complaint.
+    """
+    if not text:
+        return 0.0
+    lt = text.lower()
+    terms = _query_terms(query)
+    if not terms:
+        return 0.0
+    present = sum(1 for w in terms if w in lt)
+    frac = present / len(terms)
+    phrase = 0.5 if query.lower().strip() in lt else 0.0
+    return frac + phrase
 
 
 async def hybrid_search(
@@ -76,23 +113,28 @@ async def hybrid_search(
 
     fts_results = fts_search(query, limit=top_k * 2)
 
-    # Combine
+    # --- Reciprocal Rank Fusion (RRF) -------------------------------------
+    # Vector (cosine) and FTS (bm25) scores live on incomparable scales, so the
+    # old linear `alpha*v + (1-alpha)*f` blend was unstable — and the FTS
+    # normalisation `1 - score/max_bm` collapsed to 0 whenever results tied or a
+    # single row came back, which is exactly why exact keyword matches sank to
+    # the bottom. RRF fuses by *rank* instead: scale-free and robust. Each list
+    # contributes 1/(K + rank); a result near the top of either list ranks high.
+    K_RRF = 60
     combined: dict[int, dict[str, Any]] = {}
-    for r in vector_results:
+    for rank, r in enumerate(vector_results, start=1):
         try:
             cid = int(r["id"])
         except Exception:
             continue
-        combined.setdefault(cid, {})["vector_score"] = float(r.get("score") or 0.0)
-        combined[cid]["meta"] = r.get("metadata") or {}
-        combined[cid]["text"] = r.get("text") or ""
+        e = combined.setdefault(cid, {"rrf": 0.0})
+        e["rrf"] += 1.0 / (K_RRF + rank)
+        e["meta"] = r.get("metadata") or {}
+        e["text"] = r.get("text") or ""
 
-    if fts_results:
-        max_bm = max(score for _, _, score in fts_results) or 1.0
-        for cid, _did, score in fts_results:
-            combined.setdefault(cid, {})
-            # BM25 lower is better → invert
-            combined[cid]["fts_score"] = 1.0 - (score / max_bm)
+    for rank, (cid, _did, _score) in enumerate(fts_results, start=1):
+        e = combined.setdefault(int(cid), {"rrf": 0.0})
+        e["rrf"] += 1.0 / (K_RRF + rank)
 
     if not combined:
         return []
@@ -137,9 +179,13 @@ async def hybrid_search(
             if tag_filter_ids and doc.id not in tag_filter_ids:
                 continue
 
-            v = scores.get("vector_score", 0.0)
-            f = scores.get("fts_score", 0.0)
-            score = alpha * v + (1 - alpha) * f
+            # RRF base fusion + a lexical boost so verbatim term matches win
+            # ties against purely-semantic neighbours. Top-of-both-lists RRF is
+            # ~0.033, so weighting the lexical signal (≤1.5) by ~0.02 makes a
+            # full phrase match worth roughly one fusion rank — enough to lift
+            # an exact hit without degenerating into pure keyword search.
+            rrf = scores.get("rrf", 0.0)
+            score = rrf + 0.02 * _lexical_score(chunk.text, query)
             hits.append(
                 SearchHit(
                     chunk_id=cid,
@@ -164,6 +210,12 @@ async def hybrid_search(
             hits = await _do_rerank(query, hits)
         except Exception as e:
             logger.warning("rerank pipeline failed: {}", e)
+    # Normalise the displayed score to 0..1 relative to the best hit so the UI
+    # shows an intuitive relevance figure instead of raw ~0.0x RRF values.
+    top = max((h.score for h in hits), default=0.0)
+    if top > 0:
+        for h in hits:
+            h.score = round(h.score / top, 4)
     return hits
 
 

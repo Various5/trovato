@@ -7,6 +7,7 @@ import secrets
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import Depends, HTTPException, Request, status
+from itsdangerous import URLSafeTimedSerializer
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -92,6 +93,35 @@ def current_user_id(request: Request) -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Signed media tokens — PDF / page-image access from new tabs and <img> tags
+# ---------------------------------------------------------------------------
+
+_MEDIA_SALT = "ldi-media-access-v1"
+
+
+def make_media_token(user_id: int) -> str:
+    """Return a signed, time-limited token authorizing media access.
+
+    Browser-issued requests for ``/api/documents/{id}/file`` (opened in a new
+    tab) and ``/page/{n}/image`` (an ``<img>`` src) don't reliably carry the
+    NiceGUI/Starlette session, so the UI appends ``?t=<token>`` and the
+    endpoints accept it via ``media_user`` (app/api/routes/documents.py).
+    """
+    s = URLSafeTimedSerializer(get_settings().secret_key, salt=_MEDIA_SALT)
+    return s.dumps({"uid": int(user_id)})
+
+
+def verify_media_token(token: str, max_age: int = 86400) -> int | None:
+    """Return the user id from a valid, unexpired media token, else ``None``."""
+    try:
+        s = URLSafeTimedSerializer(get_settings().secret_key, salt=_MEDIA_SALT)
+        data = s.loads(token, max_age=max_age)
+        return int(data["uid"])
+    except Exception:
+        return None
+
+
 def get_current_user(request: Request, session: Session = Depends(get_session)) -> User:
     uid = current_user_id(request)
     if uid is None:
@@ -146,7 +176,9 @@ __all__ = [
     "login_required",
     "login_session",
     "logout_session",
+    "make_media_token",
     "make_recovery_key",
+    "verify_media_token",
     "require_admin",
     "reset_password_with_recovery",
     "set_password",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from nicegui import app as nicegui_app
@@ -105,21 +106,49 @@ def _require_login() -> User | None:
     return u
 
 
-def pdf_url(document_id: int, page: int | None = None) -> str:
+def _media_token() -> str:
+    """Signed token authorizing media URLs (PDF/page-image) for new tabs / <img>.
+
+    Reads the logged-in user from NiceGUI session storage (available in any page
+    or handler context). Without it, browser-issued requests to
+    /api/documents/.../file (a new tab) and /page/{n}/image (an <img> src) can
+    401 because the session isn't carried — see media_user() in
+    app/api/routes/documents.py.
+    """
+    try:
+        uid = nicegui_app.storage.user.get(SESSION_USER_KEY)
+    except Exception:
+        uid = None
+    if uid is None:
+        return ""
+    from app.auth.security import make_media_token
+
+    return make_media_token(int(uid))
+
+
+def pdf_url(document_id: int, page: int | None = None, token: str | None = None) -> str:
     """Build a URL to the original PDF that jumps to ``page`` when the browser
-    PDF viewer opens it."""
+    PDF viewer opens it. ``token`` (a signed media token) authorizes the new tab."""
     base = f"/api/documents/{document_id}/file"
+    if token:
+        base += f"?t={token}"
     if page and page > 0:
         # `#page=N` is the standard fragment understood by Chrome/Edge/Firefox
-        # PDF viewers (and Adobe Reader). Some viewers also accept additional
-        # parameters like `zoom=` and `nameddest=`.
-        return f"{base}#page={page}"
+        # PDF viewers (and Adobe Reader).
+        base += f"#page={page}"
     return base
 
 
+def media_image_url(document_id: int, page: int = 1) -> str:
+    """Token-authorized page-image URL for <img>/ui.image sources."""
+    tok = _media_token()
+    base = f"/api/documents/{document_id}/page/{page}/image"
+    return f"{base}?t={tok}" if tok else base
+
+
 def open_pdf(document_id: int, page: int | None = None) -> None:
-    """Open the PDF in a new browser tab on the specified page."""
-    ui.run_javascript(f"window.open({pdf_url(document_id, page)!r}, '_blank')")
+    """Open the PDF in a new browser tab (token-authorized) on the given page."""
+    ui.run_javascript(f"window.open({pdf_url(document_id, page, _media_token())!r}, '_blank')")
 
 
 def _now_utc():
@@ -1702,7 +1731,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             cb.on("update:model-value", _toggle)
                             # Page-1 thumbnail — browser-lazy so we don't
                             # blast the server with N parallel renders.
-                            thumb_url = f"/api/documents/{d.id}/page/1/image"
+                            thumb_url = media_image_url(d.id, 1)
                             ui.html(f"""
 <div class="ldi-glass-sm" style="width:120px; min-width:120px; height:150px;
    overflow:hidden; display:flex; align-items:center; justify-content:center;
@@ -2155,7 +2184,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 t("search.btn_view", lang),
                                 icon="visibility",
                                 on_click=lambda did=h.document_id, pg=h.page_from, qv=query: ui.navigate.to(
-                                    f"/viewer?doc={did}&page={pg}&q={qv}"
+                                    f"/viewer?doc={did}&page={pg}&q={quote(qv)}"
                                 ),
                             ).props("dense flat")
                             ui.button(
@@ -2580,6 +2609,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         if not question:
                             return
                         sending_state["busy"] = True
+                        md_el = md_card = footer = None
+                        buffer: list[str] = []
                         try:
                             if chat_state.get("chat_id") is None:
                                 _new_chat()
@@ -2593,7 +2624,6 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             from app.chat.rag import stream_answer
 
                             cites_state: list[dict] = []
-                            buffer: list[str] = []
                             async for ev in stream_answer(
                                 chat_id=chat_state["chat_id"],
                                 user=user,
@@ -2606,6 +2636,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     buffer.append(ev.get("text", ""))
                                     md_el.content = "".join(buffer)
                                     _scroll_msgs_to_bottom()
+                                elif ev_t == "error":
+                                    # stream_answer surfaces unrecoverable errors here
+                                    # (e.g. chat not found); show them instead of
+                                    # leaving an empty bubble spinning forever.
+                                    buffer.append(f"\n\n_⚠️ {ev.get('error', 'error')}_")
+                                    md_el.content = "".join(buffer)
+                                    _scroll_msgs_to_bottom()
                                 elif ev_t == "done":
                                     # remove streaming cursor & wire up sources
                                     md_card.classes(remove="ldi-stream-cursor")
@@ -2615,8 +2652,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         _render_sources_footer(footer, cites_state)
                                     _refresh_chats()  # update timestamp on sidebar
                                     _scroll_msgs_to_bottom()
+                        except Exception as e:
+                            logger.exception("chat send failed: {}", e)
+                            if md_el is not None:
+                                buffer.append(f"\n\n_⚠️ {e}_")
+                                md_el.content = "".join(buffer)
                         finally:
                             sending_state["busy"] = False
+                            # Always clear the streaming cursor, and never leave a
+                            # blank bubble if the model returned nothing.
+                            if md_card is not None:
+                                md_card.classes(remove="ldi-stream-cursor")
+                            if md_el is not None and not "".join(buffer).strip():
+                                md_el.content = t("chat.no_answer", lang)
 
                     ui.button(icon="send", on_click=_send).props("color=primary round dense").style(
                         "align-self: flex-end; margin-bottom: 4px;"
@@ -3698,24 +3746,51 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.button(
                 t("docs.viewer.prev", lang),
                 icon="navigate_before",
-                on_click=lambda: ui.navigate.to(f"/viewer?doc={doc}&page={max(1, page - 1)}&q={q}"),
+                on_click=lambda: ui.navigate.to(f"/viewer?doc={doc}&page={max(1, page - 1)}&q={quote(q)}"),
             ).props("dense")
             ui.button(
                 t("docs.viewer.next", lang),
                 icon="navigate_next",
-                on_click=lambda: ui.navigate.to(f"/viewer?doc={doc}&page={min(total_pages, page + 1)}&q={q}"),
+                on_click=lambda: ui.navigate.to(
+                    f"/viewer?doc={doc}&page={min(total_pages, page + 1)}&q={quote(q)}"
+                ),
             ).props("dense")
             ui.button(
                 t("docs.viewer.open_pdf", lang),
                 icon="picture_as_pdf",
                 on_click=lambda d=doc, p=page: open_pdf(d, p),
             ).props("dense color=primary")
+            if q:
+                ui.button(
+                    t("docs.viewer.back_to_search", lang),
+                    icon="arrow_back",
+                    on_click=lambda qq=q: ui.navigate.to(f"/search?q={quote(qq)}"),
+                ).props("dense flat")
 
         with ui.row().classes("w-full gap-4 no-wrap"):
-            with ui.column().classes("gap-2").style("min-width: 0; flex: 2"):
-                ui.image(f"/api/documents/{doc}/page/{page}/image").classes("w-full ldi-border").style(
-                    "border: 1px solid; max-height: 80vh; object-fit: contain"
+            with ui.column().classes("gap-2").style("min-width: 0; flex: 2; overflow: auto;"):
+                _zoom = {"w": 100}
+                _img = (
+                    ui.image(media_image_url(doc, page))
+                    .classes("ldi-border")
+                    .style("border: 1px solid; width: 100%; height: auto; display: block;")
                 )
+
+                def _apply_zoom() -> None:
+                    _img.style(f"width: {_zoom['w']}%; height: auto; max-width: none;")
+
+                with ui.row().classes("gap-1 items-center q-mt-xs"):
+                    ui.button(icon="fit_screen", on_click=lambda: (_zoom.update(w=100), _apply_zoom())).props(
+                        "dense flat"
+                    ).tooltip(t("docs.viewer.fit_width", lang))
+                    ui.button(
+                        icon="zoom_out",
+                        on_click=lambda: (_zoom.update(w=max(50, _zoom["w"] - 25)), _apply_zoom()),
+                    ).props("dense flat")
+                    ui.button(
+                        icon="zoom_in",
+                        on_click=lambda: (_zoom.update(w=min(300, _zoom["w"] + 25)), _apply_zoom()),
+                    ).props("dense flat")
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
                 ui.label(t("docs.viewer.page_text", lang)).classes("text-h6")
                 snippet = page_text
