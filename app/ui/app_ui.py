@@ -515,7 +515,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     return
 
         with (
-            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.column().classes("w-full items-center justify-center p-4").style("min-height: 100vh"),
             ui.card().classes("ldi-static w-full max-w-sm p-6"),
         ):
             ui.label(t("login.title", ph_lang)).classes("text-h5 q-mb-md ldi-primary")
@@ -589,7 +589,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return LMStudioClient(base_url=(lm_url.value or s0.lmstudio_base_url))
 
         with (
-            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.column().classes("w-full items-center justify-center p-4").style("min-height: 100vh"),
             ui.card().classes("ldi-static w-full max-w-[640px] p-6"),
         ):
             ui.label(t("setup.welcome", wl)).classes("text-h5 ldi-primary")
@@ -913,7 +913,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _apply_theme(DEFAULT_THEME)
         rl = "en"
         with (
-            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.column().classes("w-full items-center justify-center p-4").style("min-height: 100vh"),
             ui.card().classes("ldi-static w-full max-w-sm p-6"),
         ):
             ui.label(t("recover.title", rl)).classes("text-h5 ldi-primary")
