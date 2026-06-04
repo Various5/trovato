@@ -12,6 +12,44 @@ pipeline now **auto-tunes to your hardware** — see *Performance profiles* belo
 
 ---
 
+## Getting started
+
+First time? The app walks you through setup — but you need **LM Studio** running first.
+
+### 1. Install & start LM Studio
+1. Install **[LM Studio](https://lmstudio.ai)** and open it.
+2. Go to the **Developer** tab and click **Start Server** (defaults to `http://localhost:1234`).
+3. Load **two models**:
+   - a **chat** model (e.g. `qwen2.5-7b-instruct`), and
+   - an **embedding** model (e.g. `text-embedding-bge-m3`) — load it with its **type set to *Embedding***, not Chat.
+
+> On 32 GB RAM, a 7–8B chat model plus a small embedding model run comfortably. The in-app **Help** page has model tips.
+
+### 2. Launch & run the setup wizard
+Start the app (see *Quick start* below, or use the Windows installer). On first run a
+**guided wizard** opens and:
+
+- creates your admin account (save the recovery key it shows),
+- **tests the LM Studio connection**,
+- **auto-picks and validates** your chat + embedding models,
+- detects your hardware and picks a performance profile,
+- adds your first folder and starts the first scan.
+
+When it finishes you land on the dashboard with your library indexing — no manual
+model wiring required.
+
+### 3. Search, chat, transfer
+- **Search** blends keyword (FTS) + semantic (vector) search; **Chat** answers with
+  clickable citations that open the source page.
+- Indexed on a fast machine? **Backup → Create portable index backup**, copy the ZIP
+  to another machine, and **Restore** there to search without re-scanning (use the same
+  embedding model). Details under **Help → Backup & transfer**.
+
+Stuck at any point, open the in-app **Help** page (prerequisites, loading models,
+scanning phases, search/chat, troubleshooting).
+
+---
+
 ## Highlights
 
 - **Sources**: local folders, USB drives, SMB shares, cloud-sync folders
@@ -24,9 +62,13 @@ pipeline now **auto-tunes to your hardware** — see *Performance profiles* belo
 - **Hybrid search**: SQLite FTS5 + vector search + metadata filters
 - **RAG chat**: persistent, citable answers with page numbers and snippets,
   per-chat context filters, user-memory
-- **Auth**: local user(s), Argon2 password hashing, first-run wizard, recovery
-- **Backup / Restore**: granular ZIP backups, optional encryption
-- **UI**: NiceGUI desktop-style app, 6 themes, PDF viewer with page jump
+- **Guided setup**: first-run wizard tests LM Studio, auto-picks & validates
+  models, and runs your first scan — plus an in-app **Help** page
+- **Auth**: local user(s), Argon2 password hashing, recovery key
+- **Backup / Restore**: granular ZIP backups, optional encryption, portable
+  index transfer between machines
+- **UI**: NiceGUI desktop-style app, bold themes (Emerald default), PDF viewer
+  with page jump
 - **Windows installer**: PyInstaller + Inno Setup recipe
 - **Hardware auto-tuning**: scan concurrency, OCR render DPI and embedding
   batch size scale to the machine — from a 2-core laptop to a 16-core box
