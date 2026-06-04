@@ -467,7 +467,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.navigate.to("/")
                     return
 
-        with ui.card().classes("absolute-center ldi-static w-96 p-6"):
+        with (
+            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.card().classes("ldi-static w-full max-w-sm p-6"),
+        ):
             ui.label(t("login.title", ph_lang)).classes("text-h5 q-mb-md ldi-primary")
             username = ui.input(t("common.username", ph_lang), value=remembered_user).classes("w-full")
             password = ui.input(
@@ -524,7 +527,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.navigate.to("/login")
                 return
         wl = "en"
-        with ui.card().classes("absolute-center w-[480px] p-6"):
+        with (
+            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.card().classes("ldi-static w-full max-w-[480px] p-6"),
+        ):
             ui.label(t("common.welcome", wl)).classes("text-h5 ldi-primary")
             ui.label(t("wizard.intro", wl)).classes("q-mb-md opacity-80")
             username = ui.input(t("wizard.admin_user", wl), value="admin").classes("w-full")
@@ -540,6 +546,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
             source_path = ui.input(t("wizard.initial_folder", wl)).classes("w-full")
             err = ui.label("").classes("text-negative")
             recovery_box = ui.label("").classes("text-positive break-words")
+            # Holds the "Continue" button added after the admin is created, so it
+            # renders inside the card (a bare ui.button() in the callback would
+            # attach to the page root, outside this centered card).
+            actions = ui.column().classes("w-full gap-0")
 
             def _create() -> None:
                 if not username.value or not password.value:
@@ -566,9 +576,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         )
                     nicegui_app.storage.user[SESSION_USER_KEY] = user.id
                 recovery_box.text = f"{t('wizard.recovery_note', wl)} {rk}"
-                ui.button(t("wizard.continue", wl), on_click=lambda: ui.navigate.to("/")).props(
-                    "color=primary"
-                )
+                actions.clear()
+                with actions:
+                    ui.button(t("wizard.continue", wl), on_click=lambda: ui.navigate.to("/")).props(
+                        "color=primary"
+                    ).classes("w-full q-mt-md")
 
             ui.button(t("wizard.create_admin", wl), on_click=_create).props("color=primary").classes(
                 "w-full q-mt-md"
@@ -578,7 +590,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
     def page_recover() -> None:
         _apply_theme("dark")
         rl = "en"
-        with ui.card().classes("absolute-center w-96 p-6"):
+        with (
+            ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
+            ui.card().classes("ldi-static w-full max-w-sm p-6"),
+        ):
             ui.label(t("recover.title", rl)).classes("text-h5 ldi-primary")
             uname = ui.input(t("common.username", rl)).classes("w-full")
             rkey = ui.input(t("recover.recovery_key", rl)).classes("w-full")
