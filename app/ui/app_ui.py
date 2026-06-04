@@ -1563,10 +1563,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
         async def _show_summary(did: int, fname: str) -> None:
             from app.chat.rag import summarize_document
 
-            with ui.dialog() as dialog, ui.card().classes("w-[640px] p-4"):
+            with ui.dialog() as dialog, ui.card().classes("w-[680px] max-w-[92vw] p-4"):
                 ui.label(f"{t('docs.summary_of', lang)} {fname}").classes("text-h6 ldi-primary")
                 spinner = ui.spinner(size="lg")
-                md = ui.markdown("")
+                with ui.column().classes("ldi-prose w-full"):
+                    md = ui.markdown("")
                 dialog.open()
                 text = await summarize_document(did)
                 spinner.delete()
@@ -2234,43 +2235,53 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 for rank, h in enumerate(hits, start=1):
                     score_pct = max(0.0, min(1.0, float(h.score))) * 100
                     with ui.card().classes("w-full p-3"):
-                        # Header row
-                        with ui.row().classes("items-center gap-2 w-full no-wrap"):
-                            ui.label(f"#{rank}").classes("ldi-pill").style(
-                                "min-width: 38px; justify-content: center;"
+                        with ui.row().classes("w-full gap-3 no-wrap items-start"):
+                            # Matched-page thumbnail (lazy) — shows the page as it
+                            # looks, logos/figures included, without a vision scan.
+                            ui.html(
+                                f"<img src='{media_image_url(h.document_id, h.page_from)}' "
+                                f"loading='lazy' referrerpolicy='no-referrer' "
+                                f"style='width:82px;height:106px;object-fit:cover;object-position:top;"
+                                f"border-radius:8px;border:1px solid var(--ldi-glass-border);"
+                                f"flex-shrink:0;background:rgba(255,255,255,0.03);'/>"
                             )
-                            with ui.column().classes("flex-1 gap-0 min-w-0"):
-                                ui.label(h.filename).classes("text-body1").style("font-weight: 600;")
-                                ui.label(h.path).classes("text-caption opacity-60 ellipsis")
-                            ui.label(f"p.{h.page_from}").classes("ldi-pill")
-                            ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
-                        # Snippet with highlighted matches
-                        ui.html(f"<div class='ldi-snippet'>{_highlight(h.snippet, query)}</div>").classes(
-                            "q-mt-sm"
-                        )
-                        # Footer: score bar + actions
-                        with ui.row().classes("items-center gap-3 q-mt-sm w-full no-wrap"):
-                            with ui.column().classes("gap-0").style("min-width: 130px;"):
-                                ui.label(f"{t('search.score', lang)} {h.score:.3f}").classes(
-                                    "text-caption opacity-70"
-                                )
-                                with ui.element("div").classes("ldi-progress").style("height: 4px;"):
-                                    ui.element("div").classes("ldi-progress-fill").style(
-                                        f"width: {score_pct:.1f}%;"
+                            with ui.column().classes("flex-1 gap-2 min-w-0"):
+                                # Header row
+                                with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                                    ui.label(f"#{rank}").classes("ldi-pill").style(
+                                        "min-width: 38px; justify-content: center;"
                                     )
-                            ui.space()
-                            ui.button(
-                                t("search.btn_view", lang),
-                                icon="visibility",
-                                on_click=lambda did=h.document_id, pg=h.page_from, qv=query: ui.navigate.to(
-                                    f"/viewer?doc={did}&page={pg}&q={quote(qv)}"
-                                ),
-                            ).props("dense flat")
-                            ui.button(
-                                t("search.btn_pdf", lang),
-                                icon="picture_as_pdf",
-                                on_click=lambda did=h.document_id, pg=h.page_from: open_pdf(did, pg),
-                            ).props("dense flat")
+                                    with ui.column().classes("flex-1 gap-0 min-w-0"):
+                                        ui.label(h.filename).classes("text-body1").style("font-weight: 600;")
+                                        ui.label(h.path).classes("text-caption opacity-60 ellipsis")
+                                    ui.label(f"p.{h.page_from}").classes("ldi-pill")
+                                    if h.source and h.source != "native_text":
+                                        ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
+                                # Snippet with highlighted matches
+                                ui.html(f"<div class='ldi-snippet'>{_highlight(h.snippet, query)}</div>")
+                                # Footer: score bar + actions
+                                with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                                    with ui.column().classes("gap-0").style("min-width: 130px;"):
+                                        ui.label(f"{t('search.score', lang)} {h.score:.3f}").classes(
+                                            "text-caption opacity-70"
+                                        )
+                                        with ui.element("div").classes("ldi-progress").style("height: 4px;"):
+                                            ui.element("div").classes("ldi-progress-fill").style(
+                                                f"width: {score_pct:.1f}%;"
+                                            )
+                                    ui.space()
+                                    ui.button(
+                                        t("search.btn_view", lang),
+                                        icon="visibility",
+                                        on_click=lambda did=h.document_id, pg=h.page_from, qv=query: ui.navigate.to(
+                                            f"/viewer?doc={did}&page={pg}&q={quote(qv)}"
+                                        ),
+                                    ).props("dense flat")
+                                    ui.button(
+                                        t("search.btn_pdf", lang),
+                                        icon="picture_as_pdf",
+                                        on_click=lambda did=h.document_id, pg=h.page_from: open_pdf(did, pg),
+                                    ).props("dense flat")
 
         with ui.row().classes("gap-2"):
             ui.button(t("search.go", lang), icon="search", on_click=_go).props("color=primary")
@@ -2884,6 +2895,38 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             on_click=_merge,
                         ).props("flat dense")
 
+        def _topic_cloud(items) -> None:
+            maxc = max((s.count for s in items), default=1)
+            with section_card(lang, title_key="tags.group_topics", icon="sell"):
+                ui.label(t("tags.cloud_hint", lang)).classes("text-caption opacity-60 q-mb-xs")
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    for s in items:
+                        size = 0.82 + 0.75 * (s.count / max(maxc, 1))  # bigger = more docs
+                        chip = ui.row().classes("ldi-pill items-center gap-1 no-wrap cursor-pointer")
+                        chip.style(f"font-size: {size:.2f}em; padding: 3px 10px;")
+                        chip.on("click", lambda n=s.name: ui.navigate.to(f"/search?tag={quote(n)}"))
+                        with chip:
+                            ui.label(s.name)
+                            ui.label(str(s.count)).classes("opacity-60").style("font-size: 0.7em;")
+                            ui.icon("close").classes("opacity-50 cursor-pointer").style(
+                                "font-size: 0.85em;"
+                            ).on("click.stop", lambda _e, tid=s.id: _delete(tid))
+
+        def _pairs_section(pairs) -> None:
+            with section_card(lang, title_key="tags.together_title", icon="hub"):
+                ui.label(t("tags.together_hint", lang)).classes("text-caption opacity-70 q-mb-xs")
+                with ui.row().classes("gap-2 flex-wrap"):
+                    for (a, b), c in pairs:
+                        chip = (
+                            ui.row()
+                            .classes("ldi-pill ldi-pill-success items-center gap-1 no-wrap cursor-pointer")
+                            .style("padding: 3px 10px;")
+                        )
+                        chip.on("click", lambda _a=a: ui.navigate.to(f"/search?tag={quote(_a)}"))
+                        with chip:
+                            ui.label(f"{a}  +  {b}").classes("text-caption")
+                            ui.label(str(c)).classes("opacity-70").style("font-size: 0.75em;")
+
         def _refresh() -> None:
             container.clear()
             ov = tag_overview()
@@ -2894,26 +2937,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 help_callout("tags.auto_generated_help", lang)
                 if ov["dups"]:
                     _render_dups(ov["dups"])
-                # Topics first, then prefixed system kinds (lang:, has:, type: …).
-                for kind in sorted(ov["groups"], key=lambda k: (k != "topic", k)):
-                    items = ov["groups"][kind]
-                    label = t("tags.group_topics", lang) if kind == "topic" else kind
-                    with (
-                        ui.expansion(f"{label}  ·  {len(items)}", value=(kind == "topic"))
-                        .classes("w-full")
-                        .props("dense")
-                    ):
-                        common = [s for s in items if s.count > 1]
-                        rare = [s for s in items if s.count <= 1]
-                        for s in common:
-                            _render_tag_row(s)
-                        if rare:
-                            with (
-                                ui.expansion(t("tags.rare_more", lang).format(n=len(rare)))
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                for s in rare:
+                topics = ov["groups"].get("topic", [])
+                if topics:
+                    _topic_cloud(topics)
+                if ov.get("pairs"):
+                    _pairs_section(ov["pairs"])
+                # System/auto tags (lang:, has:, type: …) tucked away in one card.
+                sys_kinds = sorted(k for k in ov["groups"] if k != "topic")
+                if sys_kinds:
+                    with section_card(lang, title_key="tags.system_title", icon="tune"):
+                        for kind in sys_kinds:
+                            items = ov["groups"][kind]
+                            with ui.expansion(f"{kind}  ·  {len(items)}").classes("w-full").props("dense"):
+                                for s in items:
                                     _render_tag_row(s)
 
         def _delete(tid: int) -> None:

@@ -84,11 +84,18 @@ def tag_overview(*, related_limit: int = 6) -> dict[str, Any]:
                 if a != b:
                     cooc[a][b] += 1
 
+    def _is_topic(tid: int) -> bool:
+        return ":" not in name_by_id.get(tid, ":")
+
     stats: list[TagStat] = []
     for t in tags:
+        # Related = real topic tags only — system tags (lang:, has:, type:) are
+        # noise here and made the old list cryptic ("↔ has:dates-111, lang:de-90").
         related = [
-            (name_by_id[bid], n) for bid, n in cooc[t.id].most_common(related_limit) if bid in name_by_id
-        ]
+            (name_by_id[bid], n)
+            for bid, n in cooc[t.id].most_common()
+            if bid in name_by_id and _is_topic(bid)
+        ][:related_limit]
         stats.append(
             TagStat(
                 id=t.id,
@@ -112,7 +119,17 @@ def tag_overview(*, related_limit: int = 6) -> dict[str, Any]:
     dups = [sorted(grp, key=lambda s: -s.count) for grp in norm_map.values() if len(grp) > 1]
     dups.sort(key=lambda grp: -sum(s.count for s in grp))
 
-    return {"groups": dict(groups), "dups": dups, "total": len(tags)}
+    # Library-level clustering: which topic tags most often appear together.
+    pair_counts: dict[tuple[str, str], int] = {}
+    for tids in tags_by_doc.values():
+        topics = sorted({name_by_id[tid] for tid in tids if _is_topic(tid) and tid in name_by_id})
+        for i in range(len(topics)):
+            for j in range(i + 1, len(topics)):
+                key = (topics[i], topics[j])
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+    pairs = sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]
+
+    return {"groups": dict(groups), "dups": dups, "pairs": pairs, "total": len(tags)}
 
 
 def cooccurring(tag_id: int, *, limit: int = 8) -> list[tuple[str, int]]:

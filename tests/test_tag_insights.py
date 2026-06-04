@@ -99,6 +99,13 @@ def test_overview_ranks_groups_and_finds_dups() -> None:
     # near-duplicate cluster invoice/Invoices detected.
     dup_sets = [{s.name for s in grp} for grp in ov["dups"]]
     assert {"invoice", "Invoices"} in dup_sets
+    # Related tags are TOPICS only — system tags (lang:de) are filtered out as noise.
+    rel_names = {n for n, _ in topic["invoice"].related}
+    assert "finance" in rel_names
+    assert "lang:de" not in rel_names
+    # Library-level topic pairs include the finance+invoice cluster.
+    pair_keys = {frozenset(k) for k, _ in ov["pairs"]}
+    assert frozenset({"invoice", "finance"}) in pair_keys
 
 
 def test_cooccurring_orders_by_shared_docs() -> None:

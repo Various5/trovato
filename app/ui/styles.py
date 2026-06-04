@@ -633,6 +633,23 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {{
 }}
 
 /* ------------------------------------------------------------------ */
+/*  Rendered markdown (summaries, chat answers)                         */
+/*  Keep model/OCR headings from blowing up: a stray "#" in garbled OCR */
+/*  text otherwise renders as a giant H1.                               */
+/* ------------------------------------------------------------------ */
+.nicegui-markdown h1 {{ font-size: 1.45rem; line-height: 1.3; margin: 0.6em 0 0.3em; }}
+.nicegui-markdown h2 {{ font-size: 1.2rem;  line-height: 1.3; margin: 0.6em 0 0.3em; }}
+.nicegui-markdown h3 {{ font-size: 1.05rem; line-height: 1.3; margin: 0.5em 0 0.25em; }}
+.nicegui-markdown h4, .nicegui-markdown h5, .nicegui-markdown h6 {{ font-size: 1rem; margin: 0.4em 0 0.2em; }}
+.nicegui-markdown p {{ margin: 0.35em 0; line-height: 1.55; }}
+.nicegui-markdown ul, .nicegui-markdown ol {{ margin: 0.3em 0; padding-left: 1.3em; }}
+.nicegui-markdown li {{ margin: 0.15em 0; }}
+.nicegui-markdown pre, .nicegui-markdown code {{ white-space: pre-wrap; word-break: break-word; }}
+.nicegui-markdown table {{ display: block; overflow-x: auto; max-width: 100%; }}
+/* A readable, scrollable wrapper for long generated prose (summaries). */
+.ldi-prose {{ max-height: 62vh; overflow: auto; }}
+
+/* ------------------------------------------------------------------ */
 /*  Citation pill in chat                                               */
 /* ------------------------------------------------------------------ */
 .ldi-citation-ref {{
