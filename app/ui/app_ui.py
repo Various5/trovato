@@ -39,7 +39,7 @@ from app.models import (
 )
 from app.services.hardware import detect_hardware
 from app.services.indexer import start_scan_in_background
-from app.ui.components import page_header, section_card
+from app.ui.components import empty_state, page_header, section_card, status_pill
 from app.ui.styles import build_global_css
 from app.ui.themes import DEFAULT_THEME, THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
@@ -975,13 +975,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     pct = (100.0 * j.processed_files / total) if total else 0.0
                     with ui.column().classes("w-full gap-1 q-mb-sm"):
                         with ui.row().classes("items-center gap-2 w-full"):
-                            badge = "● running" if j.status == ScanJobStatus.running else "❚❚ paused"
-                            badge_cls = (
-                                "ldi-pill ldi-pill-success"
-                                if j.status == ScanJobStatus.running
-                                else "ldi-pill ldi-pill-warning"
-                            )
-                            ui.label(badge).classes(badge_cls)
+                            status_pill(j.status, lang)
                             ui.label(
                                 f"job #{j.id} · source {j.source_id} · "
                                 f"{j.processed_files}/{total if total else '?'} files"
@@ -1131,22 +1125,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         def _status_pill(job: ScanJob | None):
             if job is None:
                 return None
-            status = job.status
-            if status == ScanJobStatus.running:
-                cls, label = "ldi-pill ldi-pill-success", "● running"
-            elif status == ScanJobStatus.paused:
-                cls, label = "ldi-pill ldi-pill-warning", "❚❚ paused"
-            elif status == ScanJobStatus.queued:
-                cls, label = "ldi-pill ldi-pill-warning", "queued"
-            elif status == ScanJobStatus.completed:
-                cls, label = "ldi-pill", "✓ completed"
-            elif status == ScanJobStatus.error:
-                cls, label = "ldi-pill ldi-pill-error", "✗ error"
-            elif status == ScanJobStatus.aborted:
-                cls, label = "ldi-pill", "⨯ aborted"
-            else:
-                cls, label = "ldi-pill", str(status)
-            ui.label(label).classes(cls)
+            status_pill(job.status, lang)
 
         def _progress_block(job: ScanJob) -> None:
             total = max(job.total_files or 0, job.processed_files)
@@ -1293,6 +1272,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
             table_container.clear()
             with table_container, session_scope() as session:
                 rows = session.exec(select(DocumentSource).order_by(DocumentSource.id)).all()
+                if not rows:
+                    empty_state("create_new_folder", "sources.empty_title", "sources.empty_hint", lang)
                 for s in rows:
                     job = _latest_job_for(session, s.id)
                     is_active = job is not None and job.status in (
@@ -1681,7 +1662,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     like = f"%{q_input.value}%"
                     stmt = stmt.where(Document.filename.like(like))  # type: ignore
                 stmt = stmt.order_by(Document.id.desc()).limit(200)  # type: ignore
-                for d in session.exec(stmt).all():
+                docs_list = session.exec(stmt).all()
+                if not docs_list:
+                    empty_state(
+                        "folder_off",
+                        "docs.empty_title",
+                        "docs.empty_hint",
+                        lang,
+                        action_label_key="dash.gs_add_source",
+                        on_action=lambda: ui.navigate.to("/sources"),
+                    )
+                for d in docs_list:
                     with ui.card().classes("w-full p-3"):
                         with ui.row().classes("items-start gap-3 w-full no-wrap"):
                             cb = ui.checkbox(value=d.id in selection)
@@ -2115,10 +2106,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 )
             with out:
                 if not hits:
-                    with ui.card().classes("w-full p-4"):
-                        ui.icon("search_off").classes("text-4xl opacity-30")
-                        ui.label(t("search.no_results", lang)).classes("opacity-70")
-                        ui.label(t("search.no_results_hint", lang)).classes("text-caption opacity-60")
+                    empty_state("search_off", "search.no_results", "search.no_results_hint", lang)
                     return
                 for rank, h in enumerate(hits, start=1):
                     score_pct = max(0.0, min(1.0, float(h.score))) * 100
