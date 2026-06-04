@@ -2785,71 +2785,87 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         page_header("tags.title", lang)
         from app.models import DocumentTagLink, Tag
+        from app.services.tag_insights import merge_tags, tag_overview
 
-        cloud_card = ui.card().classes("w-full p-4 q-mb-md")
-        list_card = ui.column().classes("w-full gap-1")
+        container = ui.column().classes("w-full gap-3")
+
+        def _render_tag_row(s) -> None:
+            with ui.row().classes("items-center gap-2 w-full no-wrap q-py-xs"):
+                ui.button(s.name, on_click=lambda n=s.name: ui.navigate.to(f"/search?tag={quote(n)}")).props(
+                    "flat dense no-caps"
+                ).classes("ldi-pill")
+                ui.label(t("tags.doc_count", lang).format(n=s.count)).classes(
+                    "text-caption opacity-60"
+                ).style("min-width: 64px;")
+                if s.auto:
+                    ui.label(t("tags.auto", lang)).classes("ldi-pill ldi-pill-warning text-caption")
+                if s.related:
+                    rel = "↔  " + ", ".join(f"{n}·{c}" for n, c in s.related[:4])
+                    ui.label(rel).classes("text-caption opacity-50 ellipsis flex-1").tooltip(
+                        t("tags.related_tip", lang)
+                    )
+                else:
+                    ui.space()
+                ui.button(icon="delete", on_click=lambda tid=s.id: _delete(tid)).props(
+                    "flat dense round color=negative"
+                )
+
+        def _render_dups(dups) -> None:
+            with section_card(lang, title_key="tags.dups_title", icon="merge_type"):
+                ui.label(t("tags.dups_hint", lang)).classes("text-caption opacity-70")
+                for grp in dups[:12]:
+                    canonical = grp[0]
+                    others = [s for s in grp if s.id != canonical.id]
+                    with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                        ui.label(" / ".join(s.name for s in grp)).classes("text-body2 flex-1 ellipsis")
+
+                        def _merge(_c=canonical, _o=others) -> None:
+                            def _do() -> None:
+                                n = merge_tags(_c.id, [s.id for s in _o])
+                                ui.notify(t("tags.merged", lang).format(n=n, name=_c.name), color="positive")
+                                _refresh()
+
+                            confirm_dialog(
+                                "tags.merge_confirm", "tags.merge_hint", _do, lang, confirm_key="tags.merge"
+                            )
+
+                        ui.button(
+                            t("tags.merge_into", lang).format(name=canonical.name),
+                            icon="merge_type",
+                            on_click=_merge,
+                        ).props("flat dense")
 
         def _refresh() -> None:
-            cloud_card.clear()
-            list_card.clear()
-            with session_scope() as session:
-                tags = session.exec(select(Tag).order_by(Tag.name)).all()
-                # Count documents per tag for the cloud sizing
-                counts: dict[int, int] = {}
-                for tag in tags:
-                    cnt = len(
-                        session.exec(select(DocumentTagLink).where(DocumentTagLink.tag_id == tag.id)).all()
-                    )
-                    counts[tag.id] = cnt
-
-            # ------ Tag cloud ------
-            with cloud_card:
-                with ui.row().classes("items-center gap-2 w-full q-mb-sm"):
-                    ui.icon("local_offer").classes("ldi-accent")
-                    ui.label(f"{len(tags)} tags · cloud").classes("text-h6 flex-1")
-                if not tags:
-                    ui.label(t("tags.auto_generated_help", lang)).classes("text-caption opacity-70")
-                else:
-                    from urllib.parse import quote as _quote
-
-                    max_count = max(counts.values()) if counts else 1
-                    with ui.row().classes("flex-wrap gap-2 q-py-sm").style("line-height: 2.2;"):
-                        for tag in tags:
-                            count = counts.get(tag.id, 0)
-                            ratio = count / max(max_count, 1)
-                            size_em = 0.85 + 1.2 * ratio
-                            opacity = 0.6 + 0.4 * ratio
-                            chip = (
-                                ui.button(
-                                    f"{tag.name}  · {count}",
-                                    on_click=lambda tn=tag.name: ui.navigate.to(f"/search?tag={_quote(tn)}"),
-                                )
-                                .props("flat no-caps")
-                                .classes("ldi-pill")
-                            )
-                            chip.style(f"font-size: {size_em:.2f}em; opacity: {opacity:.2f};")
-                            if "lang:" in tag.name or tag.name.startswith("has:"):
-                                chip.classes(add="ldi-pill-warning")
-
-            # ------ Plain list (sortable, deletable) ------
-            with list_card:
-                ui.label(t("tags.all_tags_heading", lang)).classes("text-h6 q-mb-sm")
-                if not tags:
+            container.clear()
+            ov = tag_overview()
+            with container:
+                if not ov["total"]:
+                    empty_state("sell", "tags.empty_title", "tags.empty_hint", lang)
                     return
-                with session_scope() as session:
-                    refreshed = session.exec(select(Tag).order_by(Tag.name)).all()
-                for tag in refreshed:
-                    cnt = counts.get(tag.id, 0)
-                    with ui.row().classes("items-center gap-2 w-full"):
-                        ui.label(tag.name).classes("flex-1")
-                        ui.label(t("tags.doc_count", lang).format(n=cnt)).classes(
-                            "text-caption opacity-70"
-                        ).style("min-width: 70px;")
-                        if tag.auto:
-                            ui.label(t("tags.auto", lang)).classes("ldi-pill text-caption")
-                        ui.button(icon="delete", on_click=lambda tid=tag.id: _delete(tid)).props(
-                            "flat dense color=negative"
-                        )
+                help_callout("tags.auto_generated_help", lang)
+                if ov["dups"]:
+                    _render_dups(ov["dups"])
+                # Topics first, then prefixed system kinds (lang:, has:, type: …).
+                for kind in sorted(ov["groups"], key=lambda k: (k != "topic", k)):
+                    items = ov["groups"][kind]
+                    label = t("tags.group_topics", lang) if kind == "topic" else kind
+                    with (
+                        ui.expansion(f"{label}  ·  {len(items)}", value=(kind == "topic"))
+                        .classes("w-full")
+                        .props("dense")
+                    ):
+                        common = [s for s in items if s.count > 1]
+                        rare = [s for s in items if s.count <= 1]
+                        for s in common:
+                            _render_tag_row(s)
+                        if rare:
+                            with (
+                                ui.expansion(t("tags.rare_more", lang).format(n=len(rare)))
+                                .classes("w-full")
+                                .props("dense")
+                            ):
+                                for s in rare:
+                                    _render_tag_row(s)
 
         def _delete(tid: int) -> None:
             def _do() -> None:
