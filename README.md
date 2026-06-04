@@ -7,7 +7,7 @@
 PaperVault is the working repository name; the product ships as **LocalDoc
 Intelligence**.
 
-**Status: v0.4.0 (first stable release).** Feature-complete and stabilising toward 1.0. The
+**Status: v0.4.1 (stable).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 
 ---
