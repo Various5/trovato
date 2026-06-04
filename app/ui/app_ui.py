@@ -40,7 +40,7 @@ from app.models import (
 )
 from app.services.hardware import detect_hardware
 from app.services.indexer import start_scan_in_background
-from app.ui.components import empty_state, page_header, section_card, status_pill
+from app.ui.components import confirm_dialog, empty_state, page_header, section_card, status_pill
 from app.ui.styles import build_global_css
 from app.ui.themes import DEFAULT_THEME, THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
@@ -2465,32 +2465,25 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     _refresh_msgs()
 
                 def _delete_chat(cid: int) -> None:
-                    with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
-                        ui.label(t("chat.delete_confirm", lang)).classes("text-h6 ldi-primary")
+                    def _do() -> None:
+                        with session_scope() as session:
+                            for m in session.exec(
+                                select(ChatMessage).where(ChatMessage.chat_id == cid)
+                            ).all():
+                                session.delete(m)
+                            for c in session.exec(
+                                select(ChatContextItem).where(ChatContextItem.chat_id == cid)
+                            ).all():
+                                session.delete(c)
+                            ch = session.get(Chat, cid)
+                            if ch:
+                                session.delete(ch)
+                        if chat_state.get("chat_id") == cid:
+                            chat_state["chat_id"] = None
+                        _refresh_chats()
+                        _refresh_msgs()
 
-                        def _do() -> None:
-                            with session_scope() as session:
-                                for m in session.exec(
-                                    select(ChatMessage).where(ChatMessage.chat_id == cid)
-                                ).all():
-                                    session.delete(m)
-                                for c in session.exec(
-                                    select(ChatContextItem).where(ChatContextItem.chat_id == cid)
-                                ).all():
-                                    session.delete(c)
-                                ch = session.get(Chat, cid)
-                                if ch:
-                                    session.delete(ch)
-                            if chat_state.get("chat_id") == cid:
-                                chat_state["chat_id"] = None
-                            d.close()
-                            _refresh_chats()
-                            _refresh_msgs()
-
-                        with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
-                            ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
-                            ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
-                    d.open()
+                    confirm_dialog("chat.delete_confirm", "chat.delete_hint", _do, lang, danger=True)
 
             # ============ Right: chat conversation ============
             with ui.column().classes("flex-1 gap-2").style("min-width: 0;"):
