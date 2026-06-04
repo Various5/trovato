@@ -89,6 +89,7 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.type": "Type",
         "docs.lang": "Lang",
         "docs.viewer.not_found": "Document not found.",
+        "docs.viewer.not_found_hint": "This document may have been deleted, or the link is out of date.",
         "docs.viewer.page_text": "Page text",
         "docs.viewer.no_text": "(no extracted text on this page)",
         "docs.viewer.open_pdf": "Open PDF",
@@ -227,6 +228,9 @@ _DICT: dict[str, dict[str, str]] = {
         # logs
         "logs.title": "Logs",
         "logs.empty": "(no log file yet)",
+        "logs.empty_title": "No log file yet",
+        "logs.empty_hint": "Once the app processes documents or runs background jobs, activity will be recorded here.",
+        "logs.tail_hint": "Showing the most recent log output (last ~20 000 characters). Older entries are kept in the log file on disk.",
         # diagnostics
         "diag.title": "Diagnostics",
         "diag.storage": "Storage",
@@ -259,6 +263,7 @@ _DICT: dict[str, dict[str, str]] = {
         # compare
         "compare.title": "Compare two documents",
         "compare.index_first": "Index some PDFs first.",
+        "compare.empty_title": "No documents to compare",
         "compare.pick_two_different": "Pick two different documents",
         "compare.narrative": "Narrative comparison",
         "compare.shared_ratio": "Line-level shared ratio:",
@@ -517,6 +522,7 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.type": "Typ",
         "docs.lang": "Sprache",
         "docs.viewer.not_found": "Dokument nicht gefunden.",
+        "docs.viewer.not_found_hint": "Dieses Dokument wurde möglicherweise gelöscht oder der Link ist veraltet.",
         "docs.viewer.page_text": "Seitentext",
         "docs.viewer.no_text": "(kein extrahierter Text auf dieser Seite)",
         "docs.viewer.open_pdf": "PDF öffnen",
@@ -657,6 +663,9 @@ _DICT: dict[str, dict[str, str]] = {
         # logs
         "logs.title": "Protokoll",
         "logs.empty": "(noch keine Logdatei)",
+        "logs.empty_title": "Noch keine Logdatei",
+        "logs.empty_hint": "Sobald die App Dokumente verarbeitet oder Hintergrundaufgaben ausführt, wird die Aktivität hier protokolliert.",
+        "logs.tail_hint": "Zeigt die neueste Protokollausgabe (letzte ~20 000 Zeichen). Ältere Einträge bleiben in der Logdatei auf der Festplatte erhalten.",
         # diagnostics
         "diag.title": "Diagnose",
         "diag.storage": "Speicher",
@@ -689,6 +698,7 @@ _DICT: dict[str, dict[str, str]] = {
         # compare
         "compare.title": "Zwei Dokumente vergleichen",
         "compare.index_first": "Indexiere zuerst einige PDFs.",
+        "compare.empty_title": "Keine Dokumente zum Vergleichen",
         "compare.pick_two_different": "Wähle zwei verschiedene Dokumente",
         "compare.narrative": "Strukturierter Vergleich",
         "compare.shared_ratio": "Zeilenanteil gemeinsam:",

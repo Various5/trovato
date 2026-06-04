@@ -40,7 +40,14 @@ from app.models import (
 )
 from app.services.hardware import detect_hardware
 from app.services.indexer import start_scan_in_background
-from app.ui.components import confirm_dialog, empty_state, page_header, section_card, status_pill
+from app.ui.components import (
+    confirm_dialog,
+    empty_state,
+    help_callout,
+    page_header,
+    section_card,
+    status_pill,
+)
 from app.ui.styles import build_global_css
 from app.ui.themes import DEFAULT_THEME, THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
@@ -2811,26 +2818,18 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         )
 
         def _delete(tid: int) -> None:
-            with ui.dialog() as d, ui.card().classes("w-[420px] p-4"):
-                ui.label(t("tags.delete_confirm", lang)).classes("text-h6 ldi-primary")
-                ui.label(t("tags.delete_help", lang)).classes("text-caption opacity-70")
+            def _do() -> None:
+                with session_scope() as session:
+                    for link in session.exec(
+                        select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)
+                    ).all():
+                        session.delete(link)
+                    tag_obj = session.get(Tag, tid)
+                    if tag_obj:
+                        session.delete(tag_obj)
+                _refresh()
 
-                def _do() -> None:
-                    with session_scope() as session:
-                        for link in session.exec(
-                            select(DocumentTagLink).where(DocumentTagLink.tag_id == tid)
-                        ).all():
-                            session.delete(link)
-                        tag_obj = session.get(Tag, tid)  # was `t` — shadowed the i18n t()
-                        if tag_obj:
-                            session.delete(tag_obj)
-                    d.close()
-                    _refresh()
-
-                with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
-                    ui.button(t("common.cancel", lang), on_click=d.close).props("flat")
-                    ui.button(t("common.delete", lang), on_click=_do).props("color=negative")
-            d.open()
+            confirm_dialog("tags.delete_confirm", "tags.delete_help", _do, lang, danger=True)
 
         _refresh()
 
@@ -3419,6 +3418,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _layout(user, "/logs")
         lang = _user_lang(user)
         page_header("logs.title", lang)
+        help_callout("logs.tail_hint", lang)
         s = get_settings()
         log_file = s.logs_path / "localdoc.log"
         if log_file.exists():
@@ -3426,9 +3426,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 text_blob = log_file.read_text(encoding="utf-8", errors="replace")[-20_000:]
             except Exception as e:
                 text_blob = f"(cannot read log: {e})"
+            ui.code(text_blob, language="text").classes("w-full")
         else:
-            text_blob = t("logs.empty", lang)
-        ui.code(text_blob, language="text").classes("w-full")
+            empty_state("article", "logs.empty_title", "logs.empty_hint", lang)
 
     @ui.page("/compare")
     def page_compare(a: int = 0, b: int = 0) -> None:
@@ -3444,7 +3444,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             options = {d.id: f"#{d.id} — {d.filename}" for d in docs if d.id is not None}
 
         if not options:
-            ui.label(t("compare.index_first", lang)).classes("opacity-70")
+            empty_state("library_books", "compare.empty_title", "compare.index_first", lang)
             return
 
         # Pre-select when arriving from a deep link (e.g. Diagnostics → Compare,
@@ -3473,21 +3473,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
             result = await compare_documents(int(sel_a.value), int(sel_b.value))
             spinner.delete()
             with output:
-                with ui.card().classes("w-full p-3"):
-                    ui.label(t("compare.narrative", lang)).classes("text-h6")
+                with section_card(lang, title_key="compare.narrative", icon="compare_arrows"):
                     ui.markdown(result.narrative)
-                with ui.card().classes("w-full p-3"):
+                with section_card(lang):
                     ui.label(f"{t('compare.shared_ratio', lang)} {result.shared_ratio:.1%}").classes(
                         "text-body1"
                     )
                 with ui.row().classes("w-full gap-2"):
-                    with ui.card().classes("flex-1 p-3"):
+                    with section_card(lang, extra="flex-1"):
                         ui.label(f"{t('compare.only_in', lang)} {result.doc_a.get('filename')}").classes(
                             "text-h6"
                         )
                         for ln in result.only_in_a_sample:
                             ui.label(ln).classes("text-caption opacity-80")
-                    with ui.card().classes("flex-1 p-3"):
+                    with section_card(lang, extra="flex-1"):
                         ui.label(f"{t('compare.only_in', lang)} {result.doc_b.get('filename')}").classes(
                             "text-h6"
                         )
@@ -3716,7 +3715,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         with session_scope() as session:
             d = session.get(Document, doc)
             if not d:
-                ui.label(t("docs.viewer.not_found", lang)).classes("text-h6 text-negative")
+                empty_state("find_in_page", "docs.viewer.not_found", "docs.viewer.not_found_hint", lang)
                 return
             from app.models import DocumentPage as _DP
 
@@ -3780,18 +3779,18 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         on_click=lambda: (_zoom.update(w=min(300, _zoom["w"] + 25)), _apply_zoom()),
                     ).props("dense flat")
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
-                ui.label(t("docs.viewer.page_text", lang)).classes("text-h6")
-                snippet = page_text
-                if q and q.lower() in snippet.lower():
-                    idx = snippet.lower().find(q.lower())
-                    snippet = (
-                        snippet[max(0, idx - 200) : idx]
-                        + "**"
-                        + snippet[idx : idx + len(q)]
-                        + "**"
-                        + snippet[idx + len(q) : idx + len(q) + 200]
-                    )
-                ui.markdown(snippet or f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
+                with section_card(lang, title_key="docs.viewer.page_text", icon="article"):
+                    snippet = page_text
+                    if q and q.lower() in snippet.lower():
+                        idx = snippet.lower().find(q.lower())
+                        snippet = (
+                            snippet[max(0, idx - 200) : idx]
+                            + "**"
+                            + snippet[idx : idx + len(q)]
+                            + "**"
+                            + snippet[idx + len(q) : idx + len(q) + 200]
+                        )
+                    ui.markdown(snippet or f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
 
     @ui.page("/about")
     def page_about() -> None:
