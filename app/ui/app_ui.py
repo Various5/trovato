@@ -37,6 +37,7 @@ from app.models import (
     UserSetting,
 )
 from app.services.indexer import start_scan_in_background
+from app.ui.components import page_header
 from app.ui.styles import build_global_css
 from app.ui.themes import THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
@@ -3439,7 +3440,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/about")
         lang = _user_lang(user)
-        ui.label(t("about.title", lang)).classes("text-h4 q-mb-md ldi-hero-text")
+        page_header("about.title", lang)
         from app import __app_name__ as N
         from app import __author__, __contact__, __handle__
         from app import __version__ as V

@@ -85,6 +85,14 @@ def build_global_css(theme_name: str) -> str:
   --ldi-blur: 18px;
   --ldi-trans: 180ms cubic-bezier(0.4, 0, 0.2, 1);
   --ldi-trans-expo: 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  --ldi-space-1: 4px;
+  --ldi-space-2: 8px;
+  --ldi-space-3: 12px;
+  --ldi-space-4: 16px;
+  --ldi-space-5: 24px;
+  --ldi-card-pad: 16px;
+  --ldi-elev-1: {glass_shadow};
+  --ldi-elev-2: {hover_glow};
 }}
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +328,20 @@ pre {{
   -webkit-backdrop-filter: blur(12px) saturate(140%);
   border: 1px solid var(--ldi-glass-border);
   border-radius: var(--ldi-radius-sm);
+}}
+
+/* Consistent section-card padding (used by components.section_card) */
+.ldi-section-card {{ padding: var(--ldi-card-pad); }}
+
+/* Contextual hint band with an accent left border */
+.ldi-callout {{
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--ldi-radius-sm);
+  background: var(--ldi-glass-bg);
+  border: 1px solid var(--ldi-glass-border);
+  border-left: 3px solid var(--ldi-accent);
 }}
 
 .ldi-pill {{
