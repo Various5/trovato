@@ -57,8 +57,16 @@ def _line_diff(a: str, b: str, max_examples: int = 12) -> tuple[list[str], list[
 
 
 async def compare_documents(doc_a: int, doc_b: int) -> CompareResult:
-    meta_a, text_a = _aggregate_text(doc_a)
-    meta_b, text_b = _aggregate_text(doc_b)
+    from app.llm.lmstudio import context_char_budget
+
+    client = get_client()
+    # Budget the two documents to the model's actual context window so the
+    # narrative request doesn't overflow small-context models (the old fixed
+    # 12k chars/doc could blow past a 4k context).
+    ctx = await client.model_context_length()
+    per_doc = max(1000, (context_char_budget(ctx, output_tokens=900) - 800) // 2)
+    meta_a, text_a = _aggregate_text(doc_a, char_limit=per_doc)
+    meta_b, text_b = _aggregate_text(doc_b, char_limit=per_doc)
     if not meta_a or not meta_b:
         raise ValueError("one or both documents not found")
 
@@ -75,7 +83,6 @@ async def compare_documents(doc_a: int, doc_b: int) -> CompareResult:
         "Keep the answer concise; cite specific phrases when relevant."
     )
 
-    client = get_client()
     try:
         narrative = await client.chat([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=900)
     except LMStudioError as e:

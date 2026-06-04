@@ -7,7 +7,7 @@ back to it instead of yielding an empty string.
 
 from __future__ import annotations
 
-from app.llm.lmstudio import _message_text, _normalize_base_url
+from app.llm.lmstudio import _message_text, _normalize_base_url, context_char_budget
 
 
 def test_prefers_content() -> None:
@@ -37,3 +37,17 @@ def test_normalize_base_url_leaves_explicit_paths() -> None:
     assert _normalize_base_url("http://localhost:1234/v1/") == "http://localhost:1234/v1"
     # A custom proxy path is respected, not clobbered.
     assert _normalize_base_url("http://proxy.local/llm/api") == "http://proxy.local/llm/api"
+
+
+def test_context_char_budget_scales_and_clamps() -> None:
+    # Unknown context → safe 8k-token assumption (not the tiny floor).
+    assert context_char_budget(None) == context_char_budget(8192)
+    # Bigger context → bigger budget; smaller → smaller.
+    assert context_char_budget(4096) < context_char_budget(16384)
+    # Floor and ceiling.
+    assert context_char_budget(512) >= 1200
+    assert context_char_budget(1_000_000) <= 32000
+    # A 4k-context model must budget well under its window once output (900) +
+    # overhead are reserved — i.e. far below the old fixed 12k-char-per-doc.
+    b4k = context_char_budget(4096, output_tokens=900)
+    assert b4k < 9000  # ~2.8k tokens of input, leaving room for output + scaffold

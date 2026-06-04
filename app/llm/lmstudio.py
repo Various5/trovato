@@ -57,6 +57,26 @@ def _normalize_base_url(base: str) -> str:
     return base
 
 
+# Cache the probed context length briefly so we don't hit /api/v0/models on
+# every chat turn, but still pick up a model reload within a couple of minutes.
+_CTX_CACHE: dict[tuple[str, str], tuple[float, int | None]] = {}
+_CTX_TTL = 120.0
+
+
+def context_char_budget(ctx_tokens: int | None, *, output_tokens: int = 900) -> int:
+    """Characters of prompt *input* that safely fit a model's context window.
+
+    Reserves room for the response and the system/history scaffolding, and is
+    deliberately conservative (≈3.2 chars/token) so we under-fill rather than
+    trip LM Studio's "nkeep >= nctx" rejection. Falls back to an 8k-token
+    assumption when the server won't report a context length.
+    """
+    if not ctx_tokens or ctx_tokens <= 0:
+        ctx_tokens = 8192
+    usable = max(ctx_tokens - output_tokens - 800, 400)  # 800: system + chat overhead + margin
+    return max(1200, min(int(usable * 3.2), 32000))
+
+
 class LMStudioClient:
     def __init__(
         self,
@@ -97,6 +117,53 @@ class LMStudioClient:
         except Exception as e:
             logger.debug("LM Studio ping failed: {}", e)
             return False
+
+    async def model_context_length(self, model: str | None = None) -> int | None:
+        """Loaded context window (tokens) of the chat model, read from LM Studio's
+        native ``/api/v0/models``. Returns ``None`` if the server doesn't report
+        it. Cached briefly so it isn't probed on every chat turn."""
+        import time as _time
+
+        model = (model or get_settings().chat_model or "").strip()
+        key = (self.base_url, model)
+        now = _time.time()
+        cached = _CTX_CACHE.get(key)
+        if cached and now - cached[0] < _CTX_TTL:
+            return cached[1]
+        ctx: int | None = None
+        try:
+            async with await self._client() as c:
+                base = str(c.base_url).rstrip("/")
+                native = (base[: -len("/v1")] if base.endswith("/v1") else base) + "/api/v0/models"
+                r = await c.get(native)
+                if r.status_code == 200:
+                    data = r.json()
+                    items = (
+                        (data.get("data") or data.get("models") or [])
+                        if isinstance(data, dict)
+                        else (data or [])
+                    )
+                    chosen = None
+                    for it in items:  # prefer the exact configured model
+                        if isinstance(it, dict) and (it.get("id") or it.get("model_key")) == model:
+                            chosen = it
+                            break
+                    if chosen is None:  # else any loaded LLM
+                        for it in items:
+                            if (
+                                isinstance(it, dict)
+                                and it.get("state") == "loaded"
+                                and it.get("type") in ("llm", "vlm", None)
+                            ):
+                                chosen = it
+                                break
+                    if chosen:
+                        raw = chosen.get("loaded_context_length") or chosen.get("max_context_length")
+                        ctx = int(raw) if raw else None
+        except Exception as e:
+            logger.debug("model_context_length probe failed: {}", e)
+        _CTX_CACHE[key] = (now, ctx)
+        return ctx
 
     async def list_models(self) -> list[dict[str, Any]]:
         """List models exposed by the server.

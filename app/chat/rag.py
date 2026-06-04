@@ -17,6 +17,7 @@ from sqlmodel import select
 
 from app.database import session_scope
 from app.llm import LMStudioError, get_client
+from app.llm.lmstudio import context_char_budget
 from app.models import (
     Chat,
     ChatContextItem,
@@ -116,7 +117,7 @@ async def answer_question(
     chat_id: int,
     user: User,
     question: str,
-    top_k: int = 8,
+    top_k: int = 15,
     history_window: int = 6,
 ) -> RAGResult:
     """Run a full RAG turn and persist the assistant message with citations."""
@@ -152,7 +153,10 @@ async def answer_question(
         user=user,
     )
 
-    context_block, citations = _build_context_block(hits)
+    _ctx_client = get_client()
+    context_block, citations = _build_context_block(
+        hits, max_chars=context_char_budget(await _ctx_client.model_context_length())
+    )
 
     sys = SYSTEM_PROMPT
     if memory_block:
@@ -213,7 +217,7 @@ async def stream_answer(
     chat_id: int,
     user: User,
     question: str,
-    top_k: int = 8,
+    top_k: int = 15,
     history_window: int = 6,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield SSE-shaped events: ``{"type": "...", ...}``.
@@ -252,7 +256,10 @@ async def stream_answer(
         tags=filters.get("tags"),
         user=user,
     )
-    context_block, citations = _build_context_block(hits)
+    _ctx_client = get_client()
+    context_block, citations = _build_context_block(
+        hits, max_chars=context_char_budget(await _ctx_client.model_context_length())
+    )
 
     sys = SYSTEM_PROMPT
     if memory_block:

@@ -1378,6 +1378,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     phase: str,
                                     note_key: str,
                                 ) -> None:
+                                    if phase == "vision" and not (get_settings().vision_model or "").strip():
+                                        # Vision phase only makes images searchable when a vision model
+                                        # describes them — warn instead of silently indexing nothing.
+                                        ui.notify(
+                                            t("sources.vision_no_model", lang),
+                                            color="warning",
+                                            timeout=7000,
+                                        )
                                     start_scan_in_background(sid, phase=phase)
                                     ui.notify(t(note_key, lang))
                                     _refresh()
@@ -2304,7 +2312,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _layout(user, "/chat")
         lang = _user_lang(user)
 
-        chat_state: dict = {"chat_id": None}
+        # Reopen the last conversation on load, so clicking a citation (→ /viewer)
+        # and pressing Back returns to the chat you were in instead of the empty
+        # starter screen. Validate ownership before trusting the stored id.
+        _last_id = nicegui_app.storage.user.get("chat.last_id")
+        if _last_id is not None:
+            with session_scope() as _s:
+                _c = _s.get(Chat, _last_id)
+                if not _c or _c.user_id != user.id:
+                    _last_id = None
+        chat_state: dict = {"chat_id": _last_id}
         user_initials = (user.username[:1] + (user.username[1:2] if len(user.username) > 1 else "")).upper()
 
         # --- Helpers ----------------------------------------------------
@@ -2528,11 +2545,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         session.flush()
                         cid = c.id
                     chat_state["chat_id"] = cid
+                    nicegui_app.storage.user["chat.last_id"] = cid
                     _refresh_chats()
                     _refresh_msgs()
 
                 def _open_chat(cid: int) -> None:
                     chat_state["chat_id"] = cid
+                    nicegui_app.storage.user["chat.last_id"] = cid
                     _refresh_chats()
                     _refresh_msgs()
 
@@ -2552,6 +2571,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 session.delete(ch)
                         if chat_state.get("chat_id") == cid:
                             chat_state["chat_id"] = None
+                            nicegui_app.storage.user["chat.last_id"] = None
                         _refresh_chats()
                         _refresh_msgs()
 
