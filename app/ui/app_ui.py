@@ -651,6 +651,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             else:
                                 conn_status.text = t("setup.connect_fail", wl)
                                 conn_status.classes(replace="text-caption q-mt-sm text-negative")
+                                conn_next.set_visibility(False)
+                                state["models"] = []
                         finally:
                             test_btn.enable()
 
@@ -659,15 +661,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 # 4) Models ---------------------------------------------------
                 with ui.step(t("setup.step_models", wl)):
                     ui.label(t("setup.models_intro", wl)).classes("text-caption opacity-80")
-                    chat_sel = ui.select([], label=t("setup.chat_model", wl), with_input=True).classes(
-                        "w-full"
-                    )
-                    emb_sel = ui.select([], label=t("setup.embedding_model", wl), with_input=True).classes(
-                        "w-full"
-                    )
-                    vis_sel = ui.select([], label=t("setup.vision_model", wl), with_input=True).classes(
-                        "w-full"
-                    )
+                    # new_value_mode lets users type a model id even when the
+                    # loaded-model list is empty (e.g. they skipped the connect step).
+                    chat_sel = ui.select(
+                        [], label=t("setup.chat_model", wl), with_input=True, new_value_mode="add-unique"
+                    ).classes("w-full")
+                    emb_sel = ui.select(
+                        [], label=t("setup.embedding_model", wl), with_input=True, new_value_mode="add-unique"
+                    ).classes("w-full")
+                    vis_sel = ui.select(
+                        [], label=t("setup.vision_model", wl), with_input=True, new_value_mode="add-unique"
+                    ).classes("w-full")
                     model_status = ui.label("").classes("text-caption q-mt-sm")
                     fix_box = ui.column().classes("w-full q-mt-xs")
                     fix_box.set_visibility(False)
@@ -684,7 +688,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         )
                         skip_btn = ui.button(t("setup.embedding_skip", wl)).props("flat")
                     models_next.set_visibility(False)
-                    skip_btn.set_visibility(False)
+                    # The "Skip anyway" escape is always available on this step so
+                    # the user can never get stuck (e.g. no embedding model loaded).
+                    skip_btn.set_visibility(True)
 
                     def _option_ids() -> list[str]:
                         out: list[str] = []
@@ -709,6 +715,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             get_settings.cache_clear()
                             reset_client_cache()
                         fix_box.clear()
+                        # Reset each attempt: keep the skip escape, hide Next until valid.
+                        models_next.set_visibility(False)
+                        skip_btn.set_visibility(True)
                         if not emb:
                             model_status.text = t("setup.embedding_fail", wl)
                             model_status.classes(replace="text-caption q-mt-sm text-negative")
@@ -731,8 +740,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             skip_btn.set_visibility(True)
 
                     async def _auto_pick() -> None:
-                        if not state["models"] and state["ping_ok"]:
-                            state["models"] = await _client().list_models()
+                        if not state["models"]:
+                            try:
+                                state["models"] = await _client().list_models()
+                            except Exception:
+                                state["models"] = []
                         ids = _option_ids()
                         for sel in (chat_sel, emb_sel, vis_sel):
                             sel.set_options(ids)
@@ -1663,7 +1675,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     stmt = stmt.where(Document.filename.like(like))  # type: ignore
                 stmt = stmt.order_by(Document.id.desc()).limit(200)  # type: ignore
                 docs_list = session.exec(stmt).all()
-                if not docs_list:
+                if not docs_list and q_input.value:
+                    # Filter matched nothing — not an empty library.
+                    empty_state("search_off", "search.no_results", "search.no_results_hint", lang)
+                elif not docs_list:
                     empty_state(
                         "folder_off",
                         "docs.empty_title",

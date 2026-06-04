@@ -122,8 +122,8 @@ def confirm_dialog(
 # the running/paused/queued/completed/aborted/error pills that were duplicated
 # across the header, dashboard and sources page.
 _STATUS_PILL: dict[str, tuple[str, str, str]] = {
-    "running": ("ldi-pill-warning", "● ", "status.running"),
-    "paused": ("ldi-pill", "⏸ ", "status.paused"),
+    "running": ("ldi-pill-success", "● ", "status.running"),
+    "paused": ("ldi-pill-warning", "⏸ ", "status.paused"),
     "queued": ("ldi-pill", "… ", "status.queued"),
     "pending": ("ldi-pill", "… ", "status.queued"),
     "completed": ("ldi-pill-success", "✓ ", "status.completed"),
