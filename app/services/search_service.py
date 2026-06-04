@@ -81,6 +81,14 @@ def _lexical_score(text: str, query: str) -> float:
     return frac + phrase
 
 
+def _normalise_scores(hits: list[SearchHit]) -> None:
+    """Rescale hit scores in place to 0..1 relative to the best hit."""
+    top = max((h.score for h in hits), default=0.0)
+    if top > 0:
+        for h in hits:
+            h.score = round(h.score / top, 4)
+
+
 async def hybrid_search(
     query: str,
     *,
@@ -203,6 +211,14 @@ async def hybrid_search(
 
     hits.sort(key=lambda h: h.score, reverse=True)
     hits = hits[:top_k]
+
+    # Normalise to 0..1 BEFORE reranking. The LLM reranker blends
+    # ``0.6*model + 0.4*original`` assuming the original score is in [0, 1];
+    # raw RRF values are ~0.03, which would otherwise wash the original signal
+    # out entirely (and break its "can't do worse than baseline" guarantee).
+    # Then renormalise the blended result so the displayed top hit is 1.0 and
+    # the UI shows an intuitive relevance figure rather than raw ~0.0x values.
+    _normalise_scores(hits)
     if rerank and len(hits) > 1:
         try:
             from app.services.reranker import rerank as _do_rerank
@@ -210,12 +226,7 @@ async def hybrid_search(
             hits = await _do_rerank(query, hits)
         except Exception as e:
             logger.warning("rerank pipeline failed: {}", e)
-    # Normalise the displayed score to 0..1 relative to the best hit so the UI
-    # shows an intuitive relevance figure instead of raw ~0.0x RRF values.
-    top = max((h.score for h in hits), default=0.0)
-    if top > 0:
-        for h in hits:
-            h.score = round(h.score / top, 4)
+        _normalise_scores(hits)
     return hits
 
 

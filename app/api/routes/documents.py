@@ -152,9 +152,20 @@ async def similar(
 def get_page_image(
     doc_id: int,
     page_no: int,
-    _user: User = Depends(media_user),
+    user: User = Depends(media_user),
     session: Session = Depends(get_session),
 ) -> FileResponse:
+    from app.auth.acl import can_see_document
+
+    # Enforce the per-document ACL before serving any rendered page (these PNGs
+    # are document *content*) — mirror download_document. A media token encodes
+    # only the user id, not a document scope, so the check must happen here.
+    doc = session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    if not can_see_document(user, doc):
+        raise HTTPException(status_code=403, detail="forbidden")
+
     page = session.exec(
         select(DocumentPage).where(DocumentPage.document_id == doc_id, DocumentPage.page_number == page_no)
     ).first()
@@ -162,9 +173,6 @@ def get_page_image(
         return FileResponse(page.rendered_image_path, media_type="image/png")
 
     # On-the-fly render
-    doc = session.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="document not found")
     src_path = Path(doc.path)
     if not src_path.exists():
         raise HTTPException(status_code=410, detail="original file missing")
