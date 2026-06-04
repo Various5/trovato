@@ -1,1 +1,6 @@
-from app.llm.lmstudio import LMStudioClient, LMStudioError, get_client  # noqa: F401
+from app.llm.lmstudio import (  # noqa: F401
+    LMStudioClient,
+    LMStudioError,
+    get_client,
+    reset_client_cache,
+)

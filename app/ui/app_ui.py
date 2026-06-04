@@ -26,6 +26,7 @@ from app.auth.security import (
 )
 from app.config import get_settings, save_user_settings
 from app.database import session_scope
+from app.llm import LMStudioClient, reset_client_cache
 from app.models import (
     Chat,
     ChatContextItem,
@@ -36,8 +37,9 @@ from app.models import (
     User,
     UserSetting,
 )
+from app.services.hardware import detect_hardware
 from app.services.indexer import start_scan_in_background
-from app.ui.components import page_header
+from app.ui.components import page_header, section_card
 from app.ui.styles import build_global_css
 from app.ui.themes import THEMES
 from app.utils.i18n import SUPPORTED_LANGUAGES, t
@@ -45,6 +47,16 @@ from app.utils.logging import logger
 from app.utils.secret_store import delete_secret, get_secret, put_secret
 
 REMEMBER_SECRET_NAME = "ui_login_remember"
+
+
+def _classify_model(mid: str) -> str:
+    """Heuristically bucket an LM Studio model id into chat / embedding / vision."""
+    lid = mid.lower()
+    if any(k in lid for k in ("embed", "bge", "nomic", "e5-", "gte-", "snowflake-arctic")):
+        return "embedding"
+    if any(k in lid for k in ("-vl", "vision", "llava", "moondream", "internvl")):
+        return "vision"
+    return "chat"
 
 
 def _current_user() -> User | None:
@@ -252,6 +264,7 @@ NAV_ITEMS: list[tuple[str, str, str]] = [
     ("nav.tags", "/tags", "label"),
     ("nav.backup", "/backup", "save"),
     ("nav.settings", "/settings", "settings"),
+    ("nav.help", "/help", "help_outline"),
     ("nav.diagnostics", "/diagnostics", "monitor_heart"),
     ("nav.logs", "/logs", "article"),
     ("nav.about", "/about", "info"),
@@ -524,64 +537,327 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.navigate.to("/login")
                 return
         wl = "en"
+        s0 = get_settings()
+        state: dict[str, Any] = {
+            "user_id": None,
+            "ping_ok": False,
+            "models": [],
+            "embed_ok": False,
+            "embed_skipped": False,
+            "source_id": None,
+            "scan_started": False,
+        }
+
+        def _client() -> LMStudioClient:
+            return LMStudioClient(base_url=(lm_url.value or s0.lmstudio_base_url))
+
         with (
             ui.column().classes("fixed inset-0 items-center justify-center p-4 overflow-auto"),
-            ui.card().classes("ldi-static w-full max-w-[480px] p-6"),
+            ui.card().classes("ldi-static w-full max-w-[640px] p-6"),
         ):
-            ui.label(t("common.welcome", wl)).classes("text-h5 ldi-primary")
-            ui.label(t("wizard.intro", wl)).classes("q-mb-md opacity-80")
-            username = ui.input(t("wizard.admin_user", wl), value="admin").classes("w-full")
-            password = ui.input(t("common.password", wl), password=True, password_toggle_button=True).classes(
-                "w-full"
-            )
-            confirm = ui.input(
-                t("common.confirm_password", wl), password=True, password_toggle_button=True
-            ).classes("w-full")
-            lm_url = ui.input(t("wizard.lm_url", wl), value=get_settings().lmstudio_base_url).classes(
-                "w-full"
-            )
-            source_path = ui.input(t("wizard.initial_folder", wl)).classes("w-full")
-            err = ui.label("").classes("text-negative")
-            recovery_box = ui.label("").classes("text-positive break-words")
-            # Holds the "Continue" button added after the admin is created, so it
-            # renders inside the card (a bare ui.button() in the callback would
-            # attach to the page root, outside this centered card).
-            actions = ui.column().classes("w-full gap-0")
+            ui.label(t("setup.welcome", wl)).classes("text-h5 ldi-primary")
+            ui.label(t("setup.intro", wl)).classes("q-mb-md opacity-80")
 
-            def _create() -> None:
-                if not username.value or not password.value:
-                    err.text = t("wizard.user_pw_required", wl)
-                    return
-                if password.value != confirm.value:
-                    err.text = t("wizard.pw_mismatch", wl)
-                    return
-                save_user_settings({"lmstudio_base_url": lm_url.value or "http://localhost:1234/v1"})
-                get_settings.cache_clear()
-                with session_scope() as session:
-                    user = create_user(session, username=username.value, password=password.value)
-                    rk = make_recovery_key()
-                    user.recovery_key_hash = hash_password(rk)
-                    session.add(user)
-                    session.flush()
-                    if source_path.value:
-                        session.add(
-                            DocumentSource(
-                                name="Initial folder",
-                                type=SourceType.local,
-                                path=source_path.value,
-                            )
+            with ui.stepper().props("vertical").classes("w-full") as stepper:
+                # 1) Prerequisites --------------------------------------------
+                with ui.step(t("setup.prereq_title", wl)):
+                    ui.markdown(t("setup.prereq_body", wl)).classes("text-body2")
+                    ui.link(t("setup.open_help", wl), "/help", new_tab=True).classes("text-caption")
+                    with ui.stepper_navigation():
+                        ui.button(t("setup.get_started", wl), on_click=stepper.next).props("color=primary")
+
+                # 2) Account --------------------------------------------------
+                with ui.step(t("setup.step_account", wl)):
+                    ui.label(t("setup.account_intro", wl)).classes("text-caption opacity-80")
+                    username = ui.input(t("wizard.admin_user", wl), value="admin").classes("w-full")
+                    password = ui.input(
+                        t("common.password", wl), password=True, password_toggle_button=True
+                    ).classes("w-full")
+                    confirm = ui.input(
+                        t("common.confirm_password", wl), password=True, password_toggle_button=True
+                    ).classes("w-full")
+                    acct_err = ui.label("").classes("text-negative text-caption")
+                    recovery_box = ui.label("").classes("text-positive break-words q-mt-sm")
+                    ack = ui.checkbox(t("setup.recovery_ack", wl))
+                    ack.set_visibility(False)
+                    with ui.stepper_navigation():
+                        create_btn = ui.button(t("setup.create_account", wl)).props("color=primary")
+                        acct_next = ui.button(t("setup.next", wl), on_click=stepper.next).props(
+                            "color=primary"
                         )
-                    nicegui_app.storage.user[SESSION_USER_KEY] = user.id
-                recovery_box.text = f"{t('wizard.recovery_note', wl)} {rk}"
-                actions.clear()
-                with actions:
-                    ui.button(t("wizard.continue", wl), on_click=lambda: ui.navigate.to("/")).props(
-                        "color=primary"
-                    ).classes("w-full q-mt-md")
+                    acct_next.set_visibility(False)
 
-            ui.button(t("wizard.create_admin", wl), on_click=_create).props("color=primary").classes(
-                "w-full q-mt-md"
-            )
+                    def _make_account() -> None:
+                        if not username.value or not password.value:
+                            acct_err.text = t("wizard.user_pw_required", wl)
+                            return
+                        if password.value != confirm.value:
+                            acct_err.text = t("wizard.pw_mismatch", wl)
+                            return
+                        if state["user_id"]:
+                            return
+                        acct_err.text = ""
+                        with session_scope() as session:
+                            u = create_user(session, username=username.value, password=password.value)
+                            rk = make_recovery_key()
+                            u.recovery_key_hash = hash_password(rk)
+                            session.add(u)
+                            session.flush()
+                            state["user_id"] = u.id
+                            nicegui_app.storage.user[SESSION_USER_KEY] = u.id
+                        recovery_box.text = f"{t('wizard.recovery_note', wl)} {rk}"
+                        username.disable()
+                        password.disable()
+                        confirm.disable()
+                        create_btn.set_visibility(False)
+                        ack.set_visibility(True)
+
+                    create_btn.on("click", _make_account)
+                    ack.on_value_change(lambda: acct_next.set_visibility(bool(ack.value)))
+
+                # 3) Connect --------------------------------------------------
+                with ui.step(t("setup.step_connect", wl)):
+                    ui.label(t("setup.connect_intro", wl)).classes("text-caption opacity-80")
+                    lm_url = ui.input(t("wizard.lm_url", wl), value=s0.lmstudio_base_url).classes("w-full")
+                    conn_status = ui.label("").classes("text-caption q-mt-sm")
+                    with ui.stepper_navigation():
+                        ui.button(t("setup.back", wl), on_click=stepper.previous).props("flat")
+                        test_btn = ui.button(t("setup.test_connection", wl), icon="cable").props(
+                            "color=primary"
+                        )
+                        conn_next = ui.button(t("setup.next", wl), on_click=stepper.next).props(
+                            "color=primary"
+                        )
+                        ui.button(t("setup.skip_for_now", wl), on_click=stepper.next).props("flat")
+                    conn_next.set_visibility(False)
+
+                    async def _test_conn() -> None:
+                        save_user_settings({"lmstudio_base_url": lm_url.value or "http://localhost:1234/v1"})
+                        get_settings.cache_clear()
+                        reset_client_cache()
+                        conn_status.text = t("setup.testing", wl)
+                        conn_status.classes(replace="text-caption q-mt-sm opacity-80")
+                        test_btn.disable()
+                        try:
+                            c = _client()
+                            ok = await c.ping()
+                            state["ping_ok"] = ok
+                            if ok:
+                                state["models"] = await c.list_models()
+                                conn_status.text = t("setup.connect_ok", wl).format(n=len(state["models"]))
+                                conn_status.classes(replace="text-caption q-mt-sm text-positive")
+                                conn_next.set_visibility(True)
+                            else:
+                                conn_status.text = t("setup.connect_fail", wl)
+                                conn_status.classes(replace="text-caption q-mt-sm text-negative")
+                        finally:
+                            test_btn.enable()
+
+                    test_btn.on("click", _test_conn)
+
+                # 4) Models ---------------------------------------------------
+                with ui.step(t("setup.step_models", wl)):
+                    ui.label(t("setup.models_intro", wl)).classes("text-caption opacity-80")
+                    chat_sel = ui.select([], label=t("setup.chat_model", wl), with_input=True).classes(
+                        "w-full"
+                    )
+                    emb_sel = ui.select([], label=t("setup.embedding_model", wl), with_input=True).classes(
+                        "w-full"
+                    )
+                    vis_sel = ui.select([], label=t("setup.vision_model", wl), with_input=True).classes(
+                        "w-full"
+                    )
+                    model_status = ui.label("").classes("text-caption q-mt-sm")
+                    fix_box = ui.column().classes("w-full q-mt-xs")
+                    fix_box.set_visibility(False)
+                    with ui.stepper_navigation():
+                        ui.button(t("setup.back", wl), on_click=stepper.previous).props("flat")
+                        auto_btn = ui.button(t("setup.auto_pick", wl), icon="auto_fix_high").props(
+                            "color=primary"
+                        )
+                        validate_btn = ui.button(t("setup.validate_embedding", wl), icon="psychology").props(
+                            "flat"
+                        )
+                        models_next = ui.button(t("setup.next", wl), on_click=stepper.next).props(
+                            "color=primary"
+                        )
+                        skip_btn = ui.button(t("setup.embedding_skip", wl)).props("flat")
+                    models_next.set_visibility(False)
+                    skip_btn.set_visibility(False)
+
+                    def _option_ids() -> list[str]:
+                        out: list[str] = []
+                        for m in state["models"]:
+                            if isinstance(m, dict):
+                                mid = m.get("id") or m.get("model")
+                                if mid:
+                                    out.append(mid)
+                        return out
+
+                    async def _validate_emb() -> None:
+                        updates: dict[str, Any] = {}
+                        if chat_sel.value:
+                            updates["chat_model"] = chat_sel.value
+                        if vis_sel.value:
+                            updates["vision_model"] = vis_sel.value
+                        emb = (emb_sel.value or "").strip()
+                        if emb:
+                            updates["embedding_model"] = emb
+                        if updates:
+                            save_user_settings(updates)
+                            get_settings.cache_clear()
+                            reset_client_cache()
+                        fix_box.clear()
+                        if not emb:
+                            model_status.text = t("setup.embedding_fail", wl)
+                            model_status.classes(replace="text-caption q-mt-sm text-negative")
+                            return
+                        ok, msg = await _client().preflight_embed(model=emb)
+                        state["embed_ok"] = ok
+                        if ok:
+                            model_status.text = "✓ " + t("setup.embedding_ok", wl)
+                            model_status.classes(replace="text-caption q-mt-sm text-positive")
+                            fix_box.set_visibility(False)
+                            models_next.set_visibility(True)
+                            skip_btn.set_visibility(False)
+                        else:
+                            model_status.text = "✗ " + t("setup.embedding_fail", wl)
+                            model_status.classes(replace="text-caption q-mt-sm text-negative")
+                            fix_box.set_visibility(True)
+                            with fix_box:
+                                ui.label(t("setup.embedding_fix", wl)).classes("text-caption opacity-80")
+                                ui.code(msg, language="text").classes("w-full")
+                            skip_btn.set_visibility(True)
+
+                    async def _auto_pick() -> None:
+                        if not state["models"] and state["ping_ok"]:
+                            state["models"] = await _client().list_models()
+                        ids = _option_ids()
+                        for sel in (chat_sel, emb_sel, vis_sel):
+                            sel.set_options(ids)
+                        chat = emb = vis = ""
+                        for mid in ids:
+                            role = _classify_model(mid)
+                            if role == "embedding" and not emb:
+                                emb = mid
+                            elif role == "vision" and not vis:
+                                vis = mid
+                            elif role == "chat" and not chat:
+                                chat = mid
+                        if chat:
+                            chat_sel.set_value(chat)
+                        if emb:
+                            emb_sel.set_value(emb)
+                        if vis:
+                            vis_sel.set_value(vis)
+                        await _validate_emb()
+
+                    def _skip_emb() -> None:
+                        state["embed_skipped"] = True
+                        ui.notify(t("setup.embedding_skip_warn", wl), color="warning")
+                        stepper.next()
+
+                    auto_btn.on("click", _auto_pick)
+                    validate_btn.on("click", _validate_emb)
+                    skip_btn.on("click", _skip_emb)
+
+                # 5) Performance ----------------------------------------------
+                with ui.step(t("setup.step_hardware", wl)):
+                    ui.label(t("setup.hardware_intro", wl)).classes("text-caption opacity-80")
+                    hw = detect_hardware()
+                    ui.label(
+                        f"{t('setup.detected', wl)}: {hw.physical_cores} cores · "
+                        f"{hw.total_ram_gb:.0f} GB RAM · GPU: {hw.gpu or '—'}"
+                    ).classes("text-caption q-mt-xs opacity-80")
+                    prof = ui.select(
+                        {"auto": "Auto", "low": "Low", "balanced": "Balanced", "high": "High"},
+                        value=(s0.performance_profile or "auto"),
+                        label=t("setup.perf_profile", wl),
+                    ).classes("w-full")
+
+                    def _save_profile() -> None:
+                        save_user_settings({"performance_profile": prof.value or "auto"})
+                        get_settings.cache_clear()
+                        stepper.next()
+
+                    with ui.stepper_navigation():
+                        ui.button(t("setup.back", wl), on_click=stepper.previous).props("flat")
+                        ui.button(t("setup.next", wl), on_click=_save_profile).props("color=primary")
+
+                # 6) Folder + first action ------------------------------------
+                with ui.step(t("setup.step_folder", wl)):
+                    ui.label(t("setup.folder_intro", wl)).classes("text-caption opacity-80")
+                    folder = ui.input(t("wizard.initial_folder", wl)).classes("w-full")
+                    action = ui.radio(
+                        {
+                            "quick": t("setup.action_quick", wl),
+                            "full": t("setup.action_full", wl),
+                            "skip": t("setup.action_skip", wl),
+                        },
+                        value="quick",
+                    ).classes("q-mt-sm")
+
+                    def _finish_folder() -> None:
+                        if folder.value:
+                            with session_scope() as session:
+                                src = DocumentSource(
+                                    name="Initial folder",
+                                    type=SourceType.local,
+                                    path=folder.value,
+                                    owner_id=state["user_id"],
+                                )
+                                session.add(src)
+                                session.flush()
+                                state["source_id"] = src.id
+                        act = action.value
+                        if state["embed_skipped"] and act == "full":
+                            act = "quick"
+                        if state["source_id"] and act != "skip":
+                            start_scan_in_background(state["source_id"], phase=act)
+                            state["scan_started"] = True
+                        done_msg.text = (
+                            t("setup.done_scan_started", wl)
+                            if state["scan_started"]
+                            else t("setup.done_no_scan", wl)
+                        )
+                        stepper.next()
+
+                    with ui.stepper_navigation():
+                        ui.button(t("setup.back", wl), on_click=stepper.previous).props("flat")
+                        ui.button(t("setup.next", wl), on_click=_finish_folder).props("color=primary")
+
+                # 7) Done -----------------------------------------------------
+                with ui.step(t("setup.step_done", wl)):
+                    ui.label(t("setup.done_title", wl)).classes("text-h6 ldi-primary")
+                    done_msg = ui.label(t("setup.done_no_scan", wl)).classes(
+                        "text-caption opacity-80 q-mt-xs"
+                    )
+                    with ui.stepper_navigation():
+                        ui.button(
+                            t("setup.go_dashboard", wl),
+                            icon="dashboard",
+                            on_click=lambda: ui.navigate.to("/"),
+                        ).props("color=primary")
+
+    @ui.page("/help")
+    def page_help() -> None:
+        user = _require_login()
+        if not user:
+            return
+        _layout(user, "/help")
+        lang = _user_lang(user)
+        page_header("help.title", lang)
+        sections = [
+            ("help.prereq_title", "setup.prereq_body", "rocket_launch"),
+            ("help.models_title", "help.models_body", "memory"),
+            ("help.scanning_title", "help.scanning_body", "document_scanner"),
+            ("help.search_title", "help.search_body", "search"),
+            ("help.backup_title", "help.backup_body", "save"),
+            ("help.trouble_title", "help.trouble_body", "healing"),
+        ]
+        for title_key, body_key, icon in sections:
+            with section_card(lang, title_key=title_key, icon=icon, extra="q-mb-md"):
+                ui.markdown(t(body_key, lang)).classes("text-body2")
 
     @ui.page("/recover")
     def page_recover() -> None:
@@ -649,6 +925,27 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.icon(icon).classes("text-3xl ldi-accent")
                     ui.label(str(value)).classes("text-h4")
                     ui.label(t(label_key, lang)).classes("opacity-80")
+        # ----- Getting started (only while the library is empty) -----
+        if doc_count == 0:
+            with section_card(lang, title_key="dash.gs_title", icon="rocket_launch", extra="q-mt-md"):
+                ui.label(t("dash.gs_intro", lang)).classes("text-caption opacity-80 q-mb-sm")
+                gs_steps = [
+                    ("folder_open", "dash.gs_add_source", "/sources", source_count > 0),
+                    ("document_scanner", "dash.gs_run_scan", "/sources", False),
+                    ("search", "dash.gs_ask", "/search", False),
+                ]
+                for s_icon, s_key, s_route, s_done in gs_steps:
+                    with ui.row().classes("items-center gap-2 w-full q-py-xs"):
+                        ui.icon("check_circle" if s_done else "radio_button_unchecked").classes(
+                            "ldi-accent" if s_done else "opacity-40"
+                        )
+                        ui.label(t(s_key, lang)).classes("flex-1")
+                        ui.button(icon=s_icon, on_click=lambda r=s_route: ui.navigate.to(r)).props(
+                            "flat dense round"
+                        )
+                ui.button(
+                    t("dash.gs_help", lang), icon="help_outline", on_click=lambda: ui.navigate.to("/help")
+                ).props("flat").classes("q-mt-sm")
         # ----- Active scans (live) -----
         from app.models import ScanJob, ScanJobStatus
 
