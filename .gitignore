@@ -79,3 +79,11 @@ htmlcov/
 
 # Logs
 *.log
+
+# Local agent / runtime state — machine-specific, never commit
+# (.claude/ = Claude Code local config + scheduled_tasks.lock; un-ignore settings.json if you ever want to share it)
+.claude/
+# NiceGUI per-user session storage (storage-user-*.json)
+.nicegui/
+# Local screenshots / capture artifacts (force-add a specific one with `git add -f` if needed for docs)
+screenshots/
