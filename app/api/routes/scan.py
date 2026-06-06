@@ -22,6 +22,7 @@ class ScanStartBody(BaseModel):
     force_vision: bool = False
     force_embed: bool = False
     dry_run: bool = False
+    phase: str = "full"
 
 
 @router.post("/start")
@@ -32,6 +33,7 @@ def start(body: ScanStartBody, _user: User = Depends(login_required)) -> dict[st
         force_vision=body.force_vision,
         force_embed=body.force_embed,
         dry_run=body.dry_run,
+        phase=body.phase,
     )
     return {"scheduled": True, "task_name": task.get_name()}
 

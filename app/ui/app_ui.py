@@ -39,7 +39,7 @@ from app.models import (
     UserSetting,
 )
 from app.services.hardware import detect_hardware
-from app.services.indexer import start_scan_in_background
+from app.services.indexer import abort_scan_job, start_scan_in_background
 from app.ui.components import (
     confirm_dialog,
     empty_state,
@@ -315,21 +315,42 @@ def _user_lang(user: User) -> str:
         return lang if lang in SUPPORTED_LANGUAGES else "en"
 
 
-NAV_ITEMS: list[tuple[str, str, str]] = [
-    ("nav.dashboard", "/", "dashboard"),
-    ("nav.documents", "/documents", "description"),
-    ("nav.search", "/search", "search"),
-    ("nav.chat", "/chat", "forum"),
-    ("nav.sources", "/sources", "folder"),
-    ("nav.compare", "/compare", "compare_arrows"),
-    ("nav.tags", "/tags", "label"),
-    ("nav.backup", "/backup", "save"),
-    ("nav.settings", "/settings", "settings"),
-    ("nav.help", "/help", "help_outline"),
-    ("nav.diagnostics", "/diagnostics", "monitor_heart"),
-    ("nav.logs", "/logs", "article"),
-    ("nav.about", "/about", "info"),
+# Each entry: (i18n key, path, icon, expert_only).
+# ``expert_only`` items are hidden in Basic mode and only appear once the user
+# flips the Basic⟷Expert switch in the drawer — they're advanced/occasional
+# tools (compare, backup, diagnostics, logs, about) rather than day-to-day work.
+NAV_ITEMS: list[tuple[str, str, str, bool]] = [
+    ("nav.dashboard", "/", "dashboard", False),
+    ("nav.documents", "/documents", "description", False),
+    ("nav.search", "/search", "search", False),
+    ("nav.chat", "/chat", "forum", False),
+    ("nav.sources", "/sources", "folder", False),
+    ("nav.compare", "/compare", "compare_arrows", True),
+    ("nav.tags", "/tags", "label", False),
+    ("nav.backup", "/backup", "save", True),
+    ("nav.settings", "/settings", "settings", False),
+    ("nav.help", "/help", "help_outline", False),
+    ("nav.diagnostics", "/diagnostics", "monitor_heart", True),
+    ("nav.logs", "/logs", "article", True),
+    ("nav.about", "/about", "info", True),
 ]
+
+EXPERT_MODE_KEY = "expert_mode"
+
+
+def _expert_mode() -> bool:
+    """Whether the drawer shows advanced/occasional menu items (Expert mode).
+
+    Stored per-browser in ``app.storage.user`` (like the dismissed-update and
+    remember-me prefs) rather than the DB ``UserSetting`` row — this keeps the
+    feature migration-free for existing installs, since startup only runs
+    ``create_all`` and would not add a new column to an existing table.
+    Defaults to Basic (False) so the menu stays uncluttered out of the box.
+    """
+    try:
+        return bool(nicegui_app.storage.user.get(EXPERT_MODE_KEY, False))
+    except Exception:
+        return False
 
 
 def _layout(user: User, current: str) -> None:
@@ -350,7 +371,7 @@ def _layout(user: User, current: str) -> None:
         pass
 
     # --- Header ----------------------------------------------------------
-    page_title = next((t(k, lang) for k, p, _ in NAV_ITEMS if p == current), __app_name__)
+    page_title = next((t(k, lang) for k, p, _, _ in NAV_ITEMS if p == current), __app_name__)
 
     with (
         ui.header(elevated=False)
@@ -459,7 +480,10 @@ def _layout(user: User, current: str) -> None:
         with ui.column().classes("gap-0 q-mb-md"):
             ui.label("MENU").classes("text-caption opacity-50 q-px-sm").style("letter-spacing: 0.12em;")
 
-        for key, path, icon in NAV_ITEMS:
+        expert_on = _expert_mode()
+        for key, path, icon, expert_only in NAV_ITEMS:
+            if expert_only and not expert_on:
+                continue
             classes = "ldi-nav-item"
             if current == path:
                 classes += " active"
@@ -473,6 +497,26 @@ def _layout(user: User, current: str) -> None:
                     ui.label(t(key, lang)).classes("text-body2")
 
         ui.space()
+
+        # --- Basic / Expert mode toggle ---------------------------------
+        # Flips the per-browser preference and reloads so the nav re-renders
+        # with the advanced items shown/hidden. Kept in the drawer so it's
+        # always reachable regardless of which items are currently visible.
+        def _set_expert(value: bool) -> None:
+            try:
+                nicegui_app.storage.user[EXPERT_MODE_KEY] = bool(value)
+            except Exception as e:
+                logger.warning("expert-mode toggle failed: {}", e)
+            ui.navigate.reload()
+
+        with ui.row().classes("items-center gap-2 q-px-sm no-wrap"):
+            ui.icon("tune").classes("ldi-accent")
+            ui.switch(
+                t("nav.expert_mode", lang),
+                value=expert_on,
+                on_change=lambda e: _set_expert(e.value),
+            ).props("dense").tooltip(t("nav.expert_hint", lang))
+
         ui.separator().classes("q-my-md")
         with (ui.row().classes("items-center gap-2 q-px-sm"),):
             ui.icon("verified_user").classes("ldi-accent")
@@ -1190,6 +1234,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
         from app.models import ScanJob, ScanJobStatus
 
         def _latest_job_for(session, source_id: int) -> ScanJob | None:
+            # Prefer the live, controllable job (running/paused) over a job queued
+            # behind it or finished history, so the row's progress + Stop button
+            # target the scan that's actually executing.
+            live = session.exec(
+                select(ScanJob)
+                .where(
+                    ScanJob.source_id == source_id,
+                    ScanJob.status.in_([ScanJobStatus.running, ScanJobStatus.paused]),  # type: ignore[attr-defined]
+                )
+                .order_by(ScanJob.id.desc())  # type: ignore
+                .limit(1)
+            ).first()
+            if live is not None:
+                return live
             return session.exec(
                 select(ScanJob)
                 .where(ScanJob.source_id == source_id)
@@ -1418,6 +1476,47 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     ui.notify(t(note_key, lang))
                                     _refresh()
 
+                                def _force_rescan(sid: int, phase: str) -> None:
+                                    if phase == "vision" and not (get_settings().vision_model or "").strip():
+                                        ui.notify(
+                                            t("sources.vision_no_model", lang), color="warning", timeout=7000
+                                        )
+                                    with ui.dialog() as fd, ui.card().classes("w-[440px] p-4"):
+                                        ui.label(t("sources.force_rescan_title", lang)).classes(
+                                            "text-h6 ldi-primary"
+                                        )
+                                        ui.label(t("sources.force_rescan_help", lang)).classes(
+                                            "text-caption opacity-70"
+                                        )
+
+                                        def _go(sid=sid, phase=phase) -> None:
+                                            kwargs = {"phase": phase, "force_ocr": True, "force_embed": True}
+                                            if phase == "vision":
+                                                kwargs["force_vision"] = True
+                                            start_scan_in_background(sid, **kwargs)
+                                            fd.close()
+                                            ui.notify(t("sources.force_rescan_started", lang))
+                                            _refresh()
+
+                                        with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
+                                            ui.button(t("common.cancel", lang), on_click=fd.close).props("flat")
+                                            ui.button(
+                                                t("sources.force_rescan_btn", lang), on_click=_go
+                                            ).props("color=warning")
+                                    fd.open()
+
+                                def _stop_scan(jid: int) -> None:
+                                    abort_scan_job(jid)
+                                    ui.notify(t("sources.scan_stopping", lang))
+                                    _refresh()
+
+                                if is_active and job is not None and job.id is not None:
+                                    _jid = job.id
+                                    ui.button(
+                                        icon="stop",
+                                        on_click=lambda jid=_jid: _stop_scan(jid),
+                                    ).props("flat dense round color=negative").tooltip(t("sources.stop", lang))
+
                                 with (
                                     ui.button(icon="play_arrow")
                                     .props("color=primary dense round")
@@ -1455,6 +1554,15 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                                 sid, "full", "sources.scan_started"
                                             ),
                                         )
+                                        ui.separator()
+                                        ui.menu_item(
+                                            t("sources.force_rescan_ocr", lang),
+                                            on_click=lambda sid=s.id: _force_rescan(sid, "ocr"),
+                                        )
+                                        ui.menu_item(
+                                            t("sources.force_rescan_vision", lang),
+                                            on_click=lambda sid=s.id: _force_rescan(sid, "vision"),
+                                        )
                                 ui.button(
                                     icon="bolt",
                                     on_click=lambda sid=s.id: _start(sid, "quick", "sources.scan_started"),
@@ -1462,7 +1570,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ui.button(
                                     icon="text_fields",
                                     on_click=lambda sid=s.id: _start(sid, "ocr", "sources.ocr_started"),
-                                ).props("flat dense round").tooltip(t("sources.force_ocr", lang))
+                                ).props("flat dense round").tooltip(t("sources.phase_ocr", lang))
                                 ui.button(
                                     icon="image",
                                     on_click=lambda sid=s.id: _start(sid, "vision", "sources.vision_started"),

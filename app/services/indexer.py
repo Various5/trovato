@@ -85,6 +85,22 @@ class JobController:
 
 JOB_CONTROLLER: dict[int, JobController] = {}
 
+# Live asyncio task per job, so the UI Stop button can force-cancel a wedged
+# scan (e.g. one hung on a network read) that won't honor a cooperative abort.
+JOB_TASKS: dict[int, asyncio.Task] = {}
+
+# One scan runs at a time per source; extra requests queue behind this lock
+# (and coalesce to at most one waiting job — see ``run_scan_job``).
+_SOURCE_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _source_lock(source_id: int) -> asyncio.Lock:
+    lock = _SOURCE_LOCKS.get(source_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SOURCE_LOCKS[source_id] = lock
+    return lock
+
 
 # ---------------------------------------------------------------------------
 # Index a single file
@@ -565,9 +581,7 @@ async def resume_scan_job(job_id: int) -> int:
             raise ValueError(f"job {job_id} not found")
         if job.status in (ScanJobStatus.completed, ScanJobStatus.aborted):
             return job_id
-        job.status = ScanJobStatus.running
-        job.message = (job.message or "") + " | resumed"
-        session.add(job)
+        source_id = job.source_id
         source = session.get(DocumentSource, job.source_id) if job.source_id else None
         source_snapshot = DocumentSource(**source.model_dump()) if source else None
         items = session.exec(
@@ -584,6 +598,9 @@ async def resume_scan_job(job_id: int) -> int:
     phase = options.get("phase", "full")
     controller = JobController(job_id=job_id)
     JOB_CONTROLLER[job_id] = controller
+    JOB_TASKS[job_id] = asyncio.current_task()  # type: ignore[assignment]
+    src_lock = _source_lock(source_id) if source_id is not None else asyncio.Lock()
+    acquired = False
 
     tuning = active_tuning()
     concurrency = tuning.quick_workers if phase == "quick" else tuning.workers
@@ -656,6 +673,17 @@ async def resume_scan_job(job_id: int) -> int:
             await asyncio.sleep(0)
 
     try:
+        # Serialize on the source lock, same as run_scan_job, so a resumed job
+        # and a fresh scan never index the same source concurrently.
+        await src_lock.acquire()
+        acquired = True
+        with write_session() as session:
+            jj = session.get(ScanJob, job_id)
+            if jj and jj.status not in (ScanJobStatus.completed, ScanJobStatus.aborted):
+                jj.status = ScanJobStatus.running
+                jj.message = (jj.message or "") + " | resumed"
+                session.add(jj)
+
         tasks = [asyncio.create_task(_process_one(it_id, it_path)) for it_id, it_path in item_snapshots]
         try:
             await asyncio.gather(*tasks)
@@ -666,33 +694,77 @@ async def resume_scan_job(job_id: int) -> int:
 
         if controller.abort_event.is_set():
             with write_session() as session:
+                source = session.get(DocumentSource, source_id) if source_id is not None else None
+                if source:
+                    source.last_scan_at = utcnow()
+                    session.add(source)
                 j = session.get(ScanJob, job_id)
                 if j:
                     j.status = ScanJobStatus.aborted
                     j.ended_at = utcnow()
+                    j.current_file = None
                     session.add(j)
             return job_id
 
         with write_session() as session:
+            source = session.get(DocumentSource, source_id) if source_id is not None else None
+            if source:
+                source.last_scan_at = utcnow()
+                session.add(source)
             j = session.get(ScanJob, job_id)
             if j:
                 j.status = ScanJobStatus.completed
                 j.ended_at = utcnow()
                 j.current_file = None
                 session.add(j)
+    except asyncio.CancelledError:
+        with write_session() as session:
+            j = session.get(ScanJob, job_id)
+            if j and j.status not in (ScanJobStatus.completed, ScanJobStatus.error):
+                j.status = ScanJobStatus.aborted
+                j.ended_at = utcnow()
+                j.current_file = None
+                session.add(j)
+        raise
+    except Exception as e:
+        logger.exception("resume scan job failed: {}", e)
+        with write_session() as session:
+            j = session.get(ScanJob, job_id)
+            if j:
+                j.status = ScanJobStatus.error
+                j.ended_at = utcnow()
+                j.message = str(e)[:500]
+                session.add(j)
     finally:
+        if acquired:
+            src_lock.release()
         JOB_CONTROLLER.pop(job_id, None)
+        JOB_TASKS.pop(job_id, None)
     return job_id
 
 
 async def recover_unfinished_jobs() -> int:
     """Mark ``running`` jobs as ``paused`` on startup and queue resume tasks."""
     with write_session() as session:
-        unfinished = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
+        # Both running and paused jobs were in-flight at exit — resume both. (A
+        # paused job that gets no resume would render a Resume button wired to a
+        # controller that no longer exists: a zombie clearable only by Stop.)
+        unfinished = session.exec(
+            select(ScanJob).where(
+                ScanJob.status.in_([ScanJobStatus.running, ScanJobStatus.paused])  # type: ignore[attr-defined]
+            )
+        ).all()
         ids = [j.id for j in unfinished if j.id is not None]
         for j in unfinished:
             j.status = ScanJobStatus.paused
             j.message = (j.message or "") + " | recovered after restart"
+            session.add(j)
+        # Queued jobs never started running — their coroutines died with the old
+        # process, so nothing will ever pick them up. Abort them.
+        for j in session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.queued)).all():
+            j.status = ScanJobStatus.aborted
+            j.ended_at = utcnow()
+            j.message = (j.message or "") + " | abandoned (restart)"
             session.add(j)
     for jid in ids:
         asyncio.create_task(resume_scan_job(jid), name=f"resume-job-{jid}")
@@ -718,21 +790,32 @@ async def run_scan_job(
     are ``quick``, ``text``, ``ocr`` and ``vision``.
     """
 
+    new_options = {
+        "force_ocr": force_ocr,
+        "force_vision": force_vision,
+        "force_embed": force_embed,
+        "dry_run": dry_run,
+        "phase": phase,
+    }
     with write_session() as session:
         source = session.get(DocumentSource, source_id)
         if not source:
             raise ValueError(f"source {source_id} not found")
+        # Coalesce ONLY when an identical request is already queued: a watcher
+        # flood (same options) collapses to a single job, but a heavier request
+        # (e.g. a Force re-scan with force_* flags or a different phase) is never
+        # swallowed by a lighter queued scan — it gets its own queued job.
+        pending = session.exec(
+            select(ScanJob)
+            .where(ScanJob.source_id == source_id, ScanJob.status == ScanJobStatus.queued)
+            .order_by(ScanJob.id.desc())  # type: ignore[attr-defined]
+        ).first()
+        if pending is not None and (pending.options or {}) == new_options:
+            return pending.id or 0
         job = ScanJob(
             source_id=source_id,
-            status=ScanJobStatus.running,
-            started_at=utcnow(),
-            options={
-                "force_ocr": force_ocr,
-                "force_vision": force_vision,
-                "force_embed": force_embed,
-                "dry_run": dry_run,
-                "phase": phase,
-            },
+            status=ScanJobStatus.queued,
+            options=new_options,
         )
         session.add(job)
         session.flush()
@@ -744,15 +827,49 @@ async def run_scan_job(
         return 0
     controller = JobController(job_id=job_id)
     JOB_CONTROLLER[job_id] = controller
+    JOB_TASKS[job_id] = asyncio.current_task()  # type: ignore[assignment]
+    src_lock = _source_lock(source_id)
+    acquired = False
 
     try:
+        # Serialize per source: one scan at a time. Extra requests wait here as
+        # 'queued' (the event loop stays free) until the running scan releases
+        # the lock — then we promote this job to 'running'. NOTE: this is the
+        # per-source lock; ``lock`` further down is the (separate) per-item
+        # progress lock — keep the names distinct.
+        await src_lock.acquire()
+        acquired = True
+        if controller.abort_event.is_set():
+            # Stopped while still queued — finalize without doing any work.
+            with write_session() as session:
+                j = session.get(ScanJob, job_id)
+                if j and j.status != ScanJobStatus.aborted:
+                    j.status = ScanJobStatus.aborted
+                    j.ended_at = utcnow()
+                    session.add(j)
+            return job_id
+        with write_session() as session:
+            j = session.get(ScanJob, job_id)
+            if j:
+                j.status = ScanJobStatus.running
+                j.started_at = utcnow()
+                session.add(j)
+
         # ----- LM Studio preflight ----------------------------------------
         # If embeddings aren't going to work, fail loudly *once* instead of
         # retrying for every PDF in a 5000-file source.  Quick phase only
         # catalogs filenames so embeddings aren't required.
         if not dry_run and phase != "quick":
             client = get_client()
-            ok, message = await client.preflight_embed()
+            # Bound the preflight: a hung LM Studio must not stall the scan start
+            # indefinitely (the job is already promoted to 'running' here).
+            try:
+                ok, message = await asyncio.wait_for(
+                    client.preflight_embed(),
+                    timeout=active_tuning().http_timeout + 10,
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                ok, message = False, "embedding preflight timed out"
             if not ok:
                 logger.error("scan {} aborted on preflight: {}", job_id, message)
                 with write_session() as session:
@@ -766,7 +883,10 @@ async def run_scan_job(
                 return job_id
 
         provider = get_provider(source_snapshot)
-        files = list(provider.iter_files(source_snapshot))
+        # Enumerate off the event loop — a big local walk or a slow SMB/WebDAV/
+        # SFTP listing must not block the shared NiceGUI loop (it freezes every
+        # open tab, and the progress pollers can't even fire).
+        files = await asyncio.to_thread(lambda: list(provider.iter_files(source_snapshot)))
         with write_session() as session:
             j = session.get(ScanJob, job_id)
             if j:
@@ -870,10 +990,15 @@ async def run_scan_job(
 
         if controller.abort_event.is_set():
             with write_session() as session:
+                source = session.get(DocumentSource, source_id)
+                if source:
+                    source.last_scan_at = utcnow()
+                    session.add(source)
                 j = session.get(ScanJob, job_id)
                 if j:
                     j.status = ScanJobStatus.aborted
                     j.ended_at = utcnow()
+                    j.current_file = None
                     session.add(j)
             return job_id
 
@@ -888,9 +1013,28 @@ async def run_scan_job(
                 j.ended_at = utcnow()
                 j.current_file = None
                 session.add(j)
+    except asyncio.CancelledError:
+        # Force-cancelled (the Stop watchdog killed a wedged scan). Mark the job
+        # aborted so it doesn't linger as 'running', then re-raise.
+        with write_session() as session:
+            source = session.get(DocumentSource, source_id)
+            if source:
+                source.last_scan_at = utcnow()
+                session.add(source)
+            j = session.get(ScanJob, job_id)
+            if j and j.status not in (ScanJobStatus.completed, ScanJobStatus.error):
+                j.status = ScanJobStatus.aborted
+                j.ended_at = utcnow()
+                j.current_file = None
+                session.add(j)
+        raise
     except Exception as e:
         logger.exception("scan job failed: {}", e)
         with write_session() as session:
+            source = session.get(DocumentSource, source_id)
+            if source:
+                source.last_scan_at = utcnow()
+                session.add(source)
             j = session.get(ScanJob, job_id)
             if j:
                 j.status = ScanJobStatus.error
@@ -898,10 +1042,64 @@ async def run_scan_job(
                 j.message = str(e)[:500]
                 session.add(j)
     finally:
+        if acquired:
+            src_lock.release()
         JOB_CONTROLLER.pop(job_id, None)
+        JOB_TASKS.pop(job_id, None)
 
     return job_id
 
 
 def start_scan_in_background(source_id: int, **kwargs: Any) -> asyncio.Task:
     return asyncio.create_task(run_scan_job(source_id, **kwargs))
+
+
+# ---------------------------------------------------------------------------
+# UI-facing controls (Stop / Pause / Resume)
+# ---------------------------------------------------------------------------
+
+
+async def _cancel_if_alive(job_id: int, grace: float) -> None:
+    """After a graceful Stop, force-cancel a scan that hasn't stopped within
+    ``grace`` seconds (e.g. one wedged on a hung network read). Safe: each
+    document is persisted atomically, so an abandoned in-flight file is simply
+    re-tried on the next scan."""
+    try:
+        await asyncio.sleep(grace)
+    except asyncio.CancelledError:
+        return
+    task = JOB_TASKS.get(job_id)
+    if task is not None and not task.done():
+        logger.warning("scan job {} ignored stop for {}s — force-cancelling", job_id, grace)
+        task.cancel()
+
+
+def abort_scan_job(job_id: int, *, grace: float = 45.0) -> None:
+    """Stop a scan from the UI. Cooperative first (the in-flight file is allowed
+    to finish — file-boundary), then a watchdog force-cancels if it doesn't stop
+    within ``grace`` seconds (so a wedged scan can't block the queue forever)."""
+    ctrl = JOB_CONTROLLER.get(job_id)
+    if ctrl is not None:
+        ctrl.abort()
+    with write_session() as session:
+        j = session.get(ScanJob, job_id)
+        if j is None:
+            return
+        # A queued job never started; a job whose controller is gone is a zombie
+        # (lost across a restart). Finalize either immediately. A live running/
+        # paused job is left for its worker to flip to aborted at the next file
+        # boundary, so its counters/current_file settle correctly.
+        if j.status == ScanJobStatus.queued or (
+            ctrl is None and j.status in (ScanJobStatus.running, ScanJobStatus.paused)
+        ):
+            j.status = ScanJobStatus.aborted
+            j.ended_at = utcnow()
+            j.current_file = None
+            session.add(j)
+            return
+    if ctrl is not None and JOB_TASKS.get(job_id) is not None:
+        try:
+            asyncio.get_running_loop()
+            asyncio.create_task(_cancel_if_alive(job_id, grace), name=f"abort-watchdog-{job_id}")
+        except RuntimeError:
+            pass  # no running loop (called off the event loop) — skip the watchdog
