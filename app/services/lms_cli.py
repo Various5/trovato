@@ -83,9 +83,20 @@ async def download(model: str, *, timeout: float = 3600.0) -> tuple[bool, str]:
 
 
 async def load(model: str, *, ttl: int | None = None, timeout: float = 600.0) -> tuple[bool, str]:
-    """``lms load -y <model>`` — load a downloaded model into memory."""
+    """``lms load -y <model>`` — load a downloaded model into memory.
+
+    With no ``ttl`` the model stays resident until explicitly unloaded (LM Studio
+    won't idle-evict it), which is what keeps it hot across chat turns instead of
+    reloading every message.
+    """
     args = ["load", "-y", model]
     if ttl:
         args += ["--ttl", str(int(ttl))]
     logger.info("lms load {}", model)
     return await _run(args, timeout=timeout)
+
+
+async def unload_all(*, timeout: float = 60.0) -> tuple[bool, str]:
+    """``lms unload --all`` — free every loaded model (used on app shutdown)."""
+    logger.info("lms unload --all")
+    return await _run(["unload", "--all"], timeout=timeout)

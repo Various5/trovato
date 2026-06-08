@@ -162,6 +162,19 @@ def create_app():  # type: ignore[no-untyped-def]
 
             asyncio.create_task(_preload())
         yield
+        # Shutdown: free the models we (or LM Studio's JIT) loaded so they don't
+        # stay pinned in VRAM after the app closes. Bounded so a slow/missing
+        # LM Studio can't stall exit (the desktop window only waits ~6s).
+        if getattr(s, "unload_on_exit", True):
+            import asyncio
+
+            try:
+                from app.llm import unload_all_models
+
+                ok, msg = await asyncio.wait_for(unload_all_models(), timeout=8.0)
+                logger.info("unload on exit: {}", msg)
+            except Exception as e:
+                logger.debug("unload on exit skipped: {}", e)
 
     fastapi_app = FastAPI(
         title=__app_name__,

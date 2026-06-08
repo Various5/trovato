@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -217,10 +218,39 @@ def fts_delete_for_document(document_id: int, *, conn: Connection | None = None)
         logger.warning("FTS delete skipped: {}", e)
 
 
+def build_fts_match(query: str) -> str:
+    """Turn a free-text query into a safe FTS5 ``MATCH`` expression.
+
+    The old code passed the raw query straight to ``MATCH``, which broke
+    conversational searches two ways:
+
+    * FTS5 joins space-separated bare terms with an implicit **AND**, so a
+      natural-language question ("in welchem dokument wird die SIA Norm 103
+      aufgeführt") required *every* token in one chunk → it matched nothing and
+      the keyword half of hybrid search silently contributed zero.
+    * stray punctuation / FTS operators (``-``, ``:``, ``"``, ``*``…) raise a
+      syntax error, which we swallowed → again nothing.
+
+    Instead we tokenize, drop 1-char noise, quote each token (neutralising every
+    operator), and OR them together. bm25 then ranks chunks containing the
+    *rarest* matched terms — exactly the "103" / "SIA" we care about — to the
+    top, while common words contribute little. Returns "" when nothing usable
+    remains (caller should then skip FTS).
+    """
+    seen: list[str] = []
+    for w in re.findall(r"\w+", (query or "").lower()):
+        if len(w) > 1 and w not in seen:
+            seen.append(w)
+    return " OR ".join(f'"{w}"' for w in seen)
+
+
 def fts_search(query: str, limit: int = 25) -> list[tuple[int, int, float]]:
     """Return ``[(chunk_id, document_id, bm25_score), ...]`` (lower score = better)."""
     engine = get_engine()
     if not engine.url.drivername.startswith("sqlite"):
+        return []
+    match = build_fts_match(query)
+    if not match:
         return []
     with engine.connect() as conn:
         try:
@@ -230,7 +260,7 @@ def fts_search(query: str, limit: int = 25) -> list[tuple[int, int, float]]:
                     "FROM chunks_fts WHERE chunks_fts MATCH :q "
                     "ORDER BY score LIMIT :l"
                 ),
-                {"q": query, "l": limit},
+                {"q": match, "l": limit},
             ).all()
             return [(int(r[0]), int(r[1]), float(r[2])) for r in rows]
         except Exception as e:

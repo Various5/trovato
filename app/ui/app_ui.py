@@ -3357,6 +3357,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 preload_sw.on("update:model-value", lambda _e: _save_preload())
 
+                unload_sw = ui.switch(
+                    t("settings.unload_on_exit", lang),
+                    value=bool(getattr(s, "unload_on_exit", True)),
+                )
+
+                def _save_unload() -> None:
+                    save_user_settings({"unload_on_exit": bool(unload_sw.value)})
+                    get_settings.cache_clear()
+
+                unload_sw.on("update:model-value", lambda _e: _save_unload())
+
             connection_status = ui.label("").classes("text-caption q-mt-sm opacity-80")
 
             # ----- Model browser dialog -----------------------------------

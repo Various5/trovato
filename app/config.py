@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # before the first scan/chat (warm_up_configured). Set false to keep boot
     # light and rely on just-in-time loading instead.
     preload_models: bool = True
+    # Unload all LM Studio models when the app shuts down (`lms unload --all`),
+    # so we don't leave the user's models pinned in VRAM after closing.
+    unload_on_exit: bool = True
 
     # ---- OCR ----
     ocr_backend: str = "tesseract"  # "tesseract" | "paddle"
@@ -195,6 +198,7 @@ def get_settings() -> Settings:
         "embedding_model",
         "model_quality",
         "preload_models",
+        "unload_on_exit",
         "ocr_backend",
         "tesseract_cmd",
         "ocr_lang",

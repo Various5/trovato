@@ -27,7 +27,9 @@ class ChatCreateBody(BaseModel):
 
 class MessageBody(BaseModel):
     content: str
-    top_k: int = 8
+    # Higher default so "in which documents…" (plural) questions retrieve enough
+    # coverage across files; the prompt is still trimmed to the model's context.
+    top_k: int = 12
 
 
 class RenameBody(BaseModel):

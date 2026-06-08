@@ -241,13 +241,20 @@ class LMStudioClient:
             logger.debug("loaded_model_ids probe failed: {}", e)
         return out
 
-    async def ensure_loaded(self, model: str | None = None, *, kind: str = "chat") -> tuple[bool, str]:
+    async def ensure_loaded(
+        self, model: str | None = None, *, kind: str = "chat", prefer_cli: bool = False
+    ) -> tuple[bool, str]:
         """Make sure ``model`` is loaded in LM Studio *before* real work hits it.
 
-        Strategy: if it already reports ``loaded``, done. Otherwise fire a
-        minimal request (an embed for embeddings, a 1-token chat for chat/vision)
-        which triggers LM Studio's just-in-time load. If JIT loading is disabled
-        the request fails, so we fall back to ``lms load`` when the CLI is around.
+        If it already reports ``loaded``, done. Otherwise:
+
+        * ``prefer_cli`` (used by startup preload) loads it via ``lms load`` so it
+          stays **resident** — LM Studio won't idle-evict it, which is what stops
+          the model reloading on every chat turn. Falls back to JIT if no CLI.
+        * otherwise fire a minimal request (embed / 1-token chat) to trigger
+          LM Studio's just-in-time load, falling back to ``lms load`` if JIT is
+          disabled.
+
         Returns ``(ok, message)`` and never raises.
         """
         model = (model or "").strip()
@@ -258,6 +265,14 @@ class LMStudioClient:
                 return True, f"{model} already loaded"
         except Exception:
             pass
+
+        from app.services import lms_cli
+
+        if prefer_cli and lms_cli.is_available():
+            ok, out = await lms_cli.load(model)
+            if ok:
+                return True, f"{model} loaded (resident) via lms"
+            logger.debug("lms load {} failed, trying JIT: {}", model, out[:200])
         try:
             if kind == "embedding":
                 await self.embed(["warm-up"], model=model)
@@ -267,8 +282,6 @@ class LMStudioClient:
                 )
             return True, f"{model} loaded"
         except Exception as e:
-            from app.services import lms_cli
-
             if lms_cli.is_available():
                 ok, out = await lms_cli.load(model)
                 return ok, (f"{model} loaded via lms" if ok else f"lms load failed: {out[:200]}")
@@ -594,10 +607,12 @@ def reset_client_cache() -> None:
     get_client.cache_clear()
 
 
-async def warm_up_configured() -> dict[str, tuple[bool, str]]:
+async def warm_up_configured(*, prefer_cli: bool = True) -> dict[str, tuple[bool, str]]:
     """Preload the configured chat / embedding / vision models into LM Studio so
-    they're hot before the first scan or chat. Best-effort: skips unset models,
-    skips already-loaded ones, and never raises. Returns ``{role: (ok, msg)}``."""
+    they're hot before the first scan or chat. ``prefer_cli`` loads them resident
+    via ``lms load`` (no idle eviction → no reload per chat turn). Best-effort:
+    skips unset models, skips already-loaded ones, never raises.
+    Returns ``{role: (ok, msg)}``."""
     s = get_settings()
     client = get_client()
     try:
@@ -617,8 +632,22 @@ async def warm_up_configured() -> dict[str, tuple[bool, str]]:
             results[kind] = (True, "already loaded")
             continue
         try:
-            results[kind] = await client.ensure_loaded(m, kind=kind)
+            results[kind] = await client.ensure_loaded(m, kind=kind, prefer_cli=prefer_cli)
         except Exception as e:  # pragma: no cover - defensive
             results[kind] = (False, f"{type(e).__name__}: {e}")
         logger.info("warm-up {} ({}): {}", kind, m, results[kind][1])
     return results
+
+
+async def unload_all_models() -> tuple[bool, str]:
+    """Free every model loaded in LM Studio — called on app shutdown so we don't
+    leave the user's models pinned in VRAM after the app closes. No-op (reported
+    as ok) when the ``lms`` CLI isn't available. Never raises."""
+    from app.services import lms_cli
+
+    if not lms_cli.is_available():
+        return True, "lms CLI not available — nothing to unload"
+    try:
+        return await lms_cli.unload_all()
+    except Exception as e:  # pragma: no cover - defensive
+        return False, f"{type(e).__name__}: {e}"
