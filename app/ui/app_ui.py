@@ -1628,12 +1628,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.label(t("sources.delete_confirm", lang)).classes("text-h6 ldi-primary")
                 ui.label(t("sources.delete_help", lang)).classes("text-caption opacity-70")
 
-                def _do() -> None:
-                    with session_scope() as session:
-                        src = session.get(DocumentSource, sid)
-                        if src:
-                            session.delete(src)
+                async def _do() -> None:
+                    import asyncio
+
+                    from app.services.sources import delete_source_cascade
+
                     d.close()
+                    # Cascade delete touches docs/chunks/vectors/jobs and uses the
+                    # write lock — run it off the event loop so the UI never freezes.
+                    try:
+                        ok = await asyncio.to_thread(delete_source_cascade, sid)
+                    except Exception as e:  # surface the failure instead of silently no-op'ing
+                        ui.notify(f"{t('sources.delete_failed', lang)}: {e}", color="negative")
+                        _refresh()
+                        return
+                    if ok:
+                        ui.notify(t("sources.deleted", lang), color="positive")
+                    else:
+                        ui.notify(t("sources.delete_failed", lang), color="warning")
                     _refresh()
 
                 with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
@@ -3309,6 +3321,38 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 placeholder="e.g. text-embedding-bge-m3",
             ).classes("w-full")
 
+            with ui.row().classes("items-center gap-4 w-full q-mt-sm"):
+                quality_sel = (
+                    ui.select(
+                        {
+                            "fastest": t("settings.q_fastest", lang),
+                            "balanced": t("settings.q_balanced", lang),
+                            "max": t("settings.q_max", lang),
+                        },
+                        value=getattr(s, "model_quality", "balanced"),
+                        label=t("settings.model_quality", lang),
+                    )
+                    .props("dense outlined")
+                    .classes("min-w-[220px]")
+                )
+
+                def _save_quality() -> None:
+                    save_user_settings({"model_quality": quality_sel.value})
+                    get_settings.cache_clear()
+
+                quality_sel.on("update:model-value", lambda _e: _save_quality())
+
+                preload_sw = ui.switch(
+                    t("settings.preload_models", lang),
+                    value=bool(getattr(s, "preload_models", True)),
+                )
+
+                def _save_preload() -> None:
+                    save_user_settings({"preload_models": bool(preload_sw.value)})
+                    get_settings.cache_clear()
+
+                preload_sw.on("update:model-value", lambda _e: _save_preload())
+
             connection_status = ui.label("").classes("text-caption q-mt-sm opacity-80")
 
             # ----- Model browser dialog -----------------------------------
@@ -3397,50 +3441,91 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ui.button("Close", on_click=dialog.close).props("flat")
                 dialog.open()
 
+            async def _offer_downloads(missing: list) -> None:
+                """Ask-first download prompt for roles with no suitable local model."""
+                from app.services import lms_cli
+
+                have_lms = lms_cli.is_available()
+                with ui.dialog() as dlg, ui.card().classes("w-[540px] p-4"):
+                    ui.label(t("settings.download_models_title", lang)).classes("text-h6 ldi-primary")
+                    if not have_lms:
+                        ui.label(t("settings.lms_missing", lang)).classes(
+                            "ldi-pill ldi-pill-warning q-mb-sm"
+                        ).style("white-space: normal;")
+                    for ch in missing:
+                        with ui.row().classes("items-center gap-2 w-full no-wrap q-mb-xs"):
+                            ui.label(f"{ch.role}: {ch.suggestion}  (~{ch.size_gb:g} GB)").classes(
+                                "flex-1 text-body2"
+                            )
+
+                            async def _dl(target=ch.suggestion) -> None:
+                                ui.notify(
+                                    t("settings.download_started", lang).format(m=target), color="info"
+                                )
+                                ok, out = await lms_cli.download(target)
+                                ui.notify(
+                                    (t("settings.download_ok", lang) if ok else t("settings.download_fail", lang)).format(
+                                        m=target
+                                    ),
+                                    color=("positive" if ok else "negative"),
+                                )
+
+                            b = ui.button(
+                                t("settings.download", lang), icon="download", on_click=_dl
+                            ).props("dense color=primary")
+                            if not have_lms:
+                                b.props("disable")
+                    with ui.row().classes("justify-end w-full q-mt-md"):
+                        ui.button(t("common.close", lang), on_click=dlg.close).props("flat")
+                dlg.open()
+
             async def _auto_pick() -> None:
-                raw, err = await _fetch_models()
-                if err:
-                    connection_status.text = f"✗ {err}"
-                    ui.notify(err, color="negative")
+                # Hardware-aware: pick the best *downloaded* model per role for
+                # this machine's tier + the saved quality preference, then warm
+                # them in LM Studio. Missing roles get an ask-first download.
+                from app.llm import LMStudioClient, warm_up_configured
+                from app.services.hardware import active_tuning
+                from app.services.model_advisor import recommend
+
+                c = LMStudioClient(base_url=url.value or s.lmstudio_base_url)
+                try:
+                    available = await c.list_downloaded()
+                except Exception as e:
+                    connection_status.text = f"✗ {e}"
+                    ui.notify(str(e), color="negative")
                     return
-                chat = ""
-                emb = ""
-                vis = ""
-                for m in raw:
-                    if not isinstance(m, dict):
-                        continue
-                    mid = m.get("id") or m.get("model")
-                    if not mid:
-                        continue
-                    role = _classify(mid)
-                    if role == "embedding" and not emb:
-                        emb = mid
-                    elif role == "vision" and not vis:
-                        vis = mid
-                    elif role == "chat" and not chat:
-                        chat = mid
+                pref = getattr(get_settings(), "model_quality", "balanced")
+                tier = active_tuning().tier
+                plan = recommend(available, tier=tier, chat_preference=pref)
+
                 updates: dict[str, Any] = {}
-                if chat:
-                    chat_model.set_value(chat)
-                    updates["chat_model"] = chat
-                if emb:
-                    emb_model.set_value(emb)
-                    updates["embedding_model"] = emb
-                if vis:
-                    vision_model.set_value(vis)
-                    updates["vision_model"] = vis
+                if plan.embedding.model:
+                    emb_model.set_value(plan.embedding.model)
+                    updates["embedding_model"] = plan.embedding.model
+                if plan.chat.model:
+                    chat_model.set_value(plan.chat.model)
+                    updates["chat_model"] = plan.chat.model
+                if plan.vision.model:
+                    vision_model.set_value(plan.vision.model)
+                    updates["vision_model"] = plan.vision.model
                 if updates:
                     save_user_settings(updates)
                     get_settings.cache_clear()
-                applied = [k for k, v in (("chat", chat), ("embedding", emb), ("vision", vis)) if v]
-                if applied:
-                    ui.notify(f"Auto-picked & saved: {', '.join(applied)}", color="positive")
+
+                picked = " · ".join(f"{k.replace('_model', '')}={v}" for k, v in updates.items()) or "—"
+                connection_status.text = f"✓ {tier} tier / {pref}: {picked}"
+                if updates:
+                    ui.notify(f"Auto-picked & saved: {picked}", color="positive")
+                    warm = await warm_up_configured()
+                    failed = [k for k, (ok, _m) in warm.items() if not ok]
+                    if failed:
+                        ui.notify(
+                            "Loaded, but couldn't warm: " + ", ".join(failed), color="warning"
+                        )
                 else:
-                    ui.notify("No models found. Load at least one in LM Studio.", color="warning")
-                connection_status.text = (
-                    f"✓ {len(raw)} model(s) loaded · chat={chat or '—'} · "
-                    f"embedding={emb or '—'} · vision={vis or '—'}"
-                )
+                    ui.notify("No suitable models downloaded yet.", color="warning")
+                if plan.missing():
+                    await _offer_downloads(plan.missing())
 
             async def _test() -> None:
                 from app.llm import LMStudioClient

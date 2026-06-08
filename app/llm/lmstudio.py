@@ -214,6 +214,90 @@ class LMStudioClient:
                     logger.debug("/api/v0/models fallback failed: {}", e)
         return out
 
+    # ---- loading / warmup -------------------------------------------------
+
+    async def loaded_model_ids(self) -> set[str]:
+        """Ids of models LM Studio currently has *loaded* (state == 'loaded'),
+        read from the native ``/api/v0/models``. Empty set on any failure."""
+        out: set[str] = set()
+        try:
+            async with await self._client() as c:
+                base = str(c.base_url).rstrip("/")
+                native = (base[: -len("/v1")] if base.endswith("/v1") else base) + "/api/v0/models"
+                r = await c.get(native)
+                if r.status_code == 200:
+                    data = r.json()
+                    items = (
+                        (data.get("data") or data.get("models") or [])
+                        if isinstance(data, dict)
+                        else (data or [])
+                    )
+                    for it in items:
+                        if isinstance(it, dict) and it.get("state") == "loaded":
+                            mid = it.get("id") or it.get("model_key")
+                            if mid:
+                                out.add(mid)
+        except Exception as e:
+            logger.debug("loaded_model_ids probe failed: {}", e)
+        return out
+
+    async def ensure_loaded(self, model: str | None = None, *, kind: str = "chat") -> tuple[bool, str]:
+        """Make sure ``model`` is loaded in LM Studio *before* real work hits it.
+
+        Strategy: if it already reports ``loaded``, done. Otherwise fire a
+        minimal request (an embed for embeddings, a 1-token chat for chat/vision)
+        which triggers LM Studio's just-in-time load. If JIT loading is disabled
+        the request fails, so we fall back to ``lms load`` when the CLI is around.
+        Returns ``(ok, message)`` and never raises.
+        """
+        model = (model or "").strip()
+        if not model:
+            return False, "no model configured"
+        try:
+            if model in await self.loaded_model_ids():
+                return True, f"{model} already loaded"
+        except Exception:
+            pass
+        try:
+            if kind == "embedding":
+                await self.embed(["warm-up"], model=model)
+            else:
+                await self.chat(
+                    [{"role": "user", "content": "."}], model=model, max_tokens=1, temperature=0.0
+                )
+            return True, f"{model} loaded"
+        except Exception as e:
+            from app.services import lms_cli
+
+            if lms_cli.is_available():
+                ok, out = await lms_cli.load(model)
+                return ok, (f"{model} loaded via lms" if ok else f"lms load failed: {out[:200]}")
+            return False, f"could not load {model}: {type(e).__name__}: {e}"
+
+    async def list_downloaded(self) -> list[dict[str, Any]]:
+        """All *downloaded* models from LM Studio's native ``/api/v0/models``,
+        including ``type`` (llm/vlm/embeddings), ``state`` and context length —
+        the metadata the model advisor needs. Falls back to ``list_models`` (ids
+        only, no type) if the native endpoint can't be reached."""
+        try:
+            async with await self._client() as c:
+                base = str(c.base_url).rstrip("/")
+                native = (base[: -len("/v1")] if base.endswith("/v1") else base) + "/api/v0/models"
+                r = await c.get(native)
+                if r.status_code == 200:
+                    data = r.json()
+                    items = (
+                        (data.get("data") or data.get("models") or [])
+                        if isinstance(data, dict)
+                        else (data or [])
+                    )
+                    out = [it for it in items if isinstance(it, dict)]
+                    if out:
+                        return out
+        except Exception as e:
+            logger.debug("list_downloaded failed: {}", e)
+        return await self.list_models()
+
     # ---- chat -------------------------------------------------------------
 
     # Retry only transient transport errors (connect/timeout) — a malformed
@@ -508,3 +592,33 @@ def get_client() -> LMStudioClient:
 
 def reset_client_cache() -> None:
     get_client.cache_clear()
+
+
+async def warm_up_configured() -> dict[str, tuple[bool, str]]:
+    """Preload the configured chat / embedding / vision models into LM Studio so
+    they're hot before the first scan or chat. Best-effort: skips unset models,
+    skips already-loaded ones, and never raises. Returns ``{role: (ok, msg)}``."""
+    s = get_settings()
+    client = get_client()
+    try:
+        loaded = await client.loaded_model_ids()
+    except Exception:
+        loaded = set()
+    results: dict[str, tuple[bool, str]] = {}
+    for kind, model in (
+        ("embedding", s.embedding_model),
+        ("chat", s.chat_model),
+        ("vision", s.vision_model),
+    ):
+        m = (model or "").strip()
+        if not m:
+            continue
+        if m in loaded:
+            results[kind] = (True, "already loaded")
+            continue
+        try:
+            results[kind] = await client.ensure_loaded(m, kind=kind)
+        except Exception as e:  # pragma: no cover - defensive
+            results[kind] = (False, f"{type(e).__name__}: {e}")
+        logger.info("warm-up {} ({}): {}", kind, m, results[kind][1])
+    return results

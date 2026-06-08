@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     chat_model: str = ""
     vision_model: str = ""
     embedding_model: str = ""
+    # Preference for the hardware-aware model auto-picker (Settings → Auto-pick):
+    # "fastest" | "balanced" | "max" (quality). See app/services/model_advisor.py.
+    model_quality: str = "balanced"
+    # Preload the configured models into LM Studio at startup so they're hot
+    # before the first scan/chat (warm_up_configured). Set false to keep boot
+    # light and rely on just-in-time loading instead.
+    preload_models: bool = True
 
     # ---- OCR ----
     ocr_backend: str = "tesseract"  # "tesseract" | "paddle"
@@ -186,6 +193,8 @@ def get_settings() -> Settings:
         "chat_model",
         "vision_model",
         "embedding_model",
+        "model_quality",
+        "preload_models",
         "ocr_backend",
         "tesseract_cmd",
         "ocr_lang",

@@ -146,6 +146,21 @@ def create_app():  # type: ignore[no-untyped-def]
             await start_all_active()
         except Exception as e:
             logger.warning("watcher startup skipped: {}", e)
+        # Preload the configured models into LM Studio so they're hot before the
+        # first scan/chat. Detached + best-effort: never blocks boot, and if LM
+        # Studio is down it just logs and moves on.
+        if getattr(s, "preload_models", True):
+            import asyncio
+
+            async def _preload() -> None:
+                from app.llm import warm_up_configured
+
+                try:
+                    await warm_up_configured()
+                except Exception as e:
+                    logger.debug("model preload skipped: {}", e)
+
+            asyncio.create_task(_preload())
         yield
 
     fastapi_app = FastAPI(

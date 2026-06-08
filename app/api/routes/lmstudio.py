@@ -133,6 +133,107 @@ async def auto_pick(_user: User = Depends(login_required)) -> dict[str, Any]:
     }
 
 
+@router.get("/models/recommend")
+async def models_recommend(_user: User = Depends(login_required)) -> dict[str, Any]:
+    """Recommend the best already-downloaded model per role for this machine.
+
+    Roles with no suitable local model carry a ``suggestion`` (an ``lms get``
+    target + rough size) so the UI can offer an ask-first download.
+    """
+    from app.config import get_settings
+    from app.services import lms_cli
+    from app.services.hardware import active_tuning
+    from app.services.model_advisor import recommend
+
+    client = LMStudioClient()
+    try:
+        available = await client.list_downloaded()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    tier = active_tuning().tier
+    pref = getattr(get_settings(), "model_quality", "balanced")
+    plan = recommend(available, tier=tier, chat_preference=pref)
+    return {
+        "ok": True,
+        "tier": tier,
+        "chat_preference": pref,
+        "lms_available": lms_cli.is_available(),
+        "roles": {
+            c.role: {
+                "model": c.model,
+                "suggestion": c.suggestion,
+                "size_gb": c.size_gb,
+            }
+            for c in plan.choices
+        },
+    }
+
+
+class ApplyBody(BaseModel):
+    auto: bool = False  # when true, compute picks from the advisor
+    chat_model: str | None = None
+    embedding_model: str | None = None
+    vision_model: str | None = None
+
+
+@router.post("/models/apply")
+async def models_apply(body: ApplyBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+    """Persist model choices to settings and warm them up in LM Studio.
+
+    With ``auto=true`` the picks come from the advisor; otherwise the explicit
+    ``*_model`` fields are applied. Returns which roles were warmed.
+    """
+    from app.config import get_settings, save_user_settings
+    from app.llm import warm_up_configured
+
+    updates: dict[str, Any] = {}
+    if body.auto:
+        client = LMStudioClient()
+        try:
+            available = await client.list_downloaded()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        from app.services.hardware import active_tuning
+        from app.services.model_advisor import recommend
+
+        pref = getattr(get_settings(), "model_quality", "balanced")
+        plan = recommend(available, tier=active_tuning().tier, chat_preference=pref)
+        updates = plan.picks()
+    else:
+        if body.chat_model:
+            updates["chat_model"] = body.chat_model
+        if body.embedding_model:
+            updates["embedding_model"] = body.embedding_model
+        if body.vision_model:
+            updates["vision_model"] = body.vision_model
+
+    if updates:
+        save_user_settings(updates)
+        get_settings.cache_clear()
+
+    warm = await warm_up_configured()
+    return {
+        "ok": True,
+        "applied": updates,
+        "warmup": {k: {"ok": v[0], "msg": v[1]} for k, v in warm.items()},
+    }
+
+
+class DownloadBody(BaseModel):
+    model: str
+
+
+@router.post("/models/download")
+async def models_download(body: DownloadBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+    """Download a model via the ``lms`` CLI (``lms get -y``). May take minutes."""
+    from app.services import lms_cli
+
+    if not lms_cli.is_available():
+        return {"ok": False, "error": "lms CLI not found — install LM Studio's CLI to download models"}
+    ok, out = await lms_cli.download(body.model)
+    return {"ok": ok, "output": out[-2000:]}
+
+
 @router.post("/test")
 async def test(body: TestBody, _user: User = Depends(login_required)) -> dict[str, Any]:
     client = LMStudioClient(base_url=body.base_url)

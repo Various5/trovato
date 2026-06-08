@@ -132,10 +132,11 @@ def unwatch(source_id: int, _user: User = Depends(login_required)) -> dict[str, 
 def delete_source(
     source_id: int,
     _user: User = Depends(login_required),
-    session: Session = Depends(get_session),
 ) -> dict[str, str]:
-    src = session.get(DocumentSource, source_id)
-    if not src:
+    # A bare DELETE fails the moment the source has documents or scan-job
+    # history (enforced FKs, no cascade). Tear the children down first.
+    from app.services.sources import delete_source_cascade
+
+    if not delete_source_cascade(source_id):
         raise HTTPException(status_code=404, detail="not found")
-    session.delete(src)
     return {"status": "deleted"}

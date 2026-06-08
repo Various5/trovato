@@ -3,4 +3,5 @@ from app.llm.lmstudio import (  # noqa: F401
     LMStudioError,
     get_client,
     reset_client_cache,
+    warm_up_configured,
 )
