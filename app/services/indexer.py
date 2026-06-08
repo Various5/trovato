@@ -153,6 +153,20 @@ async def index_document(
                 and not (force_ocr or force_vision or force_embed)
                 and (catalog_only or has_real_index)
             )
+            # A Vision pass must NOT be skipped just because the file is
+            # byte-identical: the doc was very likely indexed by an earlier
+            # text/ocr phase and still has zero image descriptions. Only skip a
+            # vision scan once the doc actually has vision data — otherwise the
+            # scan silently no-ops in seconds and never describes any image.
+            if is_unchanged and phase == "vision":
+                has_vision = session.exec(
+                    select(DocumentImage.id).where(
+                        DocumentImage.document_id == doc_row.id,
+                        DocumentImage.vision_description != "",
+                    )
+                ).first()
+                if not has_vision:
+                    is_unchanged = False
             if is_unchanged:
                 return ch, doc_row.id, True
             try:

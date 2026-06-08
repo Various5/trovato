@@ -186,6 +186,27 @@ def open_pdf(document_id: int, page: int | None = None) -> None:
     ui.run_javascript(f"window.open({pdf_url(document_id, page, _media_token())!r}, '_blank')")
 
 
+def highlight_terms(text: str, query: str) -> str:
+    """HTML-escape ``text`` and wrap every query term (>=2 chars) in ``<mark>``.
+
+    Shared by search results, chat source cards and the in-app viewer so the
+    word the user searched for / asked about is highlighted wherever a snippet is
+    shown. Returns an HTML-safe string — render with ``ui.html``.
+    """
+    import html as _html
+    import re as _re
+
+    safe = _html.escape(text or "")
+    words = [w for w in _re.split(r"\s+", (query or "").strip()) if len(w) >= 2]
+    if not words:
+        return safe
+    try:
+        pattern = _re.compile("(" + "|".join(_re.escape(w) for w in words) + ")", flags=_re.IGNORECASE)
+        return pattern.sub(lambda m: f"<mark class='ldi-mark'>{m.group(0)}</mark>", safe)
+    except _re.error:
+        return safe
+
+
 def _now_utc():
     from datetime import datetime
 
@@ -2177,25 +2198,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 facet_box = ui.column().classes("w-full gap-2 q-mt-xs")
             out = ui.column().classes("flex-1 gap-2 min-w-0")
 
-        import html as _html
-        import re as _re
-
         def _highlight(snippet: str, query: str) -> str:
             """Wrap each query word in <mark> tags. Returns HTML-safe string."""
-            safe = _html.escape(snippet or "")
-            if not query.strip():
-                return safe
-            words = [w for w in _re.split(r"\s+", query.strip()) if len(w) >= 2]
-            if not words:
-                return safe
-            try:
-                pattern = _re.compile(
-                    "(" + "|".join(_re.escape(w) for w in words) + ")",
-                    flags=_re.IGNORECASE,
-                )
-                return pattern.sub(lambda m: f"<mark class='ldi-mark'>{m.group(0)}</mark>", safe)
-            except _re.error:
-                return safe
+            return highlight_terms(snippet, query)
 
         def _source_pill(source: str) -> str:
             colour = {
@@ -2568,10 +2573,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 result = result.replace(token, replacement)
             return result
 
-        def _render_sources_footer(footer_row, sources: list[dict]) -> None:
+        def _render_sources_footer(footer_row, sources: list[dict], query: str = "") -> None:
             """Horizontal scroller of source cards beneath an assistant bubble.
             Each card shows index, filename, page and a short snippet, with
-            View/PDF actions on hover."""
+            View/PDF actions on hover. ``query`` (the user's question) highlights
+            the matched terms in each snippet and is carried into the viewer."""
             _img_map = _images_by_page({s.get("document_id") for s in sources})
             with footer_row:
                 with (
@@ -2603,7 +2609,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         icon="visibility",
                                         on_click=lambda d=s.get("document_id"), p=s.get(
                                             "page_from"
-                                        ): ui.navigate.to(f"/viewer?doc={d}&page={p}"),
+                                        ): ui.navigate.to(f"/viewer?doc={d}&page={p}&q={quote(query)}"),
                                     ).props("flat dense round size=sm").tooltip("View")
                                     ui.button(
                                         icon="picture_as_pdf",
@@ -2614,11 +2620,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 ui.label(s.get("filename") or "").classes("text-body2 ellipsis").style(
                                     "font-weight: 500;"
                                 )
-                                ui.label(s.get("snippet") or "").classes("text-caption opacity-70").style(
-                                    "display: -webkit-box; "
-                                    "-webkit-line-clamp: 3; "
-                                    "-webkit-box-orient: vertical; "
-                                    "overflow: hidden;"
+                                ui.html(
+                                    f"<div class='text-caption opacity-70' style='display:-webkit-box;"
+                                    f"-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;'>"
+                                    f"{highlight_terms(s.get('snippet') or '', query)}</div>"
                                 )
                                 _imgs = _img_map.get((s.get("document_id"), s.get("page_from")), [])
                                 if _imgs:
@@ -2920,7 +2925,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     if cites_state:
                                         # Make [1], [2], … in the answer clickable links
                                         md_el.content = _link_citations("".join(buffer), cites_state)
-                                        _render_sources_footer(footer, cites_state)
+                                        _render_sources_footer(footer, cites_state, query=question)
                                     _refresh_chats()  # update timestamp on sidebar
                                     _scroll_msgs_to_bottom()
                         except Exception as e:
@@ -2991,15 +2996,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ).all()
                     chat_header_title.text = (chat_obj.title if chat_obj else None) or t("chat.title", lang)
                     with msg_area:
+                        last_question = ""
                         for m in msgs:
                             when_str = _fmt_when(m.created_at)
                             if m.role == "user":
+                                last_question = m.content or ""
                                 _render_user_message(m.content, when=when_str)
                             elif m.role == "assistant":
                                 md_el, _md_card, footer = _render_assistant_message_open()
                                 md_el.content = _link_citations(m.content, m.sources or [])
                                 if m.sources:
-                                    _render_sources_footer(footer, m.sources)
+                                    _render_sources_footer(footer, m.sources, query=last_question)
                                 if when_str:
                                     with footer:
                                         ui.label(when_str).classes("text-caption opacity-50")
@@ -4127,6 +4134,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 select(_DP).where(_DP.document_id == doc, _DP.page_number == page)
             ).first()
             page_text = (page_row.native_text or page_row.ocr_text or "") if page_row else ""
+            # Find-in-document: pages whose native/OCR text contains the term.
+            match_pages: list[int] = []
+            if q.strip():
+                from sqlalchemy import or_ as _or
+
+                like = f"%{q.strip()}%"
+                match_pages = list(
+                    session.exec(
+                        select(_DP.page_number)
+                        .where(
+                            _DP.document_id == doc,
+                            _or(_DP.native_text.ilike(like), _DP.ocr_text.ilike(like)),
+                        )
+                        .order_by(_DP.page_number)
+                    ).all()
+                )
 
         ui.label(f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}").classes(
             "text-h5 ldi-primary"
@@ -4156,6 +4179,53 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     on_click=lambda qq=q: ui.navigate.to(f"/search?q={quote(qq)}"),
                 ).props("dense flat")
 
+        # Find-in-document: jump to the first page whose text contains the term.
+        def _find_in_doc(term: str) -> None:
+            term = (term or "").strip()
+            if not term:
+                ui.navigate.to(f"/viewer?doc={doc}&page={page}")
+                return
+            with session_scope() as s2:
+                from sqlalchemy import or_ as _or2
+
+                like = f"%{term}%"
+                first = s2.exec(
+                    select(_DP.page_number)
+                    .where(
+                        _DP.document_id == doc,
+                        _or2(_DP.native_text.ilike(like), _DP.ocr_text.ilike(like)),
+                    )
+                    .order_by(_DP.page_number)
+                ).first()
+            target = first or page
+            ui.navigate.to(f"/viewer?doc={doc}&page={target}&q={quote(term)}")
+            if first is None:
+                ui.notify(t("docs.viewer.find_none", lang).format(q=term), color="warning")
+
+        with ui.row().classes("items-center gap-2 q-mb-sm w-full"):
+            find_in = (
+                ui.input(placeholder=t("docs.viewer.find_placeholder", lang), value=q)
+                .props("dense outlined clearable")
+                .classes("min-w-[260px]")
+            )
+            find_in.on("keydown.enter", lambda: _find_in_doc(find_in.value))
+            ui.button(icon="search", on_click=lambda: _find_in_doc(find_in.value)).props("dense")
+            if q:
+                if match_pages:
+                    ui.label(t("docs.viewer.find_count", lang).format(n=len(match_pages))).classes(
+                        "text-caption opacity-70"
+                    )
+                    with ui.row().classes("gap-1 items-center no-wrap").style("overflow-x:auto;"):
+                        for _pn in match_pages[:40]:
+                            ui.button(
+                                str(_pn),
+                                on_click=lambda pn=_pn: ui.navigate.to(
+                                    f"/viewer?doc={doc}&page={pn}&q={quote(q)}"
+                                ),
+                            ).props("dense flat size=sm" + (" color=primary" if _pn == page else ""))
+                else:
+                    ui.label(t("docs.viewer.find_none", lang).format(q=q)).classes("text-caption opacity-70")
+
         with ui.row().classes("w-full gap-4 no-wrap"):
             with ui.column().classes("gap-2").style("min-width: 0; flex: 2; overflow: auto;"):
                 _zoom = {"w": 100}
@@ -4182,17 +4252,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ).props("dense flat")
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
                 with section_card(lang, title_key="docs.viewer.page_text", icon="article"):
-                    snippet = page_text
-                    if q and q.lower() in snippet.lower():
-                        idx = snippet.lower().find(q.lower())
-                        snippet = (
-                            snippet[max(0, idx - 200) : idx]
-                            + "**"
-                            + snippet[idx : idx + len(q)]
-                            + "**"
-                            + snippet[idx + len(q) : idx + len(q) + 200]
+                    if page_text:
+                        # Highlight every occurrence of the term on this page.
+                        ui.html(
+                            f"<div class='text-body2' style='white-space:pre-wrap;"
+                            f"max-height:70vh;overflow:auto;'>{highlight_terms(page_text, q)}</div>"
                         )
-                    ui.markdown(snippet or f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
+                    else:
+                        ui.markdown(f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
 
     @ui.page("/about")
     def page_about() -> None:
