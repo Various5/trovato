@@ -172,7 +172,11 @@ jobs:
           }
           echo "INSTALLER_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
 
+      # Best-effort: handy for workflow_dispatch (non-tag) builds. For a tag
+      # build the same files are attached to the Release below, so a failure
+      # here (e.g. Actions artifact-storage quota) must NOT block the release.
       - name: Upload build artifacts (always)
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: LocalDocIntelligence-${{ env.VERSION }}
