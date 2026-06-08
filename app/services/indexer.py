@@ -868,7 +868,7 @@ async def run_scan_job(
                     client.preflight_embed(),
                     timeout=active_tuning().http_timeout + 10,
                 )
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:  # asyncio.TimeoutError is an alias of this on 3.11+
                 ok, message = False, "embedding preflight timed out"
             if not ok:
                 logger.error("scan {} aborted on preflight: {}", job_id, message)

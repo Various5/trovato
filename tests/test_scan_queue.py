@@ -26,6 +26,7 @@ from app.services import indexer
 
 def _make_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DocumentSource:
     init_db()
+
     # Keep the heavy/networked deps out of the way — these tests only exercise
     # the queue state machine, never real extraction/embedding/vector writes.
     class _Client:
@@ -85,7 +86,9 @@ def _queued(source_id: int) -> list[ScanJob]:
 
 
 @pytest.mark.asyncio
-async def test_queue_coalesces_identical_options_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_queue_coalesces_identical_options_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     src = _make_source(tmp_path, monkeypatch)
     assert src.id is not None
     lock = indexer._source_lock(src.id)
@@ -104,9 +107,7 @@ async def test_queue_coalesces_identical_options_only(tmp_path: Path, monkeypatc
 
         # Different options (a Force re-scan) must NOT be swallowed — it gets its
         # own queued job (and then parks on the lock).
-        tasks.append(
-            asyncio.create_task(indexer.run_scan_job(src.id, phase="ocr", force_ocr=True))
-        )
+        tasks.append(asyncio.create_task(indexer.run_scan_job(src.id, phase="ocr", force_ocr=True)))
         await _wait_for_queued_count(src.id, 2)
         assert len(_queued(src.id)) == 2
     finally:

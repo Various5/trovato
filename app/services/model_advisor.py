@@ -204,9 +204,7 @@ def _normalize(available: list[dict]) -> dict[str, list[str]]:
 def _pick(candidates: list[str], preference: tuple[str, ...], cap_b: float | None) -> str | None:
     """Pick the first candidate matching the preference order (respecting the
     param cap); fall back to the smallest under-cap candidate, then any."""
-    under_cap = [
-        c for c in candidates if cap_b is None or (_param_b(c) is None or _param_b(c) <= cap_b)
-    ]
+    under_cap = [c for c in candidates if cap_b is None or (_param_b(c) is None or _param_b(c) <= cap_b)]
     for want in preference:
         for c in under_cap:
             if want in c.lower():

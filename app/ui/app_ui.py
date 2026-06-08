@@ -1499,7 +1499,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                             _refresh()
 
                                         with ui.row().classes("justify-end gap-2 w-full q-mt-md"):
-                                            ui.button(t("common.cancel", lang), on_click=fd.close).props("flat")
+                                            ui.button(t("common.cancel", lang), on_click=fd.close).props(
+                                                "flat"
+                                            )
                                             ui.button(
                                                 t("sources.force_rescan_btn", lang), on_click=_go
                                             ).props("color=warning")
@@ -1515,7 +1517,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     ui.button(
                                         icon="stop",
                                         on_click=lambda jid=_jid: _stop_scan(jid),
-                                    ).props("flat dense round color=negative").tooltip(t("sources.stop", lang))
+                                    ).props(
+                                        "flat dense round color=negative"
+                                    ).tooltip(t("sources.stop", lang))
 
                                 with (
                                     ui.button(icon="play_arrow")
@@ -3459,20 +3463,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             )
 
                             async def _dl(target=ch.suggestion) -> None:
-                                ui.notify(
-                                    t("settings.download_started", lang).format(m=target), color="info"
-                                )
+                                ui.notify(t("settings.download_started", lang).format(m=target), color="info")
                                 ok, out = await lms_cli.download(target)
                                 ui.notify(
-                                    (t("settings.download_ok", lang) if ok else t("settings.download_fail", lang)).format(
-                                        m=target
-                                    ),
+                                    (
+                                        t("settings.download_ok", lang)
+                                        if ok
+                                        else t("settings.download_fail", lang)
+                                    ).format(m=target),
                                     color=("positive" if ok else "negative"),
                                 )
 
-                            b = ui.button(
-                                t("settings.download", lang), icon="download", on_click=_dl
-                            ).props("dense color=primary")
+                            b = ui.button(t("settings.download", lang), icon="download", on_click=_dl).props(
+                                "dense color=primary"
+                            )
                             if not have_lms:
                                 b.props("disable")
                     with ui.row().classes("justify-end w-full q-mt-md"):
@@ -3519,9 +3523,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     warm = await warm_up_configured()
                     failed = [k for k, (ok, _m) in warm.items() if not ok]
                     if failed:
-                        ui.notify(
-                            "Loaded, but couldn't warm: " + ", ".join(failed), color="warning"
-                        )
+                        ui.notify("Loaded, but couldn't warm: " + ", ".join(failed), color="warning")
                 else:
                     ui.notify("No suitable models downloaded yet.", color="warning")
                 if plan.missing():

@@ -88,7 +88,5 @@ def delete_source_cascade(source_id: int) -> bool:
             s.exec(sqldelete(ScanJob).where(ScanJob.id == jid))
         s.exec(sqldelete(DocumentSource).where(DocumentSource.id == source_id))
 
-    logger.info(
-        "deleted source {} (+{} documents, {} scan jobs)", source_id, len(doc_ids), len(job_ids)
-    )
+    logger.info("deleted source {} (+{} documents, {} scan jobs)", source_id, len(doc_ids), len(job_ids))
     return True

@@ -86,9 +86,7 @@ def _seed(tmp_path: Path) -> tuple[int, int, int]:
         return src.id, doc.id, job.id
 
 
-def test_delete_source_cascade_removes_everything(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_delete_source_cascade_removes_everything(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The vector store is out of scope here — stub the Chroma delete.
     monkeypatch.setattr("app.vectorstore.delete_for_document", lambda *a, **k: None)
 
