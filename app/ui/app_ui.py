@@ -1428,6 +1428,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         str(getattr(j, "status", None)),
                         getattr(j, "processed_files", 0) or 0,
                         getattr(j, "total_files", 0) or 0,
+                        # current_file is None when idle (keeps the dropdown
+                        # stable) but ticks during a scan — including it makes
+                        # per-file/per-image progress refresh live.
+                        getattr(j, "current_file", None),
                     )
                 )
             return tuple(out)

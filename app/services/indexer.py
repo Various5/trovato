@@ -10,6 +10,7 @@ Runs as an asyncio task; cooperative pause/abort via the in-process
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,58 @@ from app.vectorstore import add_chunks, delete_for_document, ensure_ready
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Vision-call concurrency cap
+# ---------------------------------------------------------------------------
+# Documents are indexed by several workers at once, and each describes its
+# embedded images. Without a cap that means up to `workers` (≈8 on a fast box)
+# simultaneous requests to the SAME vision model — which overloads LM Studio and
+# surfaces as a "channel error" from the engine. The `vision_concurrency` tuning
+# knob existed but was never enforced; this global semaphore enforces it across
+# all concurrent index_document() calls. Keyed by event loop so each test (and
+# the one real app loop) gets its own correctly-bound semaphore.
+_VISION_SEM: asyncio.Semaphore | None = None
+_VISION_SEM_LOOP: Any = None
+
+
+def _vision_semaphore() -> asyncio.Semaphore:
+    global _VISION_SEM, _VISION_SEM_LOOP
+    loop = asyncio.get_running_loop()
+    if _VISION_SEM is None or _VISION_SEM_LOOP is not loop:
+        _VISION_SEM = asyncio.Semaphore(max(1, active_tuning().vision_concurrency))
+        _VISION_SEM_LOOP = loop
+    return _VISION_SEM
+
+
+async def _describe_image_limited(client: Any, cache_path: str) -> str:
+    """Describe one image, capped to `vision_concurrency` in-flight calls, with a
+    hard per-image timeout and one retry on a transient engine hiccup (the
+    intermittent "channel error"). Returns "" if it ultimately fails — the scan
+    keeps going rather than hanging."""
+    timeout = active_tuning().http_timeout + 30.0
+    async with _vision_semaphore():
+        for attempt in (1, 2):
+            try:
+                return await asyncio.wait_for(client.describe_image(cache_path), timeout=timeout)
+            except Exception as e:
+                logger.debug("vision describe failed (attempt {}/2): {}", attempt, e)
+                if attempt == 1:
+                    await asyncio.sleep(1.5)
+    return ""
+
+
+def _set_job_current_file(job_id: int, text: str) -> None:
+    """Update a running scan job's ``current_file`` (the label the progress bar
+    shows). Used to surface per-image vision progress so a document with hundreds
+    of images doesn't make the bar look frozen. Best-effort, sync (call via
+    ``to_thread``)."""
+    with write_session() as session:
+        j = session.get(ScanJob, job_id)
+        if j and j.status == ScanJobStatus.running:
+            j.current_file = text
+            session.add(j)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +356,8 @@ async def index_document(
 
             extracted_pages = await asyncio.to_thread(_extract_all)
 
+        _vis_done = 0  # images described in this doc (for live progress)
+        _vis_last_note = 0.0
         for pc in extracted_pages:
             page_count = pc.page_number
             if controller and not await controller.gate():
@@ -326,10 +381,22 @@ async def index_document(
             for img in pc.images:
                 vision_desc = ""
                 if do_vision and s.vision_model:
-                    try:
-                        vision_desc = await client.describe_image(img.cache_path)
-                    except Exception as e:
-                        logger.debug("vision failed: {}", e)
+                    # Concurrency-capped (+1 retry) so parallel document workers
+                    # don't flood the vision model and trigger engine errors.
+                    vision_desc = await _describe_image_limited(client, img.cache_path)
+                    # Surface per-image progress: a doc with hundreds of images
+                    # otherwise leaves the bar's label frozen for many minutes.
+                    _vis_done += 1
+                    if controller is not None and (time.monotonic() - _vis_last_note) > 1.5:
+                        _vis_last_note = time.monotonic()
+                        try:
+                            await asyncio.to_thread(
+                                _set_job_current_file,
+                                controller.job_id,
+                                f"{path.name} · image {_vis_done}",
+                            )
+                        except Exception as e:
+                            logger.debug("progress note failed: {}", e)
                 image_rows.append(
                     DocumentImage(
                         document_id=doc_id,  # type: ignore[arg-type]
