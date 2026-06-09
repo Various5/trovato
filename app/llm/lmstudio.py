@@ -74,7 +74,10 @@ def context_char_budget(ctx_tokens: int | None, *, output_tokens: int = 900) -> 
     if not ctx_tokens or ctx_tokens <= 0:
         ctx_tokens = 8192
     usable = max(ctx_tokens - output_tokens - 800, 400)  # 800: system + chat overhead + margin
-    return max(1200, min(int(usable * 3.2), 32000))
+    # Cap generously so large-context models (e.g. the 1M-token Qwen) can absorb
+    # many documents for library-wide answers, but not so high that a turn takes
+    # minutes: ~80k chars ≈ 25k tokens of retrieved context.
+    return max(1200, min(int(usable * 3.2), 80000))
 
 
 class LMStudioClient:

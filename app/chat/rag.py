@@ -46,8 +46,12 @@ actually embedded in the document. Treat such a source as proof that the documen
 contains that image. When the user asks which documents contain a picture/photo/image \
 of something, answer from these IMAGE sources and cite them. Do NOT claim there are no \
 images when IMAGE sources are present.
-5. Prefer concise, accurate answers. Quote short snippets when helpful.
-6. If the user explicitly asks for opinions or summaries beyond the documents, make \
+5. Each numbered SOURCE is ONE document (its relevant pages are listed under it). \
+For broad questions — "which documents…", "compare…", "list…", "how many…" — consider \
+ALL provided sources, synthesise across them, and name every relevant document with its \
+citation. Don't answer from just the first one or two.
+6. Prefer concise, accurate answers. Quote short snippets when helpful.
+7. If the user explicitly asks for opinions or summaries beyond the documents, make \
 clear that the answer is reasoning, not from sources."""
 
 
@@ -182,39 +186,91 @@ class RAGResult:
     citations: list[Citation]
 
 
-def _build_context_block(hits: list[SearchHit], max_chars: int = 8000) -> tuple[str, list[Citation]]:
+# Library-wide questions ("which documents…", "compare all…", "list every…")
+# should pull from MANY documents, not drill into one. Detect them to widen
+# retrieval and favour cross-document breadth.
+_BROAD_RX = re.compile(
+    r"\b("
+    r"all|every|each|across|compare|comparison|overview|summar(?:y|ize|ise)|list|"
+    r"which docs?|which documents?|how many|count|most|common|"
+    r"alle|jede[rsn]?|sämtliche|welche dokumente|welche unterlagen|vergleich|"
+    r"überblick|zusammenfass|auflisten|wie viele|häufig|insgesamt"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_broad_query(question: str) -> bool:
+    return bool(_BROAD_RX.search(question or ""))
+
+
+def _retrieval_plan(question: str, base_top_k: int) -> tuple[int, int]:
+    """(effective_top_k, max_chunks_per_doc). Broad questions retrieve far more
+    candidates and take fewer chunks per document → maximum library coverage."""
+    if _is_broad_query(question):
+        return max(base_top_k, 40), 1
+    return base_top_k, 3
+
+
+def _chunk_label(kind: str, pages: str) -> str:
+    if kind == "image_description":
+        return f"({pages}, IMAGE — the text describes an image embedded here)"
+    if kind == "table":
+        return f"({pages}, TABLE)"
+    if kind == "ocr_text":
+        return f"({pages}, scanned/OCR text)"
+    return f"({pages})"
+
+
+def _build_context_block(
+    hits: list[SearchHit], max_chars: int = 8000, *, max_per_doc: int = 3
+) -> tuple[str, list[Citation]]:
+    """Group retrieved chunks by document and assign ONE citation number per
+    document (not per chunk), including up to ``max_per_doc`` of its chunks.
+
+    This gives the model breadth across the library and stops the same PDF being
+    cited as [1], [7], [13] with different snippets — each document is one source
+    with its pages listed. Documents are visited in best-hit-score order.
+    """
+    by_doc: dict[int, list[SearchHit]] = {}
+    order: list[int] = []
+    for h in hits:
+        if h.document_id not in by_doc:
+            by_doc[h.document_id] = []
+            order.append(h.document_id)
+        by_doc[h.document_id].append(h)
+
     parts: list[str] = []
     cites: list[Citation] = []
     used = 0
-    for i, h in enumerate(hits, start=1):
-        pages = f"p.{h.page_from}" + (f"-{h.page_to}" if h.page_to != h.page_from else "")
-        kind = getattr(h, "source", "") or ""
-        if kind == "image_description":
-            head = (
-                f"[{i}] {h.filename} ({pages}) — IMAGE embedded on this page; "
-                "the text below describes that image:"
-            )
-        elif kind == "table":
-            head = f"[{i}] {h.filename} ({pages}) — TABLE extracted from this page:"
-        elif kind == "ocr_text":
-            head = f"[{i}] {h.filename} ({pages}) — text recognised (OCR) from a scanned page:"
-        else:
-            head = f"[{i}] {h.filename} ({pages})"
-        block = f"{head}\n{h.snippet}\n"
-        if used + len(block) > max_chars:
+    for did in order:
+        doc_hits = by_doc[did][:max_per_doc]
+        best = doc_hits[0]
+        seg_lines: list[str] = []
+        pages_used: list[int] = []
+        for h in doc_hits:
+            pages = f"p.{h.page_from}" + (f"-{h.page_to}" if h.page_to != h.page_from else "")
+            kind = getattr(h, "source", "") or ""
+            seg_lines.append(f"  {_chunk_label(kind, pages)}: {h.snippet}")
+            pages_used.append(h.page_from)
+            if h.page_to:
+                pages_used.append(h.page_to)
+        num = len(cites) + 1
+        block = f"[{num}] {best.filename}\n" + "\n".join(seg_lines) + "\n"
+        if used + len(block) > max_chars and cites:
             break
         parts.append(block)
         used += len(block)
         cites.append(
             Citation(
-                n=i,
-                document_id=h.document_id,
-                chunk_id=h.chunk_id,
-                filename=h.filename,
-                path=h.path,
-                page_from=h.page_from,
-                page_to=h.page_to,
-                snippet=h.snippet,
+                n=num,
+                document_id=did,
+                chunk_id=best.chunk_id,
+                filename=best.filename,
+                path=best.path,
+                page_from=min(pages_used),
+                page_to=max(pages_used),
+                snippet=best.snippet,
             )
         )
     return "\n".join(parts), cites
@@ -275,9 +331,10 @@ async def answer_question(
         chat.updated_at = datetime.now(UTC)
         session.add(chat)
 
+    eff_top_k, max_per_doc = _retrieval_plan(question, top_k)
     hits = await hybrid_search(
         question,
-        top_k=top_k,
+        top_k=eff_top_k,
         document_ids=filters.get("document_ids"),
         source_ids=filters.get("source_ids"),
         tags=filters.get("tags"),
@@ -286,7 +343,9 @@ async def answer_question(
 
     _ctx_client = get_client()
     context_block, citations = _build_context_block(
-        hits, max_chars=context_char_budget(await _ctx_client.model_context_length())
+        hits,
+        max_chars=context_char_budget(await _ctx_client.model_context_length()),
+        max_per_doc=max_per_doc,
     )
 
     sys = SYSTEM_PROMPT
@@ -382,9 +441,10 @@ async def stream_answer(
         chat.updated_at = datetime.now(UTC)
         session.add(chat)
 
+    eff_top_k, max_per_doc = _retrieval_plan(question, top_k)
     hits = await hybrid_search(
         question,
-        top_k=top_k,
+        top_k=eff_top_k,
         document_ids=filters.get("document_ids"),
         source_ids=filters.get("source_ids"),
         tags=filters.get("tags"),
@@ -392,7 +452,9 @@ async def stream_answer(
     )
     _ctx_client = get_client()
     context_block, citations = _build_context_block(
-        hits, max_chars=context_char_budget(await _ctx_client.model_context_length())
+        hits,
+        max_chars=context_char_budget(await _ctx_client.model_context_length()),
+        max_per_doc=max_per_doc,
     )
 
     sys = SYSTEM_PROMPT

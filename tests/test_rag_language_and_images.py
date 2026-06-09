@@ -58,7 +58,7 @@ def test_lang_directive_empty_when_unknown():
 def test_context_block_flags_image_source():
     block, cites = _build_context_block([_hit("image_description")])
     assert "IMAGE" in block
-    assert "describes that image" in block
+    assert "describes an image" in block
     assert len(cites) == 1
 
 

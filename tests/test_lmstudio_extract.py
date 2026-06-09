@@ -44,9 +44,11 @@ def test_context_char_budget_scales_and_clamps() -> None:
     assert context_char_budget(None) == context_char_budget(8192)
     # Bigger context → bigger budget; smaller → smaller.
     assert context_char_budget(4096) < context_char_budget(16384)
-    # Floor and ceiling.
+    # Floor and ceiling. The ceiling is generous so large-context models can
+    # absorb many documents for library-wide answers.
     assert context_char_budget(512) >= 1200
-    assert context_char_budget(1_000_000) <= 32000
+    assert context_char_budget(1_000_000) <= 80000
+    assert context_char_budget(1_000_000) > 32000
     # A 4k-context model must budget well under its window once output (900) +
     # overhead are reserved — i.e. far below the old fixed 12k-char-per-doc.
     b4k = context_char_budget(4096, output_tokens=900)
