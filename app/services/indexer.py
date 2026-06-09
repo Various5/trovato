@@ -96,6 +96,116 @@ def backfill_image_chunk_sources() -> int:
     return relabelled
 
 
+# Guards a vector-store rebuild so a startup heal and a manual rebuild can't run
+# at the same time (each would re-embed the whole library).
+_REEMBED_LOCK = asyncio.Lock()
+
+
+async def reembed_all_documents(controller: JobController | None = None) -> int:
+    """Re-generate embeddings for every indexed document and re-upsert them into
+    the vector store, reusing the chunk text already stored in SQLite.
+
+    Used to heal the index after the embedding model — and therefore the vector
+    dimension — changed under it, which leaves Chroma rejecting every upsert and
+    query ("Collection expecting embedding with dimension of X, got Y").
+    """
+    from app.vectorstore import ensure_ready
+
+    ensure_ready()
+    # Snapshot the work as plain values so we don't touch detached ORM objects
+    # after the read session closes; rebuild a lightweight DocumentSource per
+    # call (index_document only reads id/owner_id/visibility off it).
+    with session_scope() as session:
+        targets = [
+            (d.path, d.source_id)
+            for d in session.exec(select(Document)).all()
+            if (d.page_count or 0) > 0 and d.source_id is not None
+        ]
+        srcs = {s.id: (s.owner_id, s.visibility) for s in session.exec(select(DocumentSource)).all()}
+
+    count = 0
+    for path_str, source_id in targets:
+        if controller and not await controller.gate():
+            break
+        meta = srcs.get(source_id)
+        if not meta:
+            continue
+        p = Path(path_str)
+        if not p.exists():
+            logger.debug("re-embed skip (missing file): {}", path_str)
+            continue
+        owner_id, visibility = meta
+        src = DocumentSource(id=source_id, owner_id=owner_id, visibility=visibility)
+        try:
+            await index_document(src, p, force_embed=True, phase="text", controller=controller)
+            count += 1
+        except Exception as e:
+            logger.warning("re-embed failed for {}: {}", path_str, e)
+    logger.info("re-embed complete: {} document(s)", count)
+    return count
+
+
+async def heal_vector_store_if_model_changed() -> int:
+    """If the configured embedding model produces a different vector dimension
+    than the vectors already stored, rebuild the collection and re-embed every
+    document. Best-effort and idempotent: once healed, the stored marker matches
+    and subsequent calls are a cheap no-op. Returns the number of docs re-embedded
+    (0 when nothing needed healing or LM Studio wasn't reachable to probe).
+    """
+    from app.vectorstore import (
+        collection_dim,
+        read_embed_meta,
+        reset_collection,
+        write_embed_meta,
+    )
+
+    s = get_settings()
+    model = s.embedding_model or ""
+    if not model:
+        return 0
+    if _REEMBED_LOCK.locked():
+        return 0
+
+    client = get_client()
+    try:
+        probe = await client.embed(["dimension probe"])
+    except Exception as e:
+        # LM Studio not reachable yet — try again on the next startup.
+        logger.debug("vector heal: embed probe skipped ({})", e)
+        return 0
+    if not probe or not probe[0]:
+        return 0
+    probe_dim = len(probe[0])
+
+    cur_dim = collection_dim()
+    meta = read_embed_meta()
+
+    # Collection empty (or brand new): just record the current identity.
+    if cur_dim is None:
+        write_embed_meta(model, probe_dim)
+        return 0
+
+    # The authoritative signal is the stored vectors' dimension vs. what the
+    # model now emits; the model-name marker is a secondary hint for logs.
+    if cur_dim == probe_dim and meta.get("model") in (model, "", None):
+        if meta.get("dim") != probe_dim or meta.get("model") != model:
+            write_embed_meta(model, probe_dim)
+        return 0
+
+    async with _REEMBED_LOCK:
+        logger.warning(
+            "embedding model changed (was dim={} model={!r}, now dim={} model={!r}); "
+            "rebuilding vector index and re-embedding all documents",
+            cur_dim,
+            meta.get("model"),
+            probe_dim,
+            model,
+        )
+        reset_collection()
+        write_embed_meta(model, probe_dim)
+        return await reembed_all_documents()
+
+
 # ---------------------------------------------------------------------------
 # Vision-call concurrency cap
 # ---------------------------------------------------------------------------

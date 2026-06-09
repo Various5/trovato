@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
@@ -104,9 +106,55 @@ def collection_size() -> int:
         return 0
 
 
+def collection_dim() -> int | None:
+    """Dimension of the vectors currently stored in the collection, or ``None``
+    if it's empty / can't be determined. A Chroma collection pins its dimension
+    at first write, so this is how we detect that the embedding model changed
+    under us (e.g. bge-m3 @ 1024 → nomic-embed @ 768) and the vectors no longer
+    match what the model now produces."""
+    try:
+        col = _get_or_create_collection()
+        # Explicitly request embeddings — peek() doesn't include them on every
+        # Chroma version, which would make an occupied collection look empty.
+        res = col.get(limit=1, include=["embeddings"])
+        embs = res.get("embeddings")
+        if embs is not None and len(embs) and embs[0] is not None:
+            return len(embs[0])
+    except Exception as e:
+        logger.debug("collection_dim probe failed: {}", e)
+    return None
+
+
+def _meta_path() -> Path:
+    return Path(get_settings().chroma_path) / "embed_meta.json"
+
+
+def read_embed_meta() -> dict[str, Any]:
+    """The embedding model + dimension the current vectors were built with."""
+    try:
+        return json.loads(_meta_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_embed_meta(model: str, dim: int) -> None:
+    try:
+        p = _meta_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"model": model, "dim": dim}), encoding="utf-8")
+    except Exception as e:
+        logger.debug("write_embed_meta failed: {}", e)
+
+
 def reset_collection() -> None:
     client = get_chroma()
     try:
         client.delete_collection(COLLECTION_NAME)
     except Exception:
         pass
+    # Recreate eagerly so the next writer upserts into a live, empty collection
+    # at the new dimension instead of racing on first-use creation.
+    try:
+        _get_or_create_collection()
+    except Exception as e:
+        logger.debug("reset_collection recreate skipped: {}", e)

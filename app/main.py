@@ -158,20 +158,29 @@ def create_app():  # type: ignore[no-untyped-def]
         except Exception as e:
             logger.debug("image-chunk backfill not scheduled: {}", e)
         # Preload the configured models into LM Studio so they're hot before the
-        # first scan/chat. Detached + best-effort: never blocks boot, and if LM
-        # Studio is down it just logs and moves on.
-        if getattr(s, "preload_models", True):
-            import asyncio
+        # first scan/chat, then heal the vector store if the embedding model
+        # changed under it. Detached + best-effort: never blocks boot, and if LM
+        # Studio is down it just logs and moves on (the heal retries next boot).
+        import asyncio
 
-            async def _preload() -> None:
-                from app.llm import warm_up_configured
-
+        async def _preload_and_heal() -> None:
+            if getattr(s, "preload_models", True):
                 try:
+                    from app.llm import warm_up_configured
+
                     await warm_up_configured()
                 except Exception as e:
                     logger.debug("model preload skipped: {}", e)
+            try:
+                from app.services.indexer import heal_vector_store_if_model_changed
 
-            asyncio.create_task(_preload())
+                n = await heal_vector_store_if_model_changed()
+                if n:
+                    logger.info("vector heal: re-embedded {} document(s)", n)
+            except Exception as e:
+                logger.debug("vector heal skipped: {}", e)
+
+        asyncio.create_task(_preload_and_heal())
         yield
         # Shutdown: free the models we (or LM Studio's JIT) loaded so they don't
         # stay pinned in VRAM after the app closes. Bounded so a slow/missing
