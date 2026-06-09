@@ -88,7 +88,7 @@ async def test_vision_phase_reprocesses_text_indexed_doc(
         async def embed(self, texts: list[str]) -> list[list[float]]:
             return [[0.01] * 8 for _ in texts]
 
-        async def describe_image(self, p: Any) -> str:
+        async def describe_image(self, p: Any, **kwargs: Any) -> str:
             describe_calls.append(str(p))
             return "A swimming pool beside a meadow."
 

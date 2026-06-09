@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     chat_model: str = ""
     vision_model: str = ""
     embedding_model: str = ""
+    # Language for vision image descriptions: "auto" follows each document's own
+    # detected language (so German PDFs get German descriptions that match German
+    # queries + highlight), or force a code like "en"/"de".
+    vision_language: str = "auto"
     # Preference for the hardware-aware model auto-picker (Settings → Auto-pick):
     # "fastest" | "balanced" | "max" (quality). See app/services/model_advisor.py.
     model_quality: str = "balanced"
@@ -196,6 +200,7 @@ def get_settings() -> Settings:
         "chat_model",
         "vision_model",
         "embedding_model",
+        "vision_language",
         "model_quality",
         "preload_models",
         "unload_on_exit",

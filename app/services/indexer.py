@@ -242,16 +242,32 @@ def _vision_semaphore() -> asyncio.Semaphore:
     return _VISION_SEM
 
 
-async def _describe_image_limited(client: Any, cache_path: str) -> str:
+# Vision prompts per output language. "auto" resolves to the document's detected
+# language so German PDFs get German image descriptions (which then match German
+# chat queries and highlight); unknown languages fall back to English.
+_VISION_PROMPTS = {
+    "en": "Describe this image precisely. If it contains text, transcribe it.",
+    "de": (
+        "Beschreibe dieses Bild präzise auf Deutsch. " "Falls es Text enthält, transkribiere ihn wörtlich."
+    ),
+}
+
+
+def _vision_prompt(lang: str | None) -> str:
+    return _VISION_PROMPTS.get((lang or "en"), _VISION_PROMPTS["en"])
+
+
+async def _describe_image_limited(client: Any, cache_path: str, prompt: str | None = None) -> str:
     """Describe one image, capped to `vision_concurrency` in-flight calls, with a
     hard per-image timeout and one retry on a transient engine hiccup (the
     intermittent "channel error"). Returns "" if it ultimately fails — the scan
     keeps going rather than hanging."""
     timeout = active_tuning().http_timeout + 30.0
+    kwargs = {"prompt": prompt} if prompt else {}
     async with _vision_semaphore():
         for attempt in (1, 2):
             try:
-                return await asyncio.wait_for(client.describe_image(cache_path), timeout=timeout)
+                return await asyncio.wait_for(client.describe_image(cache_path, **kwargs), timeout=timeout)
             except Exception as e:
                 logger.debug("vision describe failed (attempt {}/2): {}", attempt, e)
                 if attempt == 1:
@@ -525,6 +541,17 @@ async def index_document(
 
             extracted_pages = await asyncio.to_thread(_extract_all)
 
+        # Resolve the language for image descriptions once per document. "auto"
+        # follows the document's own text so a German PDF gets German descriptions
+        # (matching German queries + highlighting); an explicit code overrides.
+        _vis_lang_setting = (getattr(s, "vision_language", "auto") or "auto").lower()
+        if _vis_lang_setting == "auto":
+            _doc_sample = "\n".join((pc.native_text or "") for pc in extracted_pages)[:20_000]
+            _doc_lang = detect_language(_doc_sample) or "en"
+        else:
+            _doc_lang = _vis_lang_setting
+        _vis_prompt = _vision_prompt(_doc_lang)
+
         _vis_done = 0  # images described in this doc (for live progress)
         _vis_last_note = 0.0
         for pc in extracted_pages:
@@ -552,7 +579,7 @@ async def index_document(
                 if do_vision and s.vision_model:
                     # Concurrency-capped (+1 retry) so parallel document workers
                     # don't flood the vision model and trigger engine errors.
-                    vision_desc = await _describe_image_limited(client, img.cache_path)
+                    vision_desc = await _describe_image_limited(client, img.cache_path, _vis_prompt)
                     # Surface per-image progress: a doc with hundreds of images
                     # otherwise leaves the bar's label frozen for many minutes.
                     _vis_done += 1

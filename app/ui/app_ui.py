@@ -3522,6 +3522,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 quality_sel.on("update:model-value", lambda _e: _save_quality())
 
+                vis_lang_sel = (
+                    ui.select(
+                        {
+                            "auto": t("settings.vlang_auto", lang),
+                            "de": t("settings.vlang_de", lang),
+                            "en": t("settings.vlang_en", lang),
+                        },
+                        value=getattr(s, "vision_language", "auto"),
+                        label=t("settings.vision_language", lang),
+                    )
+                    .props("dense outlined")
+                    .classes("min-w-[220px]")
+                )
+
+                def _save_vis_lang() -> None:
+                    save_user_settings({"vision_language": vis_lang_sel.value})
+                    get_settings.cache_clear()
+
+                vis_lang_sel.on("update:model-value", lambda _e: _save_vis_lang())
+
                 preload_sw = ui.switch(
                     t("settings.preload_models", lang),
                     value=bool(getattr(s, "preload_models", True)),
@@ -3944,6 +3964,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     "chat_model": _str(chat_model.value),
                     "vision_model": _str(vision_model.value),
                     "embedding_model": _str(emb_model.value),
+                    "vision_language": vis_lang_sel.value or "auto",
                     "tesseract_cmd": _str(tcmd.value),
                     "ocr_lang": _str(tlang.value) or s.ocr_lang,
                     "chunk_size": int(csize.value or s.chunk_size),
