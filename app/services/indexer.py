@@ -188,14 +188,12 @@ async def heal_vector_store_if_model_changed() -> int:
         collection_dim(),
     )
 
-    # Empty collection — nothing to rebuild; just record the current identity.
-    if size == 0:
-        write_embed_meta(model, probe_dim)
-        return 0
-
-    # Authoritative check: run the *exact* query path production uses. False ⇒
-    # Chroma rejected it for a dimension mismatch (rebuild). None ⇒ unrelated
-    # error — never wipe vectors on that.
+    # Authoritative check: run the *exact* query path production uses — NOT the
+    # record count. A collection whose vectors were all deleted still keeps its
+    # dimension pinned (Chroma fixes it at first write), so an "empty" collection
+    # can keep rejecting every query with "expecting 1024, got 768". query_dim_ok
+    # is True on a truly-fresh collection (no pinned dim → accepts any query) and
+    # False only on a real dimension rejection. None ⇒ unrelated error: never wipe.
     ok = query_dim_ok(probe[0])
     if ok is None:
         logger.info("vector heal: dimension check inconclusive — leaving index as-is")

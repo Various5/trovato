@@ -74,14 +74,29 @@ async def test_heal_noop_when_query_compatible(patched, monkeypatch):
     assert patched["meta"] == {"model": "nomic", "dim": 768}
 
 
-async def test_heal_records_identity_on_empty_collection(patched, monkeypatch):
+async def test_heal_records_identity_on_fresh_collection(patched, monkeypatch):
+    # Truly fresh collection: count 0 AND the probe query is accepted → no-op.
     monkeypatch.setattr(vs, "collection_size", lambda: 0)
-    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: pytest.fail("must not query empty collection"))
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: True)
 
     n = await idx.heal_vector_store_if_model_changed()
 
     assert n == 0
     assert patched["reset"] == 0
+    assert patched["meta"] == {"model": "nomic", "dim": 768}
+
+
+async def test_heal_rebuilds_empty_but_dimension_pinned_collection(patched, monkeypatch):
+    # The real bug: all vectors were deleted (count 0) but the collection kept
+    # its dimension pinned, so queries still get rejected → must still rebuild.
+    monkeypatch.setattr(vs, "collection_size", lambda: 0)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: False)
+
+    n = await idx.heal_vector_store_if_model_changed()
+
+    assert n == 5
+    assert patched["reset"] == 1
+    assert patched["reembedded"] == 1
     assert patched["meta"] == {"model": "nomic", "dim": 768}
 
 

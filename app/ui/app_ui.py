@@ -2715,11 +2715,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     footer = ui.row().classes("items-center gap-2 q-mt-xs")
             return md_el, md_card, footer
 
-        def _link_citations(text: str, sources: list[dict]) -> str:
+        def _link_citations(text: str, sources: list[dict], query: str = "") -> str:
             """Replace bracketed citation tokens like ``[1]`` with markdown
-            links to the viewer page for the cited document."""
+            links to the viewer page for the cited document. ``query`` is carried
+            into the viewer (``&q=``) so the searched terms get highlighted —
+            without it, clicking a citation opened the page with nothing marked."""
             if not sources or not text:
                 return text
+            qs = f"&q={quote(query)}" if query else ""
             result = text
             for s in sources:
                 n = s.get("n")
@@ -2729,7 +2732,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     continue
                 token = f"[{n}]"
                 # Wrap the brackets in a styled markdown link
-                replacement = f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg})"
+                replacement = f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg}{qs})"
                 # Replace, but only when not already linked (avoid double-wrap
                 # if the same N appears twice in the answer).
                 result = result.replace(token, replacement)
@@ -3086,7 +3089,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     md_card.classes(remove="ldi-stream-cursor")
                                     if cites_state:
                                         # Make [1], [2], … in the answer clickable links
-                                        md_el.content = _link_citations("".join(buffer), cites_state)
+                                        md_el.content = _link_citations(
+                                            "".join(buffer), cites_state, query=question
+                                        )
                                         _render_sources_footer(footer, cites_state, query=question)
                                     _refresh_chats()  # update timestamp on sidebar
                                     _scroll_msgs_to_bottom()
@@ -3166,7 +3171,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 _render_user_message(m.content, when=when_str)
                             elif m.role == "assistant":
                                 md_el, _md_card, footer = _render_assistant_message_open()
-                                md_el.content = _link_citations(m.content, m.sources or [])
+                                md_el.content = _link_citations(
+                                    m.content, m.sources or [], query=last_question
+                                )
                                 if m.sources:
                                     _render_sources_footer(footer, m.sources, query=last_question)
                                 if when_str:
@@ -4296,9 +4303,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 select(_DP).where(_DP.document_id == doc, _DP.page_number == page)
             ).first()
             page_text = (page_row.native_text or page_row.ocr_text or "") if page_row else ""
-            # Find-in-document: pages whose native/OCR text contains ANY
-            # meaningful query term. The query may be a whole chat sentence, so
-            # matching the full string verbatim would never hit — OR the terms.
+            # Image descriptions on this page — chat often cites an IMAGE match,
+            # whose text lives here (DocumentImage.vision_description), NOT in the
+            # page's plain text. Showing + highlighting them is what makes "it
+            # found an image, take me there" actually point at something.
+            from app.models import DocumentImage as _DI
+
+            page_image_descs = [
+                (img.vision_description or "").strip()
+                for img in session.exec(
+                    select(_DI)
+                    .where(_DI.document_id == doc, _DI.page_number == page)
+                    .order_by(_DI.image_index)
+                ).all()
+                if (img.vision_description or "").strip()
+            ]
+            # Find-in-document: pages whose native/OCR text OR an image
+            # description contains ANY meaningful query term. The query may be a
+            # whole chat sentence, so matching it verbatim would never hit.
             match_pages: list[int] = []
             terms = meaningful_terms(q)
             if terms:
@@ -4309,13 +4331,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     like = f"%{term}%"
                     conds.append(_DP.native_text.ilike(like))
                     conds.append(_DP.ocr_text.ilike(like))
-                match_pages = list(
-                    session.exec(
-                        select(_DP.page_number)
-                        .where(_DP.document_id == doc, _or(*conds))
-                        .order_by(_DP.page_number)
-                    ).all()
+                img_pages = set()
+                img_conds = [_DI.vision_description.ilike(f"%{term}%") for term in terms]
+                for pn in session.exec(
+                    select(_DI.page_number).where(_DI.document_id == doc, _or(*img_conds))
+                ).all():
+                    img_pages.add(pn)
+                text_pages = set(
+                    session.exec(select(_DP.page_number).where(_DP.document_id == doc, _or(*conds))).all()
                 )
+                match_pages = sorted(text_pages | img_pages)
 
         ui.label(f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}").classes(
             "text-h5 ldi-primary"
@@ -4424,8 +4449,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
                             f"<div class='text-body2' style='white-space:pre-wrap;"
                             f"max-height:70vh;overflow:auto;'>{highlight_terms(page_text, q)}</div>"
                         )
-                    else:
+                    elif not page_image_descs:
                         ui.markdown(f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
+                # Image descriptions on this page (highlighted) — so a chat answer
+                # that matched a photo/figure actually shows what it matched here.
+                if page_image_descs:
+                    with section_card(lang, title_key="docs.viewer.images", icon="image"):
+                        for _desc in page_image_descs:
+                            ui.html(
+                                f"<div class='text-body2 q-mb-sm' style='white-space:pre-wrap;'>"
+                                f"{highlight_terms(_desc, q)}</div>"
+                            )
 
     @ui.page("/about")
     def page_about() -> None:
