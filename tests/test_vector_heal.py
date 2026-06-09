@@ -2,7 +2,8 @@
 
 Switching the embedding model (e.g. bge-m3 @ 1024 → nomic-embed @ 768) leaves
 Chroma rejecting every upsert/query because a collection pins its dimension at
-first write. ``heal_vector_store_if_model_changed`` must detect that and rebuild.
+first write. ``heal_vector_store_if_model_changed`` must detect that — via the
+exact query path production uses — and rebuild.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ def patched(monkeypatch):
     state = {"reset": 0, "meta": {}, "reembedded": 0}
 
     monkeypatch.setattr(idx, "get_settings", lambda: SimpleNamespace(embedding_model="nomic"))
+    monkeypatch.setattr(vs, "collection_dim", lambda: 1024)
 
     def _reset():
         state["reset"] += 1
@@ -41,15 +43,16 @@ def patched(monkeypatch):
 
     monkeypatch.setattr(vs, "reset_collection", _reset)
     monkeypatch.setattr(vs, "write_embed_meta", _write)
+    monkeypatch.setattr(vs, "read_embed_meta", lambda: {"model": "bge-m3", "dim": 1024})
     monkeypatch.setattr(idx, "reembed_all_documents", _reembed)
+    monkeypatch.setattr(idx, "get_client", lambda: _FakeClient(768))
     return state
 
 
 async def test_heal_rebuilds_on_dimension_mismatch(patched, monkeypatch):
-    # Stored vectors are 1024-dim; the model now emits 768 → mismatch.
-    monkeypatch.setattr(idx, "get_client", lambda: _FakeClient(768))
-    monkeypatch.setattr(vs, "collection_dim", lambda: 1024)
-    monkeypatch.setattr(vs, "read_embed_meta", lambda: {"model": "bge-m3", "dim": 1024})
+    # Non-empty collection; a 768-dim query is rejected → rebuild.
+    monkeypatch.setattr(vs, "collection_size", lambda: 42)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: False)
 
     n = await idx.heal_vector_store_if_model_changed()
 
@@ -59,23 +62,21 @@ async def test_heal_rebuilds_on_dimension_mismatch(patched, monkeypatch):
     assert patched["meta"] == {"model": "nomic", "dim": 768}
 
 
-async def test_heal_noop_when_dimensions_match(patched, monkeypatch):
-    monkeypatch.setattr(idx, "get_client", lambda: _FakeClient(768))
-    monkeypatch.setattr(vs, "collection_dim", lambda: 768)
-    monkeypatch.setattr(vs, "read_embed_meta", lambda: {"model": "nomic", "dim": 768})
+async def test_heal_noop_when_query_compatible(patched, monkeypatch):
+    monkeypatch.setattr(vs, "collection_size", lambda: 42)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: True)
 
     n = await idx.heal_vector_store_if_model_changed()
 
     assert n == 0
     assert patched["reset"] == 0
     assert patched["reembedded"] == 0
+    assert patched["meta"] == {"model": "nomic", "dim": 768}
 
 
 async def test_heal_records_identity_on_empty_collection(patched, monkeypatch):
-    # Empty collection (dim unknown) → just record identity, never rebuild.
-    monkeypatch.setattr(idx, "get_client", lambda: _FakeClient(768))
-    monkeypatch.setattr(vs, "collection_dim", lambda: None)
-    monkeypatch.setattr(vs, "read_embed_meta", lambda: {})
+    monkeypatch.setattr(vs, "collection_size", lambda: 0)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: pytest.fail("must not query empty collection"))
 
     n = await idx.heal_vector_store_if_model_changed()
 
@@ -84,14 +85,26 @@ async def test_heal_records_identity_on_empty_collection(patched, monkeypatch):
     assert patched["meta"] == {"model": "nomic", "dim": 768}
 
 
+async def test_heal_never_wipes_on_inconclusive_error(patched, monkeypatch):
+    # Unrelated Chroma error (not a dimension mismatch) → leave the index alone.
+    monkeypatch.setattr(vs, "collection_size", lambda: 42)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: None)
+
+    n = await idx.heal_vector_store_if_model_changed()
+
+    assert n == 0
+    assert patched["reset"] == 0
+    assert patched["reembedded"] == 0
+
+
 async def test_heal_skips_when_lmstudio_unreachable(patched, monkeypatch):
     class _Down:
         async def embed(self, texts):
             raise RuntimeError("connection refused")
 
     monkeypatch.setattr(idx, "get_client", lambda: _Down())
-    monkeypatch.setattr(vs, "collection_dim", lambda: 1024)
-    monkeypatch.setattr(vs, "read_embed_meta", lambda: {"model": "bge-m3", "dim": 1024})
+    monkeypatch.setattr(vs, "collection_size", lambda: 42)
+    monkeypatch.setattr(vs, "query_dim_ok", lambda emb: False)
 
     n = await idx.heal_vector_store_if_model_changed()
 

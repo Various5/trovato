@@ -125,6 +125,26 @@ def collection_dim() -> int | None:
     return None
 
 
+def query_dim_ok(embedding: list[float]) -> bool | None:
+    """Probe whether a query with ``embedding`` is dimension-compatible with the
+    live collection, using the exact same path production search uses.
+
+    Returns ``True`` if the query succeeds, ``False`` only when Chroma rejects it
+    for a dimension mismatch, and ``None`` for any other/unknown error (so the
+    caller never triggers a destructive rebuild on an unrelated failure). This is
+    the authoritative mismatch signal — more reliable than reading stored vectors,
+    which some Chroma versions won't return."""
+    try:
+        col = _get_or_create_collection()
+        col.query(query_embeddings=[embedding], n_results=1)
+        return True
+    except Exception as e:
+        if "dimension" in str(e).lower():
+            return False
+        logger.debug("query_dim_ok inconclusive: {}", e)
+        return None
+
+
 def _meta_path() -> Path:
     return Path(get_settings().chroma_path) / "embed_meta.json"
 

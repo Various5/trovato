@@ -154,6 +154,8 @@ async def heal_vector_store_if_model_changed() -> int:
     """
     from app.vectorstore import (
         collection_dim,
+        collection_size,
+        query_dim_ok,
         read_embed_meta,
         reset_collection,
         write_embed_meta,
@@ -177,29 +179,42 @@ async def heal_vector_store_if_model_changed() -> int:
         return 0
     probe_dim = len(probe[0])
 
-    cur_dim = collection_dim()
-    meta = read_embed_meta()
+    size = collection_size()
+    logger.info(
+        "vector heal: model={!r} probe_dim={} stored_vectors={} stored_dim={}",
+        model,
+        probe_dim,
+        size,
+        collection_dim(),
+    )
 
-    # Collection empty (or brand new): just record the current identity.
-    if cur_dim is None:
+    # Empty collection — nothing to rebuild; just record the current identity.
+    if size == 0:
         write_embed_meta(model, probe_dim)
         return 0
 
-    # The authoritative signal is the stored vectors' dimension vs. what the
-    # model now emits; the model-name marker is a secondary hint for logs.
-    if cur_dim == probe_dim and meta.get("model") in (model, "", None):
-        if meta.get("dim") != probe_dim or meta.get("model") != model:
-            write_embed_meta(model, probe_dim)
+    # Authoritative check: run the *exact* query path production uses. False ⇒
+    # Chroma rejected it for a dimension mismatch (rebuild). None ⇒ unrelated
+    # error — never wipe vectors on that.
+    ok = query_dim_ok(probe[0])
+    if ok is None:
+        logger.info("vector heal: dimension check inconclusive — leaving index as-is")
+        return 0
+    if ok:
+        write_embed_meta(model, probe_dim)
+        logger.info("vector heal: vector store matches the model (dim={}) — no action", probe_dim)
         return 0
 
     async with _REEMBED_LOCK:
+        meta = read_embed_meta()
         logger.warning(
-            "embedding model changed (was dim={} model={!r}, now dim={} model={!r}); "
-            "rebuilding vector index and re-embedding all documents",
-            cur_dim,
+            "embedding model changed (stored model={!r}/dim={}, now {!r}/dim={}); "
+            "rebuilding vector index and re-embedding {} document chunk-set(s)",
             meta.get("model"),
-            probe_dim,
+            collection_dim(),
             model,
+            probe_dim,
+            size,
         )
         reset_collection()
         write_embed_meta(model, probe_dim)
