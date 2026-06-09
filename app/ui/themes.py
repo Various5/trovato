@@ -1,8 +1,10 @@
 """Built-in UI themes.
 
-The default palette favours muted, professional tones — a single accent colour
-per theme, neutral surfaces, restrained gradients. The original colourful
-themes (Nord, Dracula, etc.) are still selectable but no longer the default.
+The design system is deliberately restrained and professional: warm-neutral
+greys with a single calm teal accent, flat surfaces, 1px borders, soft shadows
+— no rainbow gradients or glows. The default is ``system``, which follows the
+operating system's light/dark preference (Graphite dark / Paper light). The
+older vivid themes (Emerald, Indigo, Nord, Dracula, …) stay selectable.
 """
 
 from __future__ import annotations
@@ -21,13 +23,53 @@ class Theme:
     primary: str
     accent: str
     border: str
+    # Extended design-system tokens (optional; sensible fallbacks computed in
+    # styles.py when left blank so legacy themes keep working unchanged).
+    muted: str = ""  # secondary/label text
+    surface2: str = ""  # elevated surface (inputs, hovered rows)
+    success: str = "#22c55e"
+    warn: str = "#f59e0b"
+    error: str = "#ef4444"
 
+
+# The light/dark pair the ``system`` theme switches between via
+# ``prefers-color-scheme``. Keep both using the same teal accent so the brand
+# identity is stable across modes.
+SYSTEM_LIGHT = "paper"
+SYSTEM_DARK = "graphite"
 
 THEMES: dict[str, Theme] = {
-    # ----- Professional defaults -------------------------------------
+    # ----- Graphite + Teal (the professional default pair) ---------------
+    "graphite": Theme(
+        "graphite",
+        "Graphite (dark)",
+        True,
+        bg="#111418",
+        surface="#1a1f24",
+        text="#e7e5e4",
+        primary="#14b8a6",
+        accent="#2dd4bf",
+        border="#2a2f36",
+        muted="#9ca3af",
+        surface2="#20262e",
+    ),
+    "paper": Theme(
+        "paper",
+        "Paper (light)",
+        False,
+        bg="#fafaf9",
+        surface="#ffffff",
+        text="#18181b",
+        primary="#0d9488",
+        accent="#14b8a6",
+        border="#e7e5e4",
+        muted="#6b7280",
+        surface2="#f4f4f3",
+    ),
+    # ----- Alternate restrained palettes ---------------------------------
     "slate": Theme(
         "slate",
-        "Slate (recommended)",
+        "Slate (dark)",
         True,
         bg="#0f1419",
         surface="#171d25",
@@ -35,10 +77,12 @@ THEMES: dict[str, Theme] = {
         primary="#5b8def",
         accent="#7da4ff",
         border="#262d38",
+        muted="#8b94a3",
+        surface2="#1d2530",
     ),
     "pearl": Theme(
         "pearl",
-        "Pearl",
+        "Pearl (light)",
         False,
         bg="#f6f7f9",
         surface="#ffffff",
@@ -46,10 +90,12 @@ THEMES: dict[str, Theme] = {
         primary="#3a5ee0",
         accent="#5b8def",
         border="#e3e6ec",
+        muted="#6a7280",
+        surface2="#f0f2f5",
     ),
     "obsidian": Theme(
         "obsidian",
-        "Obsidian",
+        "Obsidian (dark)",
         True,
         bg="#08090c",
         surface="#101218",
@@ -57,19 +103,10 @@ THEMES: dict[str, Theme] = {
         primary="#7d9bff",
         accent="#9bb2ff",
         border="#1c1f27",
+        muted="#838995",
+        surface2="#161922",
     ),
-    "graphite": Theme(
-        "graphite",
-        "Graphite",
-        True,
-        bg="#15171b",
-        surface="#1d2026",
-        text="#d0d3d9",
-        primary="#6f7a8a",
-        accent="#a1abbb",
-        border="#262a31",
-    ),
-    # ----- Bold identities (vivid accent, deep surfaces) -----
+    # ----- Bold identities (vivid accent — opt-in) -----------------------
     "indigo": Theme(
         "indigo",
         "Indigo (bold)",
@@ -80,6 +117,7 @@ THEMES: dict[str, Theme] = {
         primary="#6366f1",
         accent="#a78bfa",
         border="#272b48",
+        muted="#9095b8",
     ),
     "emerald": Theme(
         "emerald",
@@ -91,6 +129,7 @@ THEMES: dict[str, Theme] = {
         primary="#10b981",
         accent="#34d399",
         border="#1d2a26",
+        muted="#8aa39a",
     ),
     "royal": Theme(
         "royal",
@@ -102,8 +141,9 @@ THEMES: dict[str, Theme] = {
         primary="#3b82f6",
         accent="#22d3ee",
         border="#21283f",
+        muted="#8b94ad",
     ),
-    # ----- Legacy / alternative themes (kept for users who prefer them) -----
+    # ----- Legacy / alternative themes -----------------------------------
     "light": Theme(
         "light",
         "Light Standard",
@@ -114,6 +154,7 @@ THEMES: dict[str, Theme] = {
         primary="#2563eb",
         accent="#0ea5e9",
         border="#e5e7eb",
+        muted="#667085",
     ),
     "dark": Theme(
         "dark",
@@ -125,6 +166,7 @@ THEMES: dict[str, Theme] = {
         primary="#3b82f6",
         accent="#06b6d4",
         border="#334155",
+        muted="#94a3b8",
     ),
     "nord": Theme(
         "nord",
@@ -136,6 +178,7 @@ THEMES: dict[str, Theme] = {
         primary="#88c0d0",
         accent="#81a1c1",
         border="#4c566a",
+        muted="#a9b3c4",
     ),
     "solarized": Theme(
         "solarized",
@@ -147,6 +190,7 @@ THEMES: dict[str, Theme] = {
         primary="#268bd2",
         accent="#b58900",
         border="#93a1a1",
+        muted="#586e75",
     ),
     "dracula": Theme(
         "dracula",
@@ -158,6 +202,7 @@ THEMES: dict[str, Theme] = {
         primary="#bd93f9",
         accent="#ff79c6",
         border="#6272a4",
+        muted="#b9c0e0",
     ),
     "highcontrast": Theme(
         "highcontrast",
@@ -169,36 +214,47 @@ THEMES: dict[str, Theme] = {
         primary="#ffff00",
         accent="#00ffff",
         border="#ffffff",
+        muted="#d0d0d0",
     ),
 }
 
 
-DEFAULT_THEME = "emerald"
+# ``system`` is a meta-theme: it has no colours of its own — styles.py emits both
+# the Paper (light) and Graphite (dark) variable sets gated on the OS preference.
+# A placeholder entry keeps it selectable in the theme list and cycle.
+THEMES["system"] = Theme(
+    "system",
+    "System (auto light/dark)",
+    THEMES[SYSTEM_DARK].is_dark,
+    bg=THEMES[SYSTEM_DARK].bg,
+    surface=THEMES[SYSTEM_DARK].surface,
+    text=THEMES[SYSTEM_DARK].text,
+    primary=THEMES[SYSTEM_DARK].primary,
+    accent=THEMES[SYSTEM_DARK].accent,
+    border=THEMES[SYSTEM_DARK].border,
+    muted=THEMES[SYSTEM_DARK].muted,
+    surface2=THEMES[SYSTEM_DARK].surface2,
+)
 
 
-def theme_css(theme_name: str) -> str:
-    t = THEMES.get(theme_name) or THEMES[DEFAULT_THEME]
-    return f"""
-    :root {{
-        --ldi-bg: {t.bg};
-        --ldi-surface: {t.surface};
-        --ldi-text: {t.text};
-        --ldi-primary: {t.primary};
-        --ldi-accent: {t.accent};
-        --ldi-border: {t.border};
-    }}
-    body, .q-page, .q-layout {{
-        background: var(--ldi-bg) !important;
-        color: var(--ldi-text) !important;
-    }}
-    .q-card, .q-drawer, .q-header, .q-footer {{
-        background: var(--ldi-surface) !important;
-        color: var(--ldi-text) !important;
-    }}
-    .q-field__control, .q-field__native, .q-input input {{
-        color: var(--ldi-text) !important;
-    }}
-    .ldi-primary {{ color: var(--ldi-primary); }}
-    .ldi-accent  {{ color: var(--ldi-accent); }}
-    .ldi-border  {{ border-color: var(--ldi-border) !important; }}
-    """
+DEFAULT_THEME = "system"
+
+# Order the theme picker / cycle button walk through: the recommended pair
+# first, then restrained alternates, then the bold identities and legacy ones.
+THEME_ORDER = [
+    "system",
+    "graphite",
+    "paper",
+    "slate",
+    "pearl",
+    "obsidian",
+    "indigo",
+    "emerald",
+    "royal",
+    "light",
+    "dark",
+    "nord",
+    "solarized",
+    "dracula",
+    "highcontrast",
+]
