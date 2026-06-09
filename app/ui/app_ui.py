@@ -365,6 +365,60 @@ def highlight_terms(text: str, query: str) -> str:
         return safe
 
 
+def render_tag_chips(
+    tags: list[str], *, limit: int = 8, clickable: bool = True, show_overflow: bool = True
+) -> None:
+    """Compact, screen-fitting tag chips with a ``+N`` overflow.
+
+    Free topic tags come first (rendered as solid pills), then namespaced system
+    tags (``lang:`` / ``has:`` / ``type:`` …, rendered muted). Clickable chips
+    deep-link to ``/search?tag=``. Shared by document cards, search results and
+    the viewer so tags look and behave the same everywhere.
+    """
+    seen: list[str] = []
+    for tg in tags:
+        if tg and tg not in seen:
+            seen.append(tg)
+    if not seen:
+        return
+    topics = [tg for tg in seen if ":" not in tg]
+    system = [tg for tg in seen if ":" in tg]
+    ordered = topics + system
+    shown = ordered[:limit]
+    extra = len(ordered) - len(shown)
+    with ui.row().classes("items-center gap-1 flex-wrap"):
+        for tg in shown:
+            cls = "ldi-pill" if ":" not in tg else "ldi-pill ldi-muted"
+            if clickable:
+                ui.button(tg, on_click=lambda n=tg: ui.navigate.to(f"/search?tag={quote(n)}")).props(
+                    "flat dense no-caps size=sm"
+                ).classes(cls)
+            else:
+                ui.label(tg).classes(cls)
+        if extra > 0 and show_overflow:
+            ui.label(f"+{extra}").classes("ldi-pill ldi-muted").style("font-size: 12px;")
+
+
+def tags_for_documents(doc_ids) -> dict[int, list[str]]:
+    """Batch-fetch tag names per document id (one query), ranked topic-first.
+    Used to show tags on search results without N+1 queries."""
+    ids = [int(i) for i in doc_ids if i is not None]
+    if not ids:
+        return {}
+    from app.models import DocumentTagLink as _DTL
+    from app.models import Tag as _Tag
+
+    out: dict[int, list[str]] = {}
+    with session_scope() as session:
+        for did, name in session.exec(
+            select(_DTL.document_id, _Tag.name)
+            .join(_Tag, _Tag.id == _DTL.tag_id)
+            .where(_DTL.document_id.in_(ids))
+        ).all():
+            out.setdefault(did, []).append(name)
+    return out
+
+
 def _now_utc():
     from datetime import datetime
 
@@ -2086,6 +2140,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         action_label_key="dash.gs_add_source",
                         on_action=lambda: ui.navigate.to("/sources"),
                     )
+                # Batch-fetch tags for all shown docs in one query → chips per card.
+                from app.models import DocumentTagLink as _DTL
+                from app.models import Tag as _Tag
+
+                _doc_ids = [d.id for d in docs_list if d.id is not None]
+                tags_by_doc: dict[int, list[str]] = {}
+                if _doc_ids:
+                    for _did, _name in session.exec(
+                        select(_DTL.document_id, _Tag.name)
+                        .join(_Tag, _Tag.id == _DTL.tag_id)
+                        .where(_DTL.document_id.in_(_doc_ids))
+                    ).all():
+                        tags_by_doc.setdefault(_did, []).append(_name)
+
                 for d in docs_list:
                     with ui.card().classes("w-full p-3"):
                         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -2121,6 +2189,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     f"{t('docs.type', lang)}: {d.doc_type or '—'} · "
                                     f"{t('docs.lang', lang)}: {d.language or '—'}"
                                 ).classes("text-caption")
+                                _dtags = tags_by_doc.get(d.id, [])
+                                if _dtags:
+                                    with ui.element("div").classes("q-mt-xs"):
+                                        render_tag_chips(_dtags, limit=6)
                                 with ui.row().classes("gap-1 q-mt-xs flex-wrap"):
                                     ui.button(
                                         t("docs.btn_view", lang),
@@ -2543,6 +2615,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     empty_state("search_off", "search.no_results", "search.no_results_hint", lang)
                     return
                 _img_map = _images_by_page({h.document_id for h in hits})
+                _tag_map = tags_for_documents({h.document_id for h in hits})
                 for rank, h in enumerate(hits, start=1):
                     score_pct = max(0.0, min(1.0, float(h.score))) * 100
                     with ui.card().classes("w-full p-3"):
@@ -2570,6 +2643,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
                                 # Snippet with highlighted matches
                                 ui.html(f"<div class='ldi-snippet'>{_highlight(h.snippet, query)}</div>")
+                                _dtags = _tag_map.get(h.document_id, [])
+                                if _dtags:
+                                    render_tag_chips(_dtags, limit=6)
                                 # Embedded images on the matched page (after a vision scan)
                                 _imgs = _img_map.get((h.document_id, h.page_from), [])
                                 if _imgs:
@@ -3238,21 +3314,56 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ).props("flat dense")
 
         def _topic_cloud(items) -> None:
-            maxc = max((s.count for s in items), default=1)
+            # Compact + screen-fitting: uniform chips (no sprawling font-scaling),
+            # a search-within box, and a top-N window with show-all / show-less so
+            # a 100-topic library doesn't render one giant unfit row.
+            INITIAL = 30
+            state = {"q": "", "expanded": False}
             with section_card(lang, title_key="tags.group_topics", icon="sell"):
-                ui.label(t("tags.cloud_hint", lang)).classes("text-caption opacity-60 q-mb-xs")
-                with ui.row().classes("items-center gap-2 flex-wrap"):
-                    for s in items:
-                        size = 0.82 + 0.75 * (s.count / max(maxc, 1))  # bigger = more docs
-                        chip = ui.row().classes("ldi-pill items-center gap-1 no-wrap cursor-pointer")
-                        chip.style(f"font-size: {size:.2f}em; padding: 3px 10px;")
-                        chip.on("click", lambda n=s.name: ui.navigate.to(f"/search?tag={quote(n)}"))
-                        with chip:
-                            ui.label(s.name)
-                            ui.label(str(s.count)).classes("opacity-60").style("font-size: 0.7em;")
-                            ui.icon("close").classes("opacity-50 cursor-pointer").style(
-                                "font-size: 0.85em;"
-                            ).on("click.stop", lambda _e, tid=s.id: _delete(tid))
+                with ui.row().classes("items-center justify-between w-full no-wrap q-mb-xs"):
+                    ui.label(t("tags.cloud_hint", lang)).classes("text-caption opacity-60")
+                    ui.label(f"{len(items)}").classes("ldi-pill text-caption opacity-70")
+                search = (
+                    ui.input(placeholder=t("tags.search_ph", lang))
+                    .props("dense outlined clearable")
+                    .classes("w-full max-w-xs q-mb-sm")
+                )
+                grid = ui.row().classes("items-center gap-2 flex-wrap")
+
+                def _draw() -> None:
+                    grid.clear()
+                    qv = (state["q"] or "").strip().lower()
+                    filt = [s for s in items if qv in s.name.lower()] if qv else items
+                    shown = filt if state["expanded"] else filt[:INITIAL]
+                    with grid:
+                        for s in shown:
+                            chip = ui.row().classes("ldi-pill items-center gap-1 no-wrap cursor-pointer")
+                            chip.style("padding: 3px 10px;")
+                            chip.on("click", lambda n=s.name: ui.navigate.to(f"/search?tag={quote(n)}"))
+                            with chip:
+                                ui.label(s.name)
+                                ui.label(str(s.count)).classes("opacity-60").style("font-size: 0.72em;")
+                                ui.icon("close").classes("opacity-50 cursor-pointer").style(
+                                    "font-size: 0.85em;"
+                                ).on("click.stop", lambda _e, tid=s.id: _delete(tid))
+                        if not shown:
+                            ui.label(t("tags.none_match", lang)).classes("text-caption opacity-60")
+                        elif not state["expanded"] and len(filt) > INITIAL:
+                            ui.button(t("tags.show_all", lang).format(n=len(filt)), icon="expand_more").props(
+                                "flat dense no-caps"
+                            ).classes("ldi-pill").on("click", lambda: (state.update(expanded=True), _draw()))
+                        elif state["expanded"] and len(filt) > INITIAL:
+                            ui.button(t("tags.show_less", lang), icon="expand_less").props(
+                                "flat dense no-caps"
+                            ).classes("ldi-pill").on("click", lambda: (state.update(expanded=False), _draw()))
+
+                def _on_search() -> None:
+                    state["q"] = search.value or ""
+                    state["expanded"] = bool(state["q"].strip())
+                    _draw()
+
+                search.on("update:model-value", lambda _e: _on_search())
+                _draw()
 
         def _pairs_section(pairs) -> None:
             with section_card(lang, title_key="tags.together_title", icon="hub"):
@@ -4330,6 +4441,15 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ).all()
                 if (img.vision_description or "").strip()
             ]
+            # The document's tags (topic + system), for the viewer sidebar.
+            from app.models import DocumentTagLink as _DTL
+            from app.models import Tag as _Tag
+
+            doc_tags = list(
+                session.exec(
+                    select(_Tag.name).join(_DTL, _DTL.tag_id == _Tag.id).where(_DTL.document_id == doc)
+                ).all()
+            )
             # Find-in-document: pages whose native/OCR text OR an image
             # description contains ANY meaningful query term. The query may be a
             # whole chat sentence, so matching it verbatim would never hit.
@@ -4454,6 +4574,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         on_click=lambda: (_zoom.update(w=min(300, _zoom["w"] + 25)), _apply_zoom()),
                     ).props("dense flat")
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
+                if doc_tags:
+                    with section_card(lang, title_key="tags.section", icon="label"):
+                        render_tag_chips(doc_tags, limit=20)
                 with section_card(lang, title_key="docs.viewer.page_text", icon="article"):
                     if page_text:
                         # Highlight every occurrence of the term on this page.
