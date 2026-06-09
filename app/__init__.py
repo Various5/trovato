@@ -1,6 +1,6 @@
 """LocalDoc Intelligence — local PDF intelligence package."""
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 __app_name__ = "LocalDoc Intelligence"
 __author__ = "Varous 555"
 __contact__ = "varous555@gmail.com"
