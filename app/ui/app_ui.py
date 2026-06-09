@@ -186,6 +186,24 @@ def open_pdf(document_id: int, page: int | None = None) -> None:
     ui.run_javascript(f"window.open({pdf_url(document_id, page, _media_token())!r}, '_blank')")
 
 
+def download_pdf_url(document_id: int) -> str:
+    """Token-authorized URL that serves the original PDF as an attachment."""
+    tok = _media_token()
+    base = f"/api/documents/{document_id}/file?download=1"
+    return f"{base}&t={tok}" if tok else base
+
+
+def download_pdf(document_id: int) -> None:
+    """Save the original PDF to disk (Content-Disposition: attachment) without
+    navigating away — clicks a transient hidden <a download> anchor."""
+    url = download_pdf_url(document_id)
+    ui.run_javascript(
+        "const a=document.createElement('a');"
+        f"a.href={url!r};a.download='';"
+        "document.body.appendChild(a);a.click();a.remove();"
+    )
+
+
 # Function words we never highlight — a natural-language chat question
 # ("in welchen dokumenten hat es bilder von einem pool") is mostly these, and
 # marking every one of them turns the snippet into a wall of coloured blocks.
@@ -2118,6 +2136,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     on_click=lambda: (selection.clear(), _refresh()),
                 ).props("flat dense")
 
+        sort_state = {"by": "newest"}
+        _SOReq = {
+            "newest": Document.id.desc(),
+            "oldest": Document.id.asc(),
+            "name_az": Document.filename.asc(),
+            "name_za": Document.filename.desc(),
+            "largest": Document.size_bytes.desc(),
+            "smallest": Document.size_bytes.asc(),
+        }
+
         def _refresh() -> None:
             _update_bulk_bar()
             results.clear()
@@ -2126,7 +2154,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 if q_input.value:
                     like = f"%{q_input.value}%"
                     stmt = stmt.where(Document.filename.like(like))  # type: ignore
-                stmt = stmt.order_by(Document.id.desc()).limit(200)  # type: ignore
+                order = _SOReq.get(sort_state["by"], Document.id.desc())
+                stmt = stmt.order_by(order).limit(200)  # type: ignore
                 docs_list = session.exec(stmt).all()
                 if not docs_list and q_input.value:
                     # Filter matched nothing — not an empty library.
@@ -2205,6 +2234,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         on_click=lambda did=d.id: open_pdf(did, 1),
                                     ).props("dense flat")
                                     ui.button(
+                                        t("common.download", lang),
+                                        icon="download",
+                                        on_click=lambda did=d.id: download_pdf(did),
+                                    ).props("dense flat")
+                                    ui.button(
                                         t("docs.btn_similar", lang),
                                         icon="auto_awesome",
                                         on_click=lambda did=d.id, fname=d.filename: _show_similar(did, fname),
@@ -2242,6 +2276,28 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
         with ui.row().classes("items-center gap-2"):
             q_input.on("change", lambda _: _refresh())
+            sort_sel = (
+                ui.select(
+                    {
+                        "newest": t("docs.sort_newest", lang),
+                        "oldest": t("docs.sort_oldest", lang),
+                        "name_az": t("docs.sort_name_az", lang),
+                        "name_za": t("docs.sort_name_za", lang),
+                        "largest": t("docs.sort_largest", lang),
+                        "smallest": t("docs.sort_smallest", lang),
+                    },
+                    value="newest",
+                    label=t("docs.sort_by", lang),
+                )
+                .props("dense outlined")
+                .classes("min-w-[170px]")
+            )
+
+            def _on_sort() -> None:
+                sort_state["by"] = sort_sel.value or "newest"
+                _refresh()
+
+            sort_sel.on("update:model-value", lambda _e: _on_sort())
             ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("dense")
 
             def _select_all() -> None:
@@ -2680,6 +2736,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         icon="picture_as_pdf",
                                         on_click=lambda did=h.document_id, pg=h.page_from: open_pdf(did, pg),
                                     ).props("dense flat")
+                                    ui.button(
+                                        icon="download",
+                                        on_click=lambda did=h.document_id: download_pdf(did),
+                                    ).props("dense flat round").tooltip(t("common.download_pdf", lang))
 
         with ui.row().classes("gap-2"):
             ui.button(t("search.go", lang), icon="search", on_click=_go).props("color=primary")
@@ -4495,6 +4555,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 icon="picture_as_pdf",
                 on_click=lambda d=doc, p=page: open_pdf(d, p),
             ).props("dense color=primary")
+            ui.button(
+                t("common.download_pdf", lang),
+                icon="download",
+                on_click=lambda d=doc: download_pdf(d),
+            ).props("dense outline")
             if q:
                 ui.button(
                     t("docs.viewer.back_to_search", lang),
