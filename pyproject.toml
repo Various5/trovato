@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localdoc-intelligence"
-version = "0.4.14"
+version = "0.4.15"
 description = "LocalDoc Intelligence — local PDF indexing, OCR, image analysis, semantic search and chat over your documents. 100% local via LM Studio."
 readme = "README.md"
 requires-python = ">=3.11"
