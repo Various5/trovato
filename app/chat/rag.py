@@ -8,6 +8,7 @@ The system prompt instructs the model to:
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC
@@ -35,12 +36,132 @@ SYSTEM_PROMPT = """You are LocalDoc Intelligence, a careful local assistant that
 questions strictly using the provided document context.
 
 Rules:
-1. Use ONLY the supplied context. If the answer is not in the context, say so plainly.
-2. Cite every fact with bracketed numbers, e.g. [1], that map to the SOURCES list.
-3. Prefer concise, accurate answers. Quote short snippets when helpful.
-4. If the user explicitly asks for opinions or summaries beyond the documents, \
-make clear that the answer is reasoning, not from sources.
-5. Always answer in the user's language."""
+1. ALWAYS write your answer in the SAME language the user used in their latest question. \
+If they ask in German, answer in German; if in English, answer in English. Never switch \
+to another language on your own.
+2. Use ONLY the supplied context. If the answer is not in the context, say so plainly.
+3. Cite every fact with bracketed numbers, e.g. [1], that map to the SOURCES list.
+4. Some sources are marked "IMAGE" — that text is a description of an image that is \
+actually embedded in the document. Treat such a source as proof that the document \
+contains that image. When the user asks which documents contain a picture/photo/image \
+of something, answer from these IMAGE sources and cite them. Do NOT claim there are no \
+images when IMAGE sources are present.
+5. Prefer concise, accurate answers. Quote short snippets when helpful.
+6. If the user explicitly asks for opinions or summaries beyond the documents, make \
+clear that the answer is reasoning, not from sources."""
+
+
+# Common function words used to guess the user's language for short queries —
+# detect_language() in tagging.py only looks for a few words with surrounding
+# spaces and misses most chat questions, so we use a wider, space-free set here.
+_DE_HINTS = {
+    "der",
+    "die",
+    "das",
+    "und",
+    "ist",
+    "von",
+    "den",
+    "dem",
+    "ein",
+    "eine",
+    "einem",
+    "einen",
+    "welche",
+    "welchem",
+    "welchen",
+    "welcher",
+    "welches",
+    "dokument",
+    "dokumente",
+    "dokumenten",
+    "wird",
+    "wurde",
+    "hat",
+    "haben",
+    "habe",
+    "es",
+    "oder",
+    "auf",
+    "gibt",
+    "wie",
+    "wo",
+    "was",
+    "wer",
+    "warum",
+    "nicht",
+    "mit",
+    "für",
+    "über",
+    "aufgeführt",
+    "aufgefuehrt",
+    "bild",
+    "bilder",
+    "foto",
+    "fotos",
+    "zeigt",
+    "kannst",
+    "mir",
+    "mein",
+    "meine",
+    "sind",
+    "im",
+    "zur",
+    "zum",
+    "auch",
+}
+_EN_HINTS = {
+    "the",
+    "is",
+    "are",
+    "which",
+    "what",
+    "where",
+    "who",
+    "document",
+    "documents",
+    "show",
+    "have",
+    "has",
+    "image",
+    "images",
+    "photo",
+    "photos",
+    "picture",
+    "does",
+    "list",
+    "find",
+    "about",
+    "with",
+    "of",
+    "in",
+    "do",
+    "can",
+    "you",
+}
+_LANG_NAMES = {"de": "German (Deutsch)", "en": "English"}
+
+
+def _detect_lang(text: str) -> str | None:
+    """Best-effort language guess for a chat question (German vs. English)."""
+    t = (text or "").lower()
+    if any(ch in t for ch in "äöüß"):
+        return "de"
+    words = set(re.findall(r"[a-zäöüß]+", t))
+    de = len(words & _DE_HINTS)
+    en = len(words & _EN_HINTS)
+    if de > en:
+        return "de"
+    if en > de:
+        return "en"
+    return None
+
+
+def _lang_directive(question: str) -> str:
+    """An explicit 'answer in <language>' line — the strongest signal we can
+    give a model that otherwise defaults to English."""
+    name = _LANG_NAMES.get(_detect_lang(question) or "")
+    return f"\n\nWrite your entire answer in {name}." if name else ""
 
 
 @dataclass
@@ -66,10 +187,20 @@ def _build_context_block(hits: list[SearchHit], max_chars: int = 8000) -> tuple[
     cites: list[Citation] = []
     used = 0
     for i, h in enumerate(hits, start=1):
-        block = (
-            f"[{i}] {h.filename} (p.{h.page_from}"
-            f"{'-' + str(h.page_to) if h.page_to != h.page_from else ''})\n{h.snippet}\n"
-        )
+        pages = f"p.{h.page_from}" + (f"-{h.page_to}" if h.page_to != h.page_from else "")
+        kind = getattr(h, "source", "") or ""
+        if kind == "image_description":
+            head = (
+                f"[{i}] {h.filename} ({pages}) — IMAGE embedded on this page; "
+                "the text below describes that image:"
+            )
+        elif kind == "table":
+            head = f"[{i}] {h.filename} ({pages}) — TABLE extracted from this page:"
+        elif kind == "ocr_text":
+            head = f"[{i}] {h.filename} ({pages}) — text recognised (OCR) from a scanned page:"
+        else:
+            head = f"[{i}] {h.filename} ({pages})"
+        block = f"{head}\n{h.snippet}\n"
         if used + len(block) > max_chars:
             break
         parts.append(block)
@@ -174,11 +305,14 @@ async def answer_question(
             + "\n\nQUESTION:\n"
             + question
             + "\n\nAnswer using the SOURCES above. Cite with [#]."
+            + _lang_directive(question)
         )
     else:
         prompt_user = (
             "I have no relevant documents indexed for this question. "
-            "Please respond honestly that no source was found.\n\nQUESTION:\n" + question
+            "Please respond honestly that no source was found.\n\nQUESTION:\n"
+            + question
+            + _lang_directive(question)
         )
     messages.append({"role": "user", "content": prompt_user})
 
@@ -277,14 +411,17 @@ async def stream_answer(
                 + context_block
                 + "\n\nQUESTION:\n"
                 + question
-                + "\n\nAnswer using the SOURCES above. Cite with [#].",
+                + "\n\nAnswer using the SOURCES above. Cite with [#]."
+                + _lang_directive(question),
             }
         )
     else:
         messages.append(
             {
                 "role": "user",
-                "content": "No documents are indexed for this question. Be honest about it.\n\n" + question,
+                "content": "No documents are indexed for this question. Be honest about it.\n\n"
+                + question
+                + _lang_directive(question),
             }
         )
 

@@ -146,6 +146,17 @@ def create_app():  # type: ignore[no-untyped-def]
             await start_all_active()
         except Exception as e:
             logger.warning("watcher startup skipped: {}", e)
+        # One-time, idempotent: relabel image-description chunks indexed before
+        # they carried ChunkSource.image_description, so older libraries answer
+        # image questions without a full vision rescan. Off-thread, best-effort.
+        try:
+            import asyncio as _aio
+
+            from app.services.indexer import backfill_image_chunk_sources
+
+            _aio.create_task(_aio.to_thread(backfill_image_chunk_sources))
+        except Exception as e:
+            logger.debug("image-chunk backfill not scheduled: {}", e)
         # Preload the configured models into LM Studio so they're hot before the
         # first scan/chat. Detached + best-effort: never blocks boot, and if LM
         # Studio is down it just logs and moves on.

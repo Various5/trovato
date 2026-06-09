@@ -50,6 +50,52 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def backfill_image_chunk_sources() -> int:
+    """Relabel pre-existing image-description chunks as ``image_description``.
+
+    Before this fix every chunk — including the ones built from a vision/OCR
+    image description — was stored as ``ChunkSource.native_text``, so the RAG
+    layer couldn't tell the model that a source describes an image actually
+    embedded in the document. This walks the stored ``DocumentImage`` rows and
+    relabels the matching chunks in place, so libraries indexed before the fix
+    work without an expensive vision rescan. Idempotent and cheap — it only
+    touches chunks that still match an image description and aren't labelled yet.
+    """
+    relabelled = 0
+    try:
+        with write_session() as session:
+            imgs = session.exec(select(DocumentImage).where(DocumentImage.vision_description != "")).all()
+            if not imgs:
+                return 0
+            want: dict[int, set[str]] = {}
+            for im in imgs:
+                txt = (im.vision_description + "\n" + im.ocr_text).strip()
+                if len(txt) > 40:
+                    want.setdefault(im.document_id, set()).add(txt)
+            if not want:
+                return 0
+            chunks = session.exec(
+                select(DocumentChunk).where(
+                    DocumentChunk.document_id.in_(list(want.keys()))  # type: ignore[attr-defined]
+                )
+            ).all()
+            for c in chunks:
+                if c.source == ChunkSource.image_description:
+                    continue
+                if c.text.strip() in want.get(c.document_id, ()):
+                    c.source = ChunkSource.image_description
+                    if "has:image" not in (c.tags or []):
+                        c.tags = [*(c.tags or []), "has:image"]
+                    session.add(c)
+                    relabelled += 1
+    except Exception as e:
+        logger.debug("image-chunk backfill skipped: {}", e)
+        return 0
+    if relabelled:
+        logger.info("backfill: relabelled {} image-description chunks", relabelled)
+    return relabelled
+
+
 # ---------------------------------------------------------------------------
 # Vision-call concurrency cap
 # ---------------------------------------------------------------------------
@@ -437,13 +483,19 @@ async def index_document(
         lambda: list(chunk_text(all_pages_text, chunk_tokens=s.chunk_size, overlap=s.chunk_overlap))
     )
 
-    # Add image-description chunks too
     from app.ingestion.chunker import Chunk as _C
 
+    # Image-description chunks are kept separate from prose so they can carry
+    # ChunkSource.image_description. The RAG layer relies on that marker to tell
+    # the model "this text describes an image embedded in the document" — which
+    # is what makes "which documents have a photo of X?" answerable instead of
+    # the model insisting it sees no images (they were stored as native_text
+    # before, so the image signal was lost on the way into the prompt).
+    image_chunks: list[_C] = []
     for img in image_rows:
         text = (img.vision_description + "\n" + img.ocr_text).strip()
         if len(text) > 40:
-            chunks.append(
+            image_chunks.append(
                 _C(
                     text=text,
                     page_from=img.page_number,
@@ -490,6 +542,19 @@ async def index_document(
             text=ch.text,
             source=ChunkSource.native_text,
             token_count=ch.token_count,
+        )
+        chunk_records.append(rec)
+        embedding_inputs.append(ch.text)
+    # Image-description chunks — tagged so the RAG layer can flag them as images
+    for ch in image_chunks:
+        rec = DocumentChunk(
+            document_id=doc_id,  # type: ignore[arg-type]
+            page_from=ch.page_from,
+            page_to=ch.page_to,
+            text=ch.text,
+            source=ChunkSource.image_description,
+            token_count=ch.token_count,
+            tags=["has:image"],
         )
         chunk_records.append(rec)
         embedding_inputs.append(ch.text)

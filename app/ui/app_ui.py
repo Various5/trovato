@@ -186,22 +186,180 @@ def open_pdf(document_id: int, page: int | None = None) -> None:
     ui.run_javascript(f"window.open({pdf_url(document_id, page, _media_token())!r}, '_blank')")
 
 
-def highlight_terms(text: str, query: str) -> str:
-    """HTML-escape ``text`` and wrap every query term (>=2 chars) in ``<mark>``.
+# Function words we never highlight — a natural-language chat question
+# ("in welchen dokumenten hat es bilder von einem pool") is mostly these, and
+# marking every one of them turns the snippet into a wall of coloured blocks.
+# Only the meaningful terms (pool, wiese, sia, norm, 103, …) should light up.
+_HL_STOPWORDS = {
+    # German
+    "der",
+    "die",
+    "das",
+    "den",
+    "dem",
+    "des",
+    "ein",
+    "eine",
+    "einem",
+    "einen",
+    "einer",
+    "eines",
+    "und",
+    "oder",
+    "ist",
+    "sind",
+    "war",
+    "wird",
+    "wurde",
+    "hat",
+    "habe",
+    "haben",
+    "es",
+    "im",
+    "an",
+    "am",
+    "auf",
+    "aus",
+    "bei",
+    "bis",
+    "für",
+    "von",
+    "vom",
+    "vor",
+    "mit",
+    "nach",
+    "zu",
+    "zum",
+    "zur",
+    "über",
+    "unter",
+    "sich",
+    "sie",
+    "wie",
+    "wo",
+    "wer",
+    "wann",
+    "warum",
+    "welche",
+    "welcher",
+    "welchem",
+    "welchen",
+    "welches",
+    "dass",
+    "nicht",
+    "auch",
+    "nur",
+    "noch",
+    "wenn",
+    "dieser",
+    "diese",
+    "dieses",
+    "man",
+    "mir",
+    "mein",
+    "meine",
+    "dokument",
+    "dokumente",
+    "dokumenten",
+    "dokuments",
+    "gibt",
+    "kann",
+    "kannst",
+    # English
+    "the",
+    "of",
+    "to",
+    "and",
+    "or",
+    "are",
+    "were",
+    "be",
+    "in",
+    "on",
+    "at",
+    "by",
+    "for",
+    "with",
+    "as",
+    "from",
+    "that",
+    "this",
+    "these",
+    "those",
+    "it",
+    "its",
+    "which",
+    "what",
+    "where",
+    "who",
+    "when",
+    "why",
+    "how",
+    "do",
+    "does",
+    "did",
+    "has",
+    "have",
+    "had",
+    "can",
+    "could",
+    "would",
+    "should",
+    "about",
+    "show",
+    "list",
+    "find",
+    "me",
+    "my",
+    "you",
+    "your",
+    "any",
+    "all",
+    "was",
+    "is",
+    "a",
+    "document",
+    "documents",
+    "image",
+    "images",
+    "picture",
+    "pictures",
+}
 
-    Shared by search results, chat source cards and the in-app viewer so the
-    word the user searched for / asked about is highlighted wherever a snippet is
-    shown. Returns an HTML-safe string — render with ``ui.html``.
+
+def meaningful_terms(query: str) -> list[str]:
+    """Distinct, meaningful (>=2 char, non-stopword) lower-cased query tokens.
+
+    A full-sentence chat question is mostly function words; both the snippet
+    highlighter and the viewer's find-in-document need the same short list of
+    terms that actually matter so they agree on what to mark/match.
+    """
+    import re as _re
+
+    seen: list[str] = []
+    for w in _re.findall(r"\w+", (query or "").lower()):
+        if len(w) >= 2 and w not in _HL_STOPWORDS and w not in seen:
+            seen.append(w)
+    return seen
+
+
+def highlight_terms(text: str, query: str) -> str:
+    """HTML-escape ``text`` and wrap meaningful query terms in ``<mark>``.
+
+    Stopwords and 1-char tokens are dropped so a full-sentence chat question
+    only highlights the words that actually matter. Shared by search results,
+    chat source cards and the in-app viewer. Returns an HTML-safe string —
+    render with ``ui.html``.
     """
     import html as _html
     import re as _re
 
     safe = _html.escape(text or "")
-    words = [w for w in _re.split(r"\s+", (query or "").strip()) if len(w) >= 2]
-    if not words:
+    terms = meaningful_terms(query)
+    if not terms:
         return safe
     try:
-        pattern = _re.compile("(" + "|".join(_re.escape(w) for w in words) + ")", flags=_re.IGNORECASE)
+        pattern = _re.compile("(" + "|".join(_re.escape(w) for w in terms) + ")", flags=_re.IGNORECASE)
         return pattern.sub(lambda m: f"<mark class='ldi-mark'>{m.group(0)}</mark>", safe)
     except _re.error:
         return safe
@@ -4138,19 +4296,23 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 select(_DP).where(_DP.document_id == doc, _DP.page_number == page)
             ).first()
             page_text = (page_row.native_text or page_row.ocr_text or "") if page_row else ""
-            # Find-in-document: pages whose native/OCR text contains the term.
+            # Find-in-document: pages whose native/OCR text contains ANY
+            # meaningful query term. The query may be a whole chat sentence, so
+            # matching the full string verbatim would never hit — OR the terms.
             match_pages: list[int] = []
-            if q.strip():
+            terms = meaningful_terms(q)
+            if terms:
                 from sqlalchemy import or_ as _or
 
-                like = f"%{q.strip()}%"
+                conds = []
+                for term in terms:
+                    like = f"%{term}%"
+                    conds.append(_DP.native_text.ilike(like))
+                    conds.append(_DP.ocr_text.ilike(like))
                 match_pages = list(
                     session.exec(
                         select(_DP.page_number)
-                        .where(
-                            _DP.document_id == doc,
-                            _or(_DP.native_text.ilike(like), _DP.ocr_text.ilike(like)),
-                        )
+                        .where(_DP.document_id == doc, _or(*conds))
                         .order_by(_DP.page_number)
                     ).all()
                 )
