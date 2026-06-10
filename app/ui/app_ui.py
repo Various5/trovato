@@ -2639,11 +2639,37 @@ def register_ui(fastapi_app: FastAPI) -> None:
             breadcrumbs([(t("nav.tags", lang), "/tags"), (f"#{initial_tag}", None)])
         page_header("search.title", lang)
 
-        # Search bar with embedded icon-button
+        # Search bar — an inline Search button plus an overflow (⋯) menu for the
+        # occasional actions (rerank, save, export), so the primary row stays
+        # uncluttered. _go / _save_current / _export are bound lazily (defined
+        # below), and the rerank checkbox lives in the menu (it doesn't dismiss
+        # the menu, so it can be toggled in place).
         with ui.row().classes("w-full gap-2 items-center no-wrap"):
             q = ui.input(t("search.placeholder", lang), value=initial_query).classes("flex-1")
             q.props("autofocus dense outlined")
-            rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
+            ui.button(icon="search", on_click=lambda: _go()).props("unelevated color=primary").tooltip(
+                t("search.go", lang)
+            )
+            with ui.button(icon="more_vert").props("flat dense round").tooltip(t("common.actions", lang)):
+                with ui.menu():
+                    with ui.element("div").classes("q-px-md q-py-sm"):
+                        rerank_toggle = ui.checkbox(t("search.rerank", lang), value=False)
+                    ui.separator()
+                    ui.menu_item(t("search.save", lang), on_click=lambda: _save_current())
+                    ui.menu_item(t("search.btn_csv", lang), on_click=lambda: _export("csv"))
+                    ui.menu_item(t("search.btn_json", lang), on_click=lambda: _export("json"))
+
+        async def _export(fmt: str) -> None:
+            from app.services.exports import search_hits_to_csv, search_hits_to_json
+
+            # Honour the same query + filters + rerank as the on-screen results.
+            await _ensure_universe()
+            hits = _filtered(100)
+            if not hits:
+                ui.notify(t("search.nothing_to_export", lang), color="warning")
+                return
+            payload = search_hits_to_csv(hits) if fmt == "csv" else search_hits_to_json(hits)
+            ui.download(payload.encode("utf-8"), filename=f"search.{fmt}", media_type=f"text/{fmt}")
 
         # Filter state — read by _go() before each search
         filter_state: dict[str, list] = {"source_ids": [], "tags": [], "doc_types": []}
@@ -2905,9 +2931,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         "search.sources",
                         "source_ids",
                         [(sid, nm, c) for sid, nm, c in facets["sources"]],
-                        False,
+                        True,
                     ),
-                    ("search.doc_type", "doc_types", [(dt, dt, c) for dt, c in facets["doc_types"]], False),
+                    ("search.doc_type", "doc_types", [(dt, dt, c) for dt, c in facets["doc_types"]], True),
                     ("search.tags", "tags", [(tn, tn, c) for tn, c in facets["tags"]], True),
                 ]
                 for title_key, kind, items, searchable in groups:
@@ -2915,7 +2941,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         continue
                     n_active = sum(1 for it in items if it[0] in filter_state[kind])
                     title = t(title_key, lang) + (f"  ·  {n_active}" if n_active else "")
-                    with ui.expansion(title, value=True).classes("w-full").props("dense"):
+                    # Collapsed by default — only auto-open a group that has an
+                    # active filter, so the sidebar isn't a wall of checkboxes.
+                    with ui.expansion(title, value=bool(n_active)).classes("w-full").props("dense"):
                         refs: list = []
                         if searchable and len(items) > 8:
 
@@ -2953,8 +2981,6 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 row.set_visibility(False)
 
         async def _go() -> None:
-            import time as _time
-
             # Show skeletons while the (possibly slow) universe loads — embedding
             # + hybrid search can take a moment and the column would go blank.
             out.clear()
@@ -2985,16 +3011,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 with out:
                     empty_state("manage_search", "search.start_title", "search.start_hint", lang)
                 return
-            t0 = _time.perf_counter()
             hits = _filtered(DISPLAY_K)
-            elapsed = _time.perf_counter() - t0
             if search_cache["browse"]:
                 result_summary.text = t("search.browse_count", lang).format(n=len(hits))
             else:
-                result_summary.text = (
-                    t("search.result_count", lang).format(n=len(hits), q=repr(query))
-                    + (" " + t("search.reranked", lang) if rerank_toggle.value else "")
-                    + f" · {elapsed * 1000:.0f} ms"
+                # Plain query, no developer-facing millisecond timing.
+                result_summary.text = t("search.result_count", lang).format(n=len(hits), q=query) + (
+                    " " + t("search.reranked", lang) if rerank_toggle.value else ""
                 )
             with out:
                 if not hits:
@@ -3070,32 +3093,6 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         on_click=lambda did=h.document_id: download_pdf(did),
                                     ).props("dense flat round").tooltip(t("common.download_pdf", lang))
 
-        with ui.row().classes("gap-2"):
-            ui.button(t("search.go", lang), icon="search", on_click=_go).props("color=primary")
-            ui.button(t("search.save", lang), icon="bookmark_add", on_click=_save_current).props("dense")
-
-            async def _export(fmt: str) -> None:
-                from app.services.exports import search_hits_to_csv, search_hits_to_json
-
-                # Honour the same query + filters + rerank as the on-screen results.
-                await _ensure_universe()
-                hits = _filtered(100)
-                if not hits:
-                    ui.notify(t("search.nothing_to_export", lang), color="warning")
-                    return
-                payload = search_hits_to_csv(hits) if fmt == "csv" else search_hits_to_json(hits)
-                ui.download(
-                    payload.encode("utf-8"),
-                    filename=f"search.{fmt}",
-                    media_type=f"text/{fmt}",
-                )
-
-            ui.button(t("search.btn_csv", lang), icon="download", on_click=lambda: _export("csv")).props(
-                "dense"
-            )
-            ui.button(t("search.btn_json", lang), icon="download", on_click=lambda: _export("json")).props(
-                "dense"
-            )
         q.on("keydown.enter", lambda _: _go())
         _refresh_saved()
         # Run once on load: populates the result-driven facet sidebar (library-wide
@@ -3680,35 +3677,35 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 )
 
         def _render_dups(dups) -> None:
-            with section_card(lang, title_key="tags.dups_title", icon="merge_type"):
-                ui.label(t("tags.dups_hint", lang)).classes("text-caption opacity-70")
-                for grp in dups[:12]:
-                    canonical = grp[0]
-                    others = [s for s in grp if s.id != canonical.id]
-                    with ui.row().classes("items-center gap-2 w-full no-wrap"):
-                        ui.label(" / ".join(s.name for s in grp)).classes("text-body2 flex-1 ellipsis")
+            # Body only — rendered inside a "Manage tags" expander by _refresh.
+            ui.label(t("tags.dups_hint", lang)).classes("text-caption opacity-70")
+            for grp in dups[:12]:
+                canonical = grp[0]
+                others = [s for s in grp if s.id != canonical.id]
+                with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                    ui.label(" / ".join(s.name for s in grp)).classes("text-body2 flex-1 ellipsis")
 
-                        def _merge(_c=canonical, _o=others) -> None:
-                            def _do() -> None:
-                                n = merge_tags(_c.id, [s.id for s in _o])
-                                ui.notify(t("tags.merged", lang).format(n=n, name=_c.name), color="positive")
-                                _refresh()
+                    def _merge(_c=canonical, _o=others) -> None:
+                        def _do() -> None:
+                            n = merge_tags(_c.id, [s.id for s in _o])
+                            ui.notify(t("tags.merged", lang).format(n=n, name=_c.name), color="positive")
+                            _refresh()
 
-                            confirm_dialog(
-                                "tags.merge_confirm", "tags.merge_hint", _do, lang, confirm_key="tags.merge"
-                            )
+                        confirm_dialog(
+                            "tags.merge_confirm", "tags.merge_hint", _do, lang, confirm_key="tags.merge"
+                        )
 
-                        ui.button(
-                            t("tags.merge_into", lang).format(name=canonical.name),
-                            icon="merge_type",
-                            on_click=_merge,
-                        ).props("flat dense")
+                    ui.button(
+                        t("tags.merge_into", lang).format(name=canonical.name),
+                        icon="merge_type",
+                        on_click=_merge,
+                    ).props("flat dense")
 
         def _topic_cloud(items) -> None:
             # Compact + screen-fitting: uniform chips (no sprawling font-scaling),
             # a search-within box, and a top-N window with show-all / show-less so
             # a 100-topic library doesn't render one giant unfit row.
-            INITIAL = 30
+            INITIAL = 18
             state = {"q": "", "expanded": False}
             with section_card(lang, title_key="tags.group_topics", icon="sell"):
                 with ui.row().classes("items-center justify-between w-full no-wrap q-mb-xs"):
@@ -3757,19 +3754,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 _draw()
 
         def _pairs_section(pairs) -> None:
-            with section_card(lang, title_key="tags.together_title", icon="hub"):
-                ui.label(t("tags.together_hint", lang)).classes("text-caption opacity-70 q-mb-xs")
-                with ui.row().classes("gap-2 flex-wrap"):
-                    for (a, b), c in pairs:
-                        chip = (
-                            ui.row()
-                            .classes("ldi-pill ldi-pill-success items-center gap-1 no-wrap cursor-pointer")
-                            .style("padding: 3px 10px;")
-                        )
-                        chip.on("click", lambda _a=a: ui.navigate.to(f"/search?tag={quote(_a)}"))
-                        with chip:
-                            ui.label(f"{a}  +  {b}").classes("text-caption")
-                            ui.label(str(c)).classes("opacity-70").style("font-size: 0.75em;")
+            # Body only — rendered inside a "Manage tags" expander by _refresh.
+            ui.label(t("tags.together_hint", lang)).classes("text-caption opacity-70 q-mb-xs")
+            with ui.row().classes("gap-2 flex-wrap"):
+                for (a, b), c in pairs:
+                    chip = (
+                        ui.row()
+                        .classes("ldi-pill ldi-pill-success items-center gap-1 no-wrap cursor-pointer")
+                        .style("padding: 3px 10px;")
+                    )
+                    chip.on("click", lambda _a=a: ui.navigate.to(f"/search?tag={quote(_a)}"))
+                    with chip:
+                        ui.label(f"{a}  +  {b}").classes("text-caption")
+                        ui.label(str(c)).classes("opacity-70").style("font-size: 0.75em;")
 
         def _refresh() -> None:
             container.clear()
@@ -3779,22 +3776,46 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     empty_state("sell", "tags.empty_title", "tags.empty_hint", lang)
                     return
                 help_callout("tags.auto_generated_help", lang)
-                if ov["dups"]:
-                    _render_dups(ov["dups"])
                 topics = ov["groups"].get("topic", [])
                 if topics:
                     _topic_cloud(topics)
-                if ov.get("pairs"):
-                    _pairs_section(ov["pairs"])
-                # System/auto tags (lang:, has:, type: …) tucked away in one card.
+                else:
+                    ui.label(t("tags.no_topics", lang)).classes("text-caption opacity-60 q-pa-sm")
+                # Tag *management* (merge duplicates, co-occurrence, system tags) is
+                # secondary — tuck it behind collapsed expanders so the page is a
+                # quick browse-by-topic by default rather than a wall of sections.
                 sys_kinds = sorted(k for k in ov["groups"] if k != "topic")
-                if sys_kinds:
-                    with section_card(lang, title_key="tags.system_title", icon="tune"):
-                        for kind in sys_kinds:
-                            items = ov["groups"][kind]
-                            with ui.expansion(f"{kind}  ·  {len(items)}").classes("w-full").props("dense"):
-                                for s in items:
-                                    _render_tag_row(s)
+                if ov["dups"] or ov.get("pairs") or sys_kinds:
+                    with section_card(lang, title_key="tags.manage_title", icon="tune"):
+                        if ov["dups"]:
+                            with (
+                                ui.expansion(t("tags.dups_title", lang), icon="merge_type")
+                                .classes("w-full")
+                                .props("dense")
+                            ):
+                                _render_dups(ov["dups"])
+                        if ov.get("pairs"):
+                            with (
+                                ui.expansion(t("tags.together_title", lang), icon="hub")
+                                .classes("w-full")
+                                .props("dense")
+                            ):
+                                _pairs_section(ov["pairs"])
+                        if sys_kinds:
+                            with (
+                                ui.expansion(t("tags.system_title", lang), icon="label")
+                                .classes("w-full")
+                                .props("dense")
+                            ):
+                                for kind in sys_kinds:
+                                    items = ov["groups"][kind]
+                                    with (
+                                        ui.expansion(f"{kind}  ·  {len(items)}")
+                                        .classes("w-full")
+                                        .props("dense")
+                                    ):
+                                        for s in items:
+                                            _render_tag_row(s)
 
         def _delete(tid: int) -> None:
             def _do() -> None:
