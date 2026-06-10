@@ -1,12 +1,12 @@
 ---
 name: Bug report
-about: Report a defect in LocalDoc Intelligence
+about: Report a defect in Trovato
 labels: bug
 ---
 
 **Environment**
 - OS: <Windows 11 / macOS / Linux distro>
-- LocalDoc Intelligence version: <output of `/about` page>
+- Trovato version: <output of `/about` page>
 - Python: <`python --version`>
 - LM Studio version + models in use:
 
@@ -22,5 +22,5 @@ labels: bug
 3. …
 
 **Logs**
-Attach the relevant portion of `%APPDATA%/LocalDocIntelligence/logs/localdoc.log`.
+Attach the relevant portion of `%APPDATA%/Trovato/logs/trovato.log`.
 Redact filenames or PII as needed.

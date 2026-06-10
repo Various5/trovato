@@ -2,7 +2,7 @@
 
 License keys are short signed tokens::
 
-    LDI1.<base64url(payload)>.<base64url(signature)>
+    TRV1.<base64url(payload)>.<base64url(signature)>
 
 The payload is canonical JSON (``{v,id,licensee,plan,issued,expires?}``) and the
 signature is Ed25519 over the *exact* payload bytes the token carries — so there
@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 # scripts/gen_keypair.py; the matching private key never ships with the app.
 PUBLIC_KEY_HEX = "8322487ca522bd3d5f534cc49fe992e87edd9309af974a774348bca6c32b2874"
 
-TOKEN_PREFIX = "LDI1"
+TOKEN_PREFIX = "TRV1"
 PAYLOAD_VERSION = 1
 
 
@@ -129,7 +129,7 @@ def verify_token(
         raw=payload,
     )
     # Validate the (signed) payload version. Defence-in-depth: the version lives
-    # inside the signed bytes, but the LDI1 prefix is not signed, so refuse to
+    # inside the signed bytes, but the TRV1 prefix is not signed, so refuse to
     # honour a payload whose version we don't understand.
     if payload.get("v") != PAYLOAD_VERSION:
         return LicenseStatus(False, "invalid", info)

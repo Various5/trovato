@@ -32,7 +32,7 @@ from app.models import (
 from app.services.search_service import SearchHit, hybrid_search
 from app.utils.logging import logger
 
-SYSTEM_PROMPT = """You are LocalDoc Intelligence, a careful local assistant that answers \
+SYSTEM_PROMPT = """You are Trovato, a careful local assistant that answers \
 questions strictly using the provided document context.
 
 Rules:

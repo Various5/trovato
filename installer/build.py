@@ -4,9 +4,9 @@ Usage:
     python installer/build.py
 
 Output:
-    dist/LocalDocIntelligence/LocalDocIntelligence.exe (+ side-files)
+    dist/Trovato/Trovato.exe (+ side-files)
 
-Afterwards run Inno Setup on installer/localdoc.iss to produce the .exe
+Afterwards run Inno Setup on installer/trovato.iss to produce the .exe
 installer in installer/Output/.
 """
 
@@ -18,9 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "installer" / "localdoc.spec"
+SPEC = ROOT / "installer" / "trovato.spec"
 
 
 def _have_pyinstaller() -> bool:

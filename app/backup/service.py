@@ -64,7 +64,7 @@ def _consistent_db_snapshot(db_path: Path, dest_dir: Path) -> Path:
     import tempfile
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(dir=str(dest_dir))) / "localdoc.db"
+    tmp = Path(tempfile.mkdtemp(dir=str(dest_dir))) / "trovato.db"
     literal = str(tmp).replace("'", "''")  # SQL string literal; double any quote
     con = sqlite3.connect(str(db_path))
     try:
@@ -102,7 +102,7 @@ def create_backup(
         components.add("originals")
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    archive_name = safe_filename(f"localdoc-backup-{ts}.zip")
+    archive_name = safe_filename(f"trovato-backup-{ts}.zip")
     output_path = output_path or (s.backups_path / archive_name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -126,7 +126,7 @@ def create_backup(
         if "db" in components and s.db_path.exists():
             snapshot = _consistent_db_snapshot(s.db_path, s.cache_path)
             try:
-                zf.write(snapshot, arcname="db/localdoc.db")
+                zf.write(snapshot, arcname="db/trovato.db")
             finally:
                 shutil.rmtree(snapshot.parent, ignore_errors=True)
 
@@ -312,8 +312,12 @@ def restore_backup(
             from app.database.engine import reset_engine
 
             tmp_db = s.db_path.with_name(s.db_path.name + ".restore-tmp")
+            # New backups store the DB as db/trovato.db; pre-rename archives used
+            # db/localdoc.db — accept either so older backups still restore.
+            names = set(zf.namelist())
+            db_arc = "db/trovato.db" if "db/trovato.db" in names else "db/localdoc.db"
             try:
-                with zf.open("db/localdoc.db") as src, tmp_db.open("wb") as dst:
+                with zf.open(db_arc) as src, tmp_db.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
                 # Release pooled handles (Windows blocks replace/unlink on open
                 # files); the next get_engine() reconnects to the new DB — no

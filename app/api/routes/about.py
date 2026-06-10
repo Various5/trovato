@@ -42,5 +42,5 @@ def about(_user: User = Depends(login_required)) -> dict[str, Any]:
         "chroma_chunks": collection_size(),
         "license": "MIT",
         "privacy": "All processing is local. No cloud calls unless you point a source at a cloud-sync folder.",
-        "github": "https://github.com/Various5/localdoc-intelligence",
+        "github": "https://github.com/Various5/trovato",
     }

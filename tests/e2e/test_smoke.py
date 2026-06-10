@@ -85,5 +85,5 @@ def test_first_run_wizard_loads(app_server: str) -> None:
         context = browser.new_context()
         page = context.new_page()
         page.goto(app_server, wait_until="domcontentloaded")
-        page.wait_for_selector("text=LocalDoc Intelligence", timeout=10_000)
+        page.wait_for_selector("text=Trovato", timeout=10_000)
         browser.close()

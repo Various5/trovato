@@ -33,9 +33,9 @@ def _crash_dump_dir() -> Path:
     candidates = []
     appdata = os.environ.get("APPDATA")
     if appdata:
-        candidates.append(Path(appdata) / "LocalDocIntelligence")
-    candidates.append(Path.home() / ".localdoc-intelligence")
-    candidates.append(Path(os.environ.get("TEMP", "")) / "LocalDocIntelligence")
+        candidates.append(Path(appdata) / "Trovato")
+    candidates.append(Path.home() / ".trovato")
+    candidates.append(Path(os.environ.get("TEMP", "")) / "Trovato")
     candidates.append(Path.cwd())
     for c in candidates:
         try:
@@ -57,7 +57,7 @@ def _write_crash_dump(exc: BaseException, stage: str) -> Path | None:
         ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         path = dump_dir / f"crash-{ts}.log"
         with path.open("w", encoding="utf-8", errors="replace") as f:
-            f.write("LocalDoc Intelligence — crash dump\n")
+            f.write("Trovato — crash dump\n")
             f.write("=" * 60 + "\n")
             f.write(f"stage:       {stage}\n")
             f.write(f"timestamp:   {_dt.datetime.now().isoformat()}\n")

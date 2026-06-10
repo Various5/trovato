@@ -1,7 +1,7 @@
 # Deployment, Code-Signing & Auto-Update
 
-This document covers the production-grade build pipeline for LocalDoc
-Intelligence on Windows.
+This document covers the production-grade build pipeline for Trovato
+on Windows.
 
 ---
 
@@ -10,7 +10,7 @@ Intelligence on Windows.
 ```powershell
 pip install -e ".[build]"
 python installer/build.py
-# Produces dist/LocalDocIntelligence/LocalDocIntelligence.exe
+# Produces dist/Trovato/Trovato.exe
 ```
 
 For a fully signed installer, follow the steps below.
@@ -34,7 +34,7 @@ You need:
 ```powershell
 signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 ^
   /f "C:\path\to\code-sign.pfx" /p "<password>" ^
-  "dist\LocalDocIntelligence\LocalDocIntelligence.exe"
+  "dist\Trovato\Trovato.exe"
 ```
 
 ### Sign the installer
@@ -44,12 +44,12 @@ After Inno Setup builds the .exe installer:
 ```powershell
 signtool sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 ^
   /f "C:\path\to\code-sign.pfx" /p "<password>" ^
-  "installer\Output\LocalDocIntelligenceSetup-0.1.0.exe"
+  "installer\Output\TrovatoSetup-0.1.0.exe"
 ```
 
 ### Inno Setup auto-sign
 
-Add to `localdoc.iss`:
+Add to `trovato.iss`:
 
 ```ini
 [Setup]
@@ -63,7 +63,7 @@ signed in one go.
 ### Verifying
 
 ```powershell
-signtool verify /pa /v "installer\Output\LocalDocIntelligenceSetup-0.1.0.exe"
+signtool verify /pa /v "installer\Output\TrovatoSetup-0.1.0.exe"
 ```
 
 ---
@@ -76,11 +76,11 @@ download the signed installer themselves.
 
 ### Configure the check endpoint
 
-Add to `%APPDATA%/LocalDocIntelligence/settings.json`:
+Add to `%APPDATA%/Trovato/settings.json`:
 
 ```json
 {
-  "update_check_url": "https://api.github.com/repos/Various5/localdoc-intelligence/releases/latest"
+  "update_check_url": "https://api.github.com/repos/Various5/trovato/releases/latest"
 }
 ```
 
@@ -89,7 +89,7 @@ Any URL returning a JSON body of the form
 ```json
 {
   "version": "0.2.0",
-  "url":     "https://.../LocalDocIntelligenceSetup-0.2.0.exe",
+  "url":     "https://.../TrovatoSetup-0.2.0.exe",
   "notes":   "Release notes here…"
 }
 ```

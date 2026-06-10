@@ -13,7 +13,7 @@ from app.backup import restore_backup
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Restore a LocalDoc Intelligence backup")
+    p = argparse.ArgumentParser(description="Restore a Trovato backup")
     p.add_argument("--input", "-i", required=True, help="Backup archive path")
     p.add_argument("--password", default=None)
     p.add_argument("--components", default=None, help="Comma-separated components to restore")

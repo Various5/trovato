@@ -36,8 +36,8 @@ jobs:
         shell: pwsh
         run: |
           python installer/build.py
-          if (-not (Test-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe")) {
-            Write-Error "PyInstaller did not produce LocalDocIntelligence.exe"
+          if (-not (Test-Path "dist/Trovato/Trovato.exe")) {
+            Write-Error "PyInstaller did not produce Trovato.exe"
             exit 1
           }
 
@@ -54,17 +54,17 @@ jobs:
           $env:LDI_LOG_LEVEL  = "WARNING"
           $env:LDI_NO_WINDOW  = "1"  # don't try to open a desktop window on the CI VM
           $base = "http://127.0.0.1:18765"
-          $exe  = (Resolve-Path "dist/LocalDocIntelligence/LocalDocIntelligence.exe").Path
+          $exe  = (Resolve-Path "dist/Trovato/Trovato.exe").Path
           Write-Host "Launching $exe …"
           $proc = Start-Process -PassThru -FilePath $exe
 
           function Dump-Logs {
               $globs = @(
-                  "$env:APPDATA\LocalDocIntelligence\crash-*.log",
+                  "$env:APPDATA\Trovato\crash-*.log",
                   "$env:RUNNER_TEMP\ldi-smoke\crash-*.log",
                   "$env:RUNNER_TEMP\ldi-smoke\logs\*.log",
-                  "$env:USERPROFILE\.localdoc-intelligence\crash-*.log",
-                  "$env:RUNNER_TEMP\LocalDocIntelligence\crash-*.log"
+                  "$env:USERPROFILE\.trovato\crash-*.log",
+                  "$env:RUNNER_TEMP\Trovato\crash-*.log"
               )
               Get-ChildItem -Path $globs -ErrorAction SilentlyContinue |
                   Sort-Object LastWriteTime -Descending |
@@ -152,8 +152,8 @@ jobs:
           if (-not $version -or $version -eq "main" -or $version -eq "master") {
             $version = "dev-$($env:GITHUB_SHA.Substring(0,7))"
           }
-          $zip = "LocalDocIntelligence-$version-portable-win64.zip"
-          Compress-Archive -Path "dist/LocalDocIntelligence/*" -DestinationPath "dist/$zip"
+          $zip = "Trovato-$version-portable-win64.zip"
+          Compress-Archive -Path "dist/Trovato/*" -DestinationPath "dist/$zip"
           echo "ARTIFACT_ZIP=dist/$zip" >> $env:GITHUB_ENV
           echo "VERSION=$version" >> $env:GITHUB_ENV
 
@@ -164,7 +164,7 @@ jobs:
       - name: Build Inno Setup installer
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\localdoc.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\trovato.iss
           $exe = Get-ChildItem installer\Output\*.exe | Select-Object -First 1
           if (-not $exe) {
             Write-Error "Inno Setup produced no .exe"
@@ -179,7 +179,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: LocalDocIntelligence-${{ env.VERSION }}
+          name: Trovato-${{ env.VERSION }}
           path: |
             ${{ env.ARTIFACT_ZIP }}
             ${{ env.INSTALLER_EXE }}

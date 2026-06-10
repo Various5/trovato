@@ -49,7 +49,7 @@ def setup_logging() -> None:
     try:
         Path(s.logs_path).mkdir(parents=True, exist_ok=True)
         logger.add(
-            s.logs_path / "localdoc.log",
+            s.logs_path / "trovato.log",
             level=s.log_level,
             rotation="10 MB",
             retention=5,
@@ -60,7 +60,7 @@ def setup_logging() -> None:
         )
     except Exception as e:  # pragma: no cover — defensive
         try:
-            print(f"[localdoc] file log disabled: {e}", file=sys.__stderr__ or sys.stderr)
+            print(f"[trovato] file log disabled: {e}", file=sys.__stderr__ or sys.stderr)
         except Exception:
             pass
 

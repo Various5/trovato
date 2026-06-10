@@ -1,4 +1,4 @@
-# PyInstaller spec for LocalDoc Intelligence.
+# PyInstaller spec for Trovato.
 # Run via `python installer/build.py`.
 
 # -*- mode: python ; coding: utf-8 -*-
@@ -142,7 +142,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="LocalDocIntelligence",
+    name="Trovato",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -158,5 +158,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="LocalDocIntelligence",
+    name="Trovato",
 )

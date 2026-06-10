@@ -1,4 +1,4 @@
-"""Generate the Ed25519 keypair used to sign LocalDoc Intelligence license keys.
+"""Generate the Ed25519 keypair used to sign Trovato license keys.
 
 Run this ONCE. It writes the PRIVATE key to a file OUTSIDE the repo (keep it
 safe and backed up — anyone with it can mint valid license keys) and prints the

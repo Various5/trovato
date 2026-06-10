@@ -71,7 +71,7 @@ def _seed_document(path_str: str, content_hash: str) -> int:
 def test_db_backup_captures_recent_writes(tmp_path: Path) -> None:
     """The WAL checkpoint means a just-written row is in the archived db file.
 
-    Pre-fix the backup copied localdoc.db but not its -wal sidecar, so a row
+    Pre-fix the backup copied trovato.db but not its -wal sidecar, so a row
     still in the WAL could be silently missing from the backup.
     """
     _require_sqlite()
@@ -84,7 +84,7 @@ def test_db_backup_captures_recent_writes(tmp_path: Path) -> None:
 
     # Read the archived DB directly (independent of the live engine).
     with zipfile.ZipFile(out) as zf:
-        data = zf.read("db/localdoc.db")
+        data = zf.read("db/trovato.db")
     extracted = tmp_path / "extracted.db"
     extracted.write_bytes(data)
     con = sqlite3.connect(str(extracted))

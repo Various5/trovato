@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "localdoc-intelligence"
-version = "0.6.6"
-description = "LocalDoc Intelligence — local PDF indexing, OCR, image analysis, semantic search and chat over your documents. 100% local via LM Studio."
+name = "trovato"
+version = "0.7.0"
+description = "Trovato — local PDF indexing, OCR, image analysis, semantic search and chat over your documents. 100% local via LM Studio."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
@@ -97,7 +97,7 @@ ocr-paddle = [
 ]
 
 [project.scripts]
-localdoc = "app.main:run"
+trovato = "app.main:run"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

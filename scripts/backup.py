@@ -13,7 +13,7 @@ from app.backup import BACKUP_COMPONENTS, create_backup
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Create a LocalDoc Intelligence backup")
+    p = argparse.ArgumentParser(description="Create a Trovato backup")
     p.add_argument("--output", "-o", default=None, help="Output ZIP path")
     p.add_argument(
         "--include",

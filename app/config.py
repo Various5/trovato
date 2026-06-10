@@ -16,8 +16,8 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-APP_NAME = "LocalDocIntelligence"
-APP_DISPLAY_NAME = "LocalDoc Intelligence"
+APP_NAME = "Trovato"
+APP_DISPLAY_NAME = "Trovato"
 
 
 def default_data_dir() -> Path:
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return self.data_path / "localdoc.db"
+        return self.data_path / "trovato.db"
 
     @property
     def chroma_path(self) -> Path:

@@ -11,7 +11,7 @@ from __future__ import annotations
 _DICT: dict[str, dict[str, str]] = {
     "en": {
         # generic
-        "common.welcome": "Welcome to LocalDoc Intelligence",
+        "common.welcome": "Welcome to Trovato",
         "common.username": "Username",
         "common.password": "Password",
         "common.confirm_password": "Confirm password",
@@ -400,7 +400,7 @@ _DICT: dict[str, dict[str, str]] = {
         "cmd.foot_close": "close",
         "bc.home": "Home",
         # licensing
-        "license.activate_title": "Activate LocalDoc Intelligence",
+        "license.activate_title": "Activate Trovato",
         "license.activate_intro": "Paste your license key below to unlock the app.",
         "license.key_label": "License key",
         "license.activate_btn": "Activate",
@@ -451,7 +451,7 @@ _DICT: dict[str, dict[str, str]] = {
         "status.aborted": "Aborted",
         "status.error": "Error",
         # ---- Guided setup wizard ----
-        "setup.welcome": "Welcome to LocalDoc Intelligence",
+        "setup.welcome": "Welcome to Trovato",
         "setup.intro": "This quick setup creates your account, connects to LM Studio, and indexes your first folder so search and chat work right away.",
         "setup.prereq_title": "Before you begin",
         "setup.prereq_body": "**You'll need [LM Studio](https://lmstudio.ai) running locally.**\n\n1. Install LM Studio and open it.\n2. Go to the **Developer** tab and click **Start Server**.\n3. Load **two models** — a **chat** model and an **embedding** model. Load the embedding one with its **type set to *Embedding***.\n\nThe steps below will test the connection and pick your models for you.",
@@ -468,7 +468,7 @@ _DICT: dict[str, dict[str, str]] = {
         "setup.account_intro": "Create your administrator account.",
         "setup.create_account": "Create account",
         "setup.recovery_ack": "I've saved my recovery key",
-        "setup.connect_intro": "LocalDoc Intelligence uses your local LM Studio server for embeddings and chat.",
+        "setup.connect_intro": "Trovato uses your local LM Studio server for embeddings and chat.",
         "setup.test_connection": "Test connection",
         "setup.testing": "Contacting LM Studio…",
         "setup.connect_ok": "Connected — {n} model(s) loaded.",
@@ -485,7 +485,7 @@ _DICT: dict[str, dict[str, str]] = {
         "setup.embedding_fix": "Load this model as an *Embedding* model in LM Studio (Developer → set its type to Embedding), then validate again.",
         "setup.embedding_skip": "Skip anyway",
         "setup.embedding_skip_warn": "Search and chat won't work until a working embedding model is set in Settings. Your first scan will only catalog file names.",
-        "setup.hardware_intro": "LocalDoc Intelligence auto-tunes to your machine — override the profile if you like.",
+        "setup.hardware_intro": "Trovato auto-tunes to your machine — override the profile if you like.",
         "setup.detected": "Detected",
         "setup.perf_profile": "Performance profile",
         "setup.folder_intro": "Add a folder of PDFs to index now. You can add more later under Sources.",
@@ -502,7 +502,7 @@ _DICT: dict[str, dict[str, str]] = {
         "help.title": "Help & Getting Started",
         "help.prereq_title": "Prerequisites",
         "help.models_title": "Loading models in LM Studio",
-        "help.models_body": "LocalDoc Intelligence needs **two** models loaded in LM Studio:\n\n- a **chat** model (for chat/answers and vision), and\n- an **embedding** model — loaded with its **type set to *Embedding*** (not Chat).\n\nIn LM Studio → **Developer**: Start Server, load each model, and set the embedding model's type to *Embedding*. Verify at `http://localhost:1234/v1/models`.",
+        "help.models_body": "Trovato needs **two** models loaded in LM Studio:\n\n- a **chat** model (for chat/answers and vision), and\n- an **embedding** model — loaded with its **type set to *Embedding*** (not Chat).\n\nIn LM Studio → **Developer**: Start Server, load each model, and set the embedding model's type to *Embedding*. Verify at `http://localhost:1234/v1/models`.",
         "help.scanning_title": "Scanning & indexing",
         "help.scanning_body": "Add folders under **Sources**, then scan. Phases:\n\n- **Quick** — catalog file names fast (no models needed).\n- **Text** — extract PDF text + embeddings (needs an embedding model).\n- **OCR** — adds OCR for scanned/low-text pages.\n- **Vision** — adds image descriptions (needs a vision model).",
         "help.search_title": "Search & chat",
@@ -590,7 +590,7 @@ _DICT: dict[str, dict[str, str]] = {
     },
     "de": {
         # generic
-        "common.welcome": "Willkommen bei LocalDoc Intelligence",
+        "common.welcome": "Willkommen bei Trovato",
         "common.username": "Benutzername",
         "common.password": "Passwort",
         "common.confirm_password": "Passwort bestätigen",
@@ -981,7 +981,7 @@ _DICT: dict[str, dict[str, str]] = {
         "cmd.foot_close": "schließen",
         "bc.home": "Start",
         # licensing
-        "license.activate_title": "LocalDoc Intelligence aktivieren",
+        "license.activate_title": "Trovato aktivieren",
         "license.activate_intro": "Füge unten deinen Lizenzschlüssel ein, um die App freizuschalten.",
         "license.key_label": "Lizenzschlüssel",
         "license.activate_btn": "Aktivieren",
@@ -1032,7 +1032,7 @@ _DICT: dict[str, dict[str, str]] = {
         "status.aborted": "Abgebrochen",
         "status.error": "Fehler",
         # ---- Guided setup wizard ----
-        "setup.welcome": "Willkommen bei LocalDoc Intelligence",
+        "setup.welcome": "Willkommen bei Trovato",
         "setup.intro": "Diese kurze Einrichtung legt dein Konto an, verbindet LM Studio und indexiert deinen ersten Ordner, damit Suche und Chat sofort funktionieren.",
         "setup.prereq_title": "Bevor du startest",
         "setup.prereq_body": "**Du brauchst [LM Studio](https://lmstudio.ai), das lokal läuft.**\n\n1. Installiere LM Studio und öffne es.\n2. Gehe zum Tab **Developer** und klicke **Start Server**.\n3. Lade **zwei Modelle** — ein **Chat**-Modell und ein **Embedding**-Modell. Lade das Embedding-Modell mit dem **Typ *Embedding***.\n\nDie Schritte unten testen die Verbindung und wählen deine Modelle aus.",
@@ -1049,7 +1049,7 @@ _DICT: dict[str, dict[str, str]] = {
         "setup.account_intro": "Lege dein Administrator-Konto an.",
         "setup.create_account": "Konto erstellen",
         "setup.recovery_ack": "Ich habe meinen Wiederherstellungsschlüssel gespeichert",
-        "setup.connect_intro": "LocalDoc Intelligence nutzt deinen lokalen LM-Studio-Server für Embeddings und Chat.",
+        "setup.connect_intro": "Trovato nutzt deinen lokalen LM-Studio-Server für Embeddings und Chat.",
         "setup.test_connection": "Verbindung testen",
         "setup.testing": "Kontaktiere LM Studio…",
         "setup.connect_ok": "Verbunden — {n} Modell(e) geladen.",
@@ -1066,7 +1066,7 @@ _DICT: dict[str, dict[str, str]] = {
         "setup.embedding_fix": "Lade dieses Modell in LM Studio als *Embedding*-Modell (Developer → Typ auf Embedding setzen) und prüfe erneut.",
         "setup.embedding_skip": "Trotzdem überspringen",
         "setup.embedding_skip_warn": "Suche und Chat funktionieren erst, wenn in den Einstellungen ein funktionierendes Embedding-Modell gesetzt ist. Dein erster Scan katalogisiert nur Dateinamen.",
-        "setup.hardware_intro": "LocalDoc Intelligence passt sich automatisch an deinen Rechner an — du kannst das Profil überschreiben.",
+        "setup.hardware_intro": "Trovato passt sich automatisch an deinen Rechner an — du kannst das Profil überschreiben.",
         "setup.detected": "Erkannt",
         "setup.perf_profile": "Leistungsprofil",
         "setup.folder_intro": "Füge jetzt einen Ordner mit PDFs hinzu. Weitere kannst du später unter Quellen hinzufügen.",
@@ -1083,7 +1083,7 @@ _DICT: dict[str, dict[str, str]] = {
         "help.title": "Hilfe & Erste Schritte",
         "help.prereq_title": "Voraussetzungen",
         "help.models_title": "Modelle in LM Studio laden",
-        "help.models_body": "LocalDoc Intelligence benötigt **zwei** in LM Studio geladene Modelle:\n\n- ein **Chat**-Modell (für Chat/Antworten und Vision) und\n- ein **Embedding**-Modell — geladen mit dem **Typ *Embedding*** (nicht Chat).\n\nIn LM Studio → **Developer**: Server starten, beide Modelle laden und beim Embedding-Modell den Typ auf *Embedding* setzen. Prüfe unter `http://localhost:1234/v1/models`.",
+        "help.models_body": "Trovato benötigt **zwei** in LM Studio geladene Modelle:\n\n- ein **Chat**-Modell (für Chat/Antworten und Vision) und\n- ein **Embedding**-Modell — geladen mit dem **Typ *Embedding*** (nicht Chat).\n\nIn LM Studio → **Developer**: Server starten, beide Modelle laden und beim Embedding-Modell den Typ auf *Embedding* setzen. Prüfe unter `http://localhost:1234/v1/models`.",
         "help.scanning_title": "Scannen & Indexieren",
         "help.scanning_body": "Füge Ordner unter **Quellen** hinzu und scanne dann. Phasen:\n\n- **Schnell** — Dateinamen schnell katalogisieren (keine Modelle nötig).\n- **Text** — PDF-Text + Embeddings extrahieren (Embedding-Modell nötig).\n- **OCR** — OCR für gescannte/textarme Seiten.\n- **Vision** — Bildbeschreibungen (Vision-Modell nötig).",
         "help.search_title": "Suche & Chat",

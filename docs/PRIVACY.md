@@ -1,6 +1,6 @@
 # Privacy
 
-LocalDoc Intelligence runs **entirely on your machine**:
+Trovato runs **entirely on your machine**:
 
 - Documents stay on local disks. No file content is uploaded.
 - The chat LLM, vision model, and embeddings are served by **LM Studio**

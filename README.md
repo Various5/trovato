@@ -1,13 +1,13 @@
-# LocalDoc Intelligence
+# Trovato
 
 > Local, private PDF intelligence: index thousands of PDFs, run OCR on scans,
 > describe embedded images with a local vision model, search semantically, and
 > chat over your documents — **100 % offline** via [LM Studio](https://lmstudio.ai/).
 
-PaperVault is the working repository name; the product ships as **LocalDoc
-Intelligence**.
+**Trovato** (Italian for *found*) is a local-first document intelligence
+desktop app.
 
-**Status: v0.6.6 (stable).** Feature-complete and stabilising toward 1.0. The
+**Status: v0.7.0 (stable).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 Unlocked with a signed key — see *Licensing / activation* below.
 
@@ -130,8 +130,8 @@ See [`installer/README.md`](installer/README.md). Short version:
 
 ```bash
 pip install -e ".[build]"
-python installer/build.py            # produces dist/LocalDocIntelligence/
-# Then run Inno Setup on installer/localdoc.iss
+python installer/build.py            # produces dist/Trovato/
+# Then run Inno Setup on installer/trovato.iss
 ```
 
 ## Backup & Restore
@@ -184,6 +184,6 @@ MIT — see [LICENSE](LICENSE).
 ## About
 
 - Author: **Varous 555** · `varous555@gmail.com` · `@varous555`
-- GitHub: <https://github.com/Various5/localdoc-intelligence>
+- GitHub: <https://github.com/Various5/trovato>
 - Privacy: all processing is local. The app never contacts the internet
   unless you point a source at a cloud-sync folder you own.

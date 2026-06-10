@@ -68,8 +68,8 @@
 
 ## Storage
 
-- `%APPDATA%/LocalDocIntelligence/`
-  - `localdoc.db` — main SQLite DB (WAL mode, foreign keys on)
+- `%APPDATA%/Trovato/`
+  - `trovato.db` — main SQLite DB (WAL mode, foreign keys on)
   - `chroma/` — persistent vector store
   - `cache/pages/` — rendered page PNGs (lazy)
   - `cache/images/` — embedded image extracts

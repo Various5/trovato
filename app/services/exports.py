@@ -69,7 +69,7 @@ def chat_to_pdf(chat_id: int) -> bytes:
 
     _write(title, size=18, bold=True)
     cursor_y += 6
-    _write(f"Exported with LocalDoc Intelligence — {len(msg_data)} message(s)", size=9)
+    _write(f"Exported with Trovato — {len(msg_data)} message(s)", size=9)
     cursor_y += 14
 
     for role, content, sources in msg_data:

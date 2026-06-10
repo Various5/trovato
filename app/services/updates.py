@@ -20,7 +20,7 @@ from app import __version__
 from app.config import get_settings, load_user_settings
 from app.utils.logging import logger
 
-DEFAULT_UPDATE_URL = "https://api.github.com/repos/Various5/localdoc-intelligence/releases/latest"
+DEFAULT_UPDATE_URL = "https://api.github.com/repos/Various5/trovato/releases/latest"
 INSTALLER_ASSET_HINTS = ("installer", "setup", ".exe")
 
 # release (padded to 4 parts), pre-release rank, pre-release number
@@ -89,7 +89,7 @@ async def check_for_update(timeout: float = 6.0) -> UpdateInfo:
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
-            headers={"User-Agent": f"LocalDoc-Intelligence/{__version__}"},
+            headers={"User-Agent": f"Trovato/{__version__}"},
         ) as client:
             r = await client.get(url)
             r.raise_for_status()

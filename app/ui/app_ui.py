@@ -4759,7 +4759,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         page_header("logs.title", lang)
         help_callout("logs.tail_hint", lang)
         s = get_settings()
-        log_file = s.logs_path / "localdoc.log"
+        log_file = s.logs_path / "trovato.log"
         if log_file.exists():
             try:
                 text_blob = log_file.read_text(encoding="utf-8", errors="replace")[-20_000:]
@@ -5272,9 +5272,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(f"{t('about.author', lang)}: {__author__}")
             ui.label(f"{t('about.contact', lang)}: {__contact__}")
             ui.label(f"{t('about.handle', lang)}: {__handle__}")
-            ui.link(
-                t("about.github", lang), "https://github.com/Various5/localdoc-intelligence", new_tab=True
-            )
+            ui.link(t("about.github", lang), "https://github.com/Various5/trovato", new_tab=True)
             ui.separator().classes("q-my-md")
             ui.label(t("about.license", lang)).classes("text-caption")
             ui.label(t("about.privacy_note", lang)).classes("text-caption opacity-70")

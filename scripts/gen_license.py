@@ -1,4 +1,4 @@
-"""Mint a LocalDoc Intelligence license key (vendor-side).
+"""Mint a Trovato license key (vendor-side).
 
 Signs a license payload with your PRIVATE key (created by scripts/gen_keypair.py)
 and prints the key to hand to a customer. The shipped app holds only the public

@@ -2,7 +2,7 @@
 
 ## Threat model
 
-LocalDoc Intelligence is a **local single-tenant** desktop application. The
+Trovato is a **local single-tenant** desktop application. The
 threat model focuses on:
 
 - **Compromised LM Studio endpoint** — by default the app only talks to
@@ -38,6 +38,6 @@ threat model focuses on:
 
 ## Reporting a vulnerability
 
-Mail **varous555@gmail.com** with subject "LocalDoc Intelligence security".
+Mail **varous555@gmail.com** with subject "Trovato security".
 We aim to acknowledge within 7 days. Please give us 30 days to ship a fix
 before public disclosure where possible.
