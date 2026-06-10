@@ -43,8 +43,8 @@ def test_api_blocked_when_unlicensed(client, monkeypatch):
     assert client.get("/api/documents").status_code == 403
     assert client.post("/api/search", json={"query": "x"}).status_code == 403
     assert client.get("/api/documents/1/file").status_code == 403
-    # Liveness/auth stay open so login + health checks work while locked.
-    assert client.get("/api/health").status_code == 200
+    # Liveness/auth stay open so login + the public liveness probe work while locked.
+    assert client.get("/api/health/ping").status_code == 200
 
 
 def test_api_open_when_licensed(client, monkeypatch):

@@ -225,12 +225,15 @@ def create_app():  # type: ignore[no-untyped-def]
         max_age=90 * 24 * 3600,
     )
 
-    cors_origins = ["http://localhost", "http://127.0.0.1"]
-    if s.allow_lan:
-        cors_origins.append("*")
+    # CORS: the app is single-origin (the UI is served from the same host as the
+    # API), so same-origin requests never need CORS approval. We therefore only
+    # allow the localhost dev origins and NEVER a credentialed wildcard — the old
+    # `["*"]` + allow_credentials reflected any attacker Origin back with
+    # Access-Control-Allow-Credentials, enabling credentialed cross-site reads on
+    # sibling-domain/tunnel deployments.
     fastapi_app.add_middleware(
         CORSMiddleware,
-        allow_origins=cors_origins,
+        allow_origins=["http://localhost", "http://127.0.0.1"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -254,6 +257,27 @@ def create_app():  # type: ignore[no-untyped-def]
             if not licensing.is_activated():
                 return JSONResponse({"detail": "license required"}, status_code=403)
         return await call_next(request)
+
+    # Security middleware: CSRF protection + hardening headers. Browsers attach
+    # an Origin header on cross-site requests; a mismatch on a state-changing
+    # /api method is a CSRF attempt (the victim's cookie would otherwise be
+    # replayed by an attacker page), so we reject it. Non-browser API clients
+    # omit Origin and carry no ambient cookie, so they're unaffected.
+    import urllib.parse as _urlparse
+
+    _unsafe_methods = {"POST", "PUT", "PATCH", "DELETE"}
+
+    @fastapi_app.middleware("http")
+    async def _security(request, call_next):  # type: ignore[no-untyped-def]
+        if request.method in _unsafe_methods and request.url.path.startswith("/api/"):
+            origin = request.headers.get("origin")
+            if origin and _urlparse.urlsplit(origin).netloc != request.headers.get("host", ""):
+                return JSONResponse({"detail": "cross-origin request blocked"}, status_code=403)
+        resp = await call_next(request)
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        return resp
 
     fastapi_app.include_router(api_router)
     register_ui(fastapi_app)

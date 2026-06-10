@@ -58,7 +58,13 @@ from app.utils.i18n import SUPPORTED_LANGUAGES, t
 from app.utils.logging import logger
 from app.utils.secret_store import delete_secret, get_secret, put_secret
 
-REMEMBER_SECRET_NAME = "ui_login_remember"
+REMEMBER_SECRET_NAME = "ui_login_remember"  # legacy encrypted creds — scrubbed on login
+# Per-browser remembered USERNAME (app.storage.user is keyed to a per-browser
+# cookie). We deliberately never store the password and never auto-login: the
+# long-lived session cookie already keeps you signed in between visits, and a
+# stored/auto-filled password is a credential-leak + privilege-escalation risk on
+# a LAN/WAN-exposed instance.
+REMEMBER_USERNAME_KEY = "remember_username"
 
 
 def _classify_model(mid: str) -> str:
@@ -1005,22 +1011,11 @@ def _layout(user: User, current: str) -> bool:
 
 
 def _do_logout() -> None:
-    # Clear only the auth/session key — NOT storage.user.clear(), which also
-    # wiped UI prefs like dismissed update banners (they'd reappear on re-login).
-    try:
-        nicegui_app.storage.user.pop(SESSION_USER_KEY, None)
-    except Exception as e:
-        logger.warning("logout: clearing session failed: {}", e)
-    # Don't wipe the saved credentials on logout — but disable auto-login so
-    # the user explicitly clicks "Sign in" once before being auto-signed back.
-    try:
-        stored = get_secret(REMEMBER_SECRET_NAME)
-        if stored and stored.get("auto"):
-            stored["auto"] = False
-            put_secret(REMEMBER_SECRET_NAME, stored)
-    except Exception as e:
-        logger.warning("logout: disabling auto-login failed: {}", e)
-    ui.navigate.to("/login")
+    # Route through the /logout PAGE so the teardown runs during a page build,
+    # where app.storage.browser (the bridged API session cookie) is writable —
+    # clearing it in this click handler would silently no-op and leave the REST
+    # API authenticated after "logout".
+    ui.navigate.to("/logout")
 
 
 # ---------------------------------------------------------------------------
@@ -1042,22 +1037,19 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         # Use browser-language as a hint until the user logs in.
         ph_lang = "en"
-        # Pre-fill from the encrypted credential store. This survives WebView2
-        # cookie resets and a moved/uninstalled+reinstalled app.
-        stored = get_secret(REMEMBER_SECRET_NAME) or {}
-        remembered_user = stored.get("username", "")
-        remembered_pw = stored.get("password", "")
-        auto_login = bool(stored.get("auto", False))
-
-        # If credentials are stored and "auto" is set, try to log in silently
-        # before painting the form so the user doesn't see it at all.
-        if auto_login and remembered_user and remembered_pw:
-            with session_scope() as session:
-                u = session.exec(select(User).where(User.username == remembered_user)).first()
-                if u and verify_password(remembered_pw, u.password_hash):
-                    nicegui_app.storage.user[SESSION_USER_KEY] = u.id
-                    ui.navigate.to("/")
-                    return
+        # SECURITY: we never store/auto-fill the password and never auto-login.
+        # The session cookie already keeps you signed in between visits; "remember
+        # me" only pre-fills the USERNAME on THIS browser (app.storage.user is
+        # per-browser). A fresh/WAN client inherits nothing. Scrub any legacy
+        # encrypted credential blob (older builds stored the cleartext password).
+        try:
+            delete_secret(REMEMBER_SECRET_NAME)
+        except Exception:
+            pass
+        try:
+            remembered_user = str(nicegui_app.storage.user.get(REMEMBER_USERNAME_KEY, "") or "")
+        except Exception:
+            remembered_user = ""
 
         with (
             ui.column().classes("w-full items-center justify-center p-4").style("min-height: 100vh"),
@@ -1065,20 +1057,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
         ):
             ui.label(t("login.title", ph_lang)).classes("text-h5 q-mb-md ldi-primary")
             username = ui.input(t("common.username", ph_lang), value=remembered_user).classes("w-full")
+            # The password is NEVER pre-filled — it would sit in the DOM for anyone
+            # who opens /login on a shared/exposed instance.
             password = ui.input(
                 t("common.password", ph_lang),
-                value=remembered_pw,
                 password=True,
                 password_toggle_button=True,
             ).classes("w-full")
             remember = ui.checkbox(
-                "Remember username & password on this device",
+                "Remember my username on this device",
                 value=bool(remembered_user),
             ).classes("q-mt-sm")
-            auto = ui.checkbox(
-                "Sign in automatically next time",
-                value=auto_login,
-            ).classes("q-mt-xs")
             err = ui.label("").classes("text-negative q-mt-sm")
 
             def _login() -> None:
@@ -1107,21 +1096,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         return
                     record_success(ip, uname)
                     nicegui_app.storage.user[SESSION_USER_KEY] = u.id
-                # Encrypted credential persistence — only if the user opted in.
+                # Remember ONLY the username on this browser — never the password.
                 try:
                     if remember.value:
-                        put_secret(
-                            REMEMBER_SECRET_NAME,
-                            {
-                                "username": username.value,
-                                "password": password.value,
-                                "auto": bool(auto.value),
-                            },
-                        )
+                        nicegui_app.storage.user[REMEMBER_USERNAME_KEY] = uname
                     else:
-                        delete_secret(REMEMBER_SECRET_NAME)
+                        nicegui_app.storage.user.pop(REMEMBER_USERNAME_KEY, None)
                 except Exception as e:
-                    logger.warning("login: persisting remember-me failed: {}", e)
+                    logger.warning("login: remember-username failed: {}", e)
                 ui.navigate.to("/")
 
             ui.button(t("btn.login", ph_lang), on_click=_login).props("color=primary").classes(
@@ -1129,6 +1111,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
             )
             password.on("keydown.enter", lambda _: _login())
             ui.link(t("login.forgot", ph_lang), "/recover").classes("text-caption q-mt-sm")
+
+    @ui.page("/logout")
+    def page_logout() -> None:
+        # Full sign-out — runs during a page build so app.storage.browser (the
+        # REST API's session cookie) is writable. The old UI logout cleared only
+        # app.storage.user, leaving the API authenticated.
+        try:
+            nicegui_app.storage.user.pop(SESSION_USER_KEY, None)
+            nicegui_app.storage.user.pop(REMEMBER_USERNAME_KEY, None)
+        except Exception as e:
+            logger.warning("logout: clearing ui session failed: {}", e)
+        try:
+            nicegui_app.storage.browser.pop(SESSION_USER_KEY, None)
+        except Exception as e:
+            logger.warning("logout: clearing api session failed: {}", e)
+        ui.navigate.to("/login")
 
     @ui.page("/activate")
     def page_activate() -> None:
@@ -1839,7 +1837,6 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         ui.label(f"· {job.current_file}").classes("ellipsis").style("max-width: 380px;")
 
         def _show_credentials_dialog(source_id: int, source_type: str, default_path: str) -> None:
-            from app.utils.secret_store import get_secret, put_secret
 
             existing = get_secret(f"source-{source_id}") or {}
             with ui.dialog() as dialog, ui.card().classes("w-[460px] p-4"):

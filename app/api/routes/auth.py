@@ -136,7 +136,18 @@ def change_password(
 
 
 @router.post("/recover")
-def recover(body: RecoveryBody, session: Session = Depends(get_session)) -> dict:
+def recover(body: RecoveryBody, request: Request, session: Session = Depends(get_session)) -> dict:
+    # Rate-limit like login — recover is unauthenticated and each attempt forces
+    # a memory-hard Argon2 verify, so without throttling it's a CPU/RAM DoS.
+    ip = request.client.host if request.client else "unknown"
+    bucket = "recover:" + body.username
+    locked, retry_after = is_locked(ip, bucket)
+    if locked:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"too many attempts; retry in {int(retry_after)}s",
+            headers={"Retry-After": str(int(retry_after))},
+        )
     ok = reset_password_with_recovery(
         session,
         username=body.username,
@@ -144,5 +155,7 @@ def recover(body: RecoveryBody, session: Session = Depends(get_session)) -> dict
         new_password=body.new_password,
     )
     if not ok:
+        record_failure(ip, bucket)
         raise HTTPException(status_code=400, detail="invalid recovery")
+    record_success(ip, bucket)
     return {"ok": True}

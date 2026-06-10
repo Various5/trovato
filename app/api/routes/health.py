@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlmodel import select
 
 from app import __version__
-from app.config import get_settings
+from app.auth.security import login_required
 from app.database import session_scope
-from app.models import Chat, Document, DocumentChunk
+from app.models import Chat, Document, DocumentChunk, User
 from app.vectorstore import collection_size
 
 router = APIRouter()
@@ -25,8 +25,9 @@ def ping() -> dict[str, Any]:
 
 
 @router.get("")
-def health() -> dict[str, Any]:
-    s = get_settings()
+def health(_user: User = Depends(login_required)) -> dict[str, Any]:
+    # Auth-gated: the library counts (and previously the host data_dir) are
+    # reconnaissance for an unauthenticated attacker. Use /ping for liveness.
     with session_scope() as session:
         doc_count = session.exec(select(func.count()).select_from(Document)).one()
         chunk_count = session.exec(select(func.count()).select_from(DocumentChunk)).one()
@@ -34,7 +35,6 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "version": __version__,
-        "data_dir": str(s.data_path),
         "documents": doc_count,
         "chunks": chunk_count,
         "chats": chat_count,

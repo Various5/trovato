@@ -329,12 +329,18 @@ def restore_backup(
             try:
                 shutil.rmtree(s.chroma_path, ignore_errors=True)
                 s.chroma_path.mkdir(parents=True, exist_ok=True)
+                base = s.chroma_path.resolve()
                 for name in zf.namelist():
                     if name.startswith("vector/"):
                         rel = name[len("vector/") :]
                         if not rel:
                             continue
-                        target = s.chroma_path / rel
+                        target = (s.chroma_path / rel).resolve()
+                        # Zip-Slip guard: a crafted entry like 'vector/../../foo'
+                        # must never write outside chroma_path.
+                        if not target.is_relative_to(base):
+                            errors.append(f"vector: refused unsafe path {name!r}")
+                            continue
                         target.parent.mkdir(parents=True, exist_ok=True)
                         with zf.open(name) as src, target.open("wb") as dst:
                             shutil.copyfileobj(src, dst)
