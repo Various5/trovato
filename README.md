@@ -7,7 +7,7 @@
 PaperVault is the working repository name; the product ships as **LocalDoc
 Intelligence**.
 
-**Status: v0.5.3 (stable).** Feature-complete and stabilising toward 1.0. The
+**Status: v0.5.4 (stable).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 
 ---
@@ -67,8 +67,9 @@ scanning phases, search/chat, troubleshooting).
 - **Auth**: local user(s), Argon2 password hashing, recovery key
 - **Backup / Restore**: granular ZIP backups, optional encryption, portable
   index transfer between machines
-- **UI**: NiceGUI desktop-style app, bold themes (Emerald default), PDF viewer
-  with page jump
+- **UI**: NiceGUI desktop-style app with a restrained Graphite + Teal design
+  system that follows your OS light/dark, a **command palette** (Ctrl/⌘+K),
+  breadcrumbs, skeleton loaders, tabbed settings, and a PDF viewer with page jump
 - **Windows installer**: PyInstaller + Inno Setup recipe
 - **Hardware auto-tuning**: scan concurrency, OCR render DPI and embedding
   batch size scale to the machine — from a 2-core laptop to a 16-core box
