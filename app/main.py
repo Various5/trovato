@@ -226,6 +226,25 @@ def create_app():  # type: ignore[no-untyped-def]
         allow_headers=["*"],
     )
 
+    # Server-side license gate. The UI redirect alone is not enough — every
+    # /api data route must refuse to serve content until the app is activated,
+    # else a logged-in-but-unlicensed user could pull the whole library straight
+    # over HTTP. Auth/health/about/docs stay open so login, liveness and the
+    # version check keep working while the app is locked.
+    from starlette.responses import JSONResponse
+
+    _license_open = ("/api/auth", "/api/health", "/api/about", "/api/docs", "/api/openapi.json")
+
+    @fastapi_app.middleware("http")
+    async def _license_gate(request, call_next):  # type: ignore[no-untyped-def]
+        path = request.url.path
+        if path.startswith("/api/") and not path.startswith(_license_open):
+            from app.services import licensing
+
+            if not licensing.is_activated():
+                return JSONResponse({"detail": "license required"}, status_code=403)
+        return await call_next(request)
+
     fastapi_app.include_router(api_router)
     register_ui(fastapi_app)
 

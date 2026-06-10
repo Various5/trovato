@@ -128,6 +128,11 @@ def verify_token(
         id=str(payload.get("id", "")),
         raw=payload,
     )
+    # Validate the (signed) payload version. Defence-in-depth: the version lives
+    # inside the signed bytes, but the LDI1 prefix is not signed, so refuse to
+    # honour a payload whose version we don't understand.
+    if payload.get("v") != PAYLOAD_VERSION:
+        return LicenseStatus(False, "invalid", info)
     if info.expires:
         try:
             exp = date.fromisoformat(str(info.expires))

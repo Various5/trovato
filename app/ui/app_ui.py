@@ -653,21 +653,25 @@ def _expert_mode() -> bool:
         return False
 
 
-def _layout(user: User, current: str) -> None:
+def _layout(user: User, current: str) -> bool:
     """Build the modern app shell: header + collapsible drawer + page area.
+
+    Returns ``True`` once the shell is built, or ``False`` if the page was gated
+    and redirected — callers MUST do ``if not _layout(...): return`` so no page
+    body (DB queries, document text) is built/serialized for an unlicensed user.
 
     The header sticks to the top and carries the brand mark, a hamburger to
     collapse the drawer, and a quick-actions area on the right (current page
     label, theme/lang shortcuts, user menu). The drawer is a glass panel that
     can slide off-screen via the hamburger toggle.
     """
-    # Whole-app license gate. The /activate page builds its own minimal shell
-    # (never calls _layout), and /help stays reachable so a locked-out user can
-    # still read the docs; every other page redirects to activation until a
-    # valid key is entered. Licensed users pass instantly (one local verify).
-    if current not in ("/activate", "/help") and not licensing.is_activated():
+    # Whole-app license gate (blocking). The /activate page builds its own
+    # minimal shell and never calls _layout, so there is no redirect loop;
+    # everything else is locked until a valid key is entered. Licensed users
+    # pass instantly (one local verify).
+    if not licensing.is_activated():
         ui.navigate.to("/activate")
-        return
+        return False
 
     import asyncio
 
@@ -952,6 +956,7 @@ def _layout(user: User, current: str) -> None:
 
     # --- Update banner sits at the top of the page area ------------------
     _render_update_banner(lang)
+    return True
 
 
 def _do_logout() -> None:
@@ -1448,7 +1453,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/help")
+        if not _layout(user, "/help"):
+            return
         lang = _user_lang(user)
         page_header("help.title", lang)
         sections = [
@@ -1504,7 +1510,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/")
+        if not _layout(user, "/"):
+            return
         lang = _user_lang(user)
         with session_scope() as session:
             doc_count = session.exec(select(func.count()).select_from(Document)).one()
@@ -1711,7 +1718,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/sources")
+        if not _layout(user, "/sources"):
+            return
         lang = _user_lang(user)
         page_header("sources.title", lang)
 
@@ -2159,7 +2167,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/documents")
+        if not _layout(user, "/documents"):
+            return
         lang = _user_lang(user)
         page_header("docs.title", lang)
 
@@ -2567,7 +2576,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/search")
+        if not _layout(user, "/search"):
+            return
         lang = _user_lang(user)
 
         # Deep-link params: ?tag=X (browse a tag, e.g. from the Tags page) and
@@ -3047,7 +3057,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/chat")
+        if not _layout(user, "/chat"):
+            return
         lang = _user_lang(user)
 
         # Reopen the last conversation on load, so clicking a citation (→ /viewer)
@@ -3588,7 +3599,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/tags")
+        if not _layout(user, "/tags"):
+            return
         lang = _user_lang(user)
         page_header("tags.title", lang)
         from app.models import DocumentTagLink, Tag
@@ -3755,7 +3767,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/backup")
+        if not _layout(user, "/backup"):
+            return
         lang = _user_lang(user)
         page_header("backup.title", lang)
 
@@ -3905,7 +3918,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/settings")
+        if not _layout(user, "/settings"):
+            return
         lang = _user_lang(user)
         page_header("settings.title", lang)
         s = get_settings()
@@ -4539,7 +4553,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/logs")
+        if not _layout(user, "/logs"):
+            return
         lang = _user_lang(user)
         page_header("logs.title", lang)
         help_callout("logs.tail_hint", lang)
@@ -4559,7 +4574,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/compare")
+        if not _layout(user, "/compare"):
+            return
         lang = _user_lang(user)
         breadcrumbs([(t("nav.documents", lang), "/documents"), (t("compare.title", lang), None)])
         page_header("compare.title", lang)
@@ -4631,7 +4647,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/diagnostics")
+        if not _layout(user, "/diagnostics"):
+            return
         lang = _user_lang(user)
         page_header("diag.title", lang)
 
@@ -4837,7 +4854,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/documents")
+        if not _layout(user, "/documents"):
+            return
         lang = _user_lang(user)
         with session_scope() as session:
             d = session.get(Document, doc)
@@ -5033,7 +5051,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
         user = _require_login()
         if not user:
             return
-        _layout(user, "/about")
+        if not _layout(user, "/about"):
+            return
         lang = _user_lang(user)
         page_header("about.title", lang)
         from app import __app_name__ as N
