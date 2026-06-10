@@ -41,11 +41,14 @@ from app.models import (
 from app.services.hardware import detect_hardware
 from app.services.indexer import abort_scan_job, start_scan_in_background
 from app.ui.components import (
+    breadcrumbs,
     confirm_dialog,
     empty_state,
+    error_state,
     help_callout,
     page_header,
     section_card,
+    skeleton_list,
     status_pill,
 )
 from app.ui.styles import build_global_css
@@ -645,6 +648,13 @@ def _layout(user: User, current: str) -> None:
                 ui.label(__app_name__).classes("text-body1 leading-tight")
                 ui.label(f"v{__version__}").classes("text-caption opacity-60 leading-tight")
 
+        # Command palette trigger (Ctrl/⌘+K) — late-bound to _open_palette,
+        # which is defined after the drawer (so its closures already exist).
+        with ui.element("div").classes("ldi-cmdk-trigger q-ml-md gt-xs").on("click", lambda: _open_palette()):
+            ui.icon("search").style("font-size: 16px;")
+            ui.label(t("common.search", lang))
+            ui.html('<span class="ldi-kbd">Ctrl</span><span class="ldi-kbd">K</span>')
+
         ui.space()
 
         # Current page tag
@@ -767,6 +777,129 @@ def _layout(user: User, current: str) -> None:
 
     # Wire up the hamburger now that the drawer exists
     hamburger.on("click", lambda: drawer.toggle())
+
+    # --- Command palette (Ctrl/⌘+K) -------------------------------------
+    # A keyboard-first launcher over every route + a few global actions.
+    # Built once per page; both the header trigger and the global key handler
+    # call _open_palette(). Open state is read straight off _palette.value so
+    # backdrop-clicks stay in sync (no separate flag to drift).
+    _cmd_state: dict[str, Any] = {"idx": 0, "filtered": []}
+
+    _commands: list[dict[str, Any]] = []
+    for _k, _p, _ic, _exp in NAV_ITEMS:
+        _commands.append(
+            {
+                "label": t(_k, lang),
+                "icon": _ic,
+                "hint": _p,
+                "group": "nav",
+                "run": (lambda p=_p: ui.navigate.to(p)),
+            }
+        )
+    for _akey, _aic, _afn in (
+        ("cmd.act_new_chat", "forum", lambda: ui.navigate.to("/chat")),
+        ("cmd.act_search", "search", lambda: ui.navigate.to("/search")),
+        ("cmd.act_theme", "palette", _cycle_theme),
+        ("cmd.act_expert", "tune", lambda: _set_expert(not _expert_mode())),
+        ("cmd.act_reload", "refresh", lambda: ui.navigate.reload()),
+        ("cmd.act_logout", "logout", _do_logout),
+    ):
+        _commands.append({"label": t(_akey, lang), "icon": _aic, "hint": "", "group": "actions", "run": _afn})
+
+    _cmd_group_labels = {"nav": t("cmd.group_nav", lang), "actions": t("cmd.group_actions", lang)}
+
+    with ui.dialog().props("position=top") as _palette, ui.card().classes("ldi-cmdk ldi-static"):
+        with ui.element("div").classes("ldi-cmdk-search"):
+            ui.icon("search").classes("ldi-cmdk-icon")
+            _cmd_search = (
+                ui.input(placeholder=t("cmd.placeholder", lang))
+                .props("borderless autofocus")
+                .classes("w-full")
+            )
+        _cmd_list = ui.element("div").classes("ldi-cmdk-list")
+        with ui.element("div").classes("ldi-cmdk-footer"):
+            ui.html('<span class="ldi-kbd">↑</span><span class="ldi-kbd">↓</span>')
+            ui.label(t("cmd.foot_nav", lang))
+            ui.html('<span class="ldi-kbd">↵</span>')
+            ui.label(t("cmd.foot_select", lang))
+            ui.html('<span class="ldi-kbd">esc</span>')
+            ui.label(t("cmd.foot_close", lang))
+
+    def _cmd_run(idx: int) -> None:
+        items = _cmd_state["filtered"]
+        if 0 <= idx < len(items):
+            cmd = items[idx]
+            _palette.close()
+            cmd["run"]()
+
+    def _cmd_render() -> None:
+        _cmd_list.clear()
+        with _cmd_list:
+            items = _cmd_state["filtered"]
+            if not items:
+                ui.label(t("cmd.no_match", lang)).classes("ldi-cmdk-empty")
+                return
+            last_group = None
+            for i, cmd in enumerate(items):
+                if cmd["group"] != last_group:
+                    ui.label(_cmd_group_labels.get(cmd["group"], "")).classes("ldi-cmdk-group")
+                    last_group = cmd["group"]
+                row = ui.element("div").classes(
+                    "ldi-cmdk-item" + (" active" if i == _cmd_state["idx"] else "")
+                )
+                with row:
+                    ui.icon(cmd["icon"]).classes("ldi-cmdk-icon")
+                    ui.label(cmd["label"]).classes("ldi-cmdk-label")
+                    if cmd["hint"]:
+                        ui.label(cmd["hint"]).classes("ldi-cmdk-hint")
+                row.on("click", lambda _e, idx=i: _cmd_run(idx))
+
+    def _cmd_filter() -> None:
+        qv = (_cmd_search.value or "").strip().lower()
+        if not qv:
+            _cmd_state["filtered"] = list(_commands)
+        else:
+            _cmd_state["filtered"] = [
+                c for c in _commands if qv in c["label"].lower() or qv in str(c["hint"]).lower()
+            ]
+        _cmd_state["idx"] = 0
+        _cmd_render()
+
+    def _cmd_move(delta: int) -> None:
+        items = _cmd_state["filtered"]
+        if items:
+            _cmd_state["idx"] = (_cmd_state["idx"] + delta) % len(items)
+            _cmd_render()
+
+    def _open_palette() -> None:
+        _cmd_search.value = ""
+        _cmd_state["filtered"] = list(_commands)
+        _cmd_state["idx"] = 0
+        _cmd_render()
+        _palette.open()
+        ui.timer(0.05, lambda: _cmd_search.run_method("focus"), once=True)
+
+    _cmd_search.on_value_change(lambda _e: _cmd_filter())
+
+    def _palette_key(e: Any) -> None:
+        if not e.action.keydown:
+            return
+        k = e.key
+        if (e.modifiers.ctrl or e.modifiers.meta) and (k.name or "").lower() == "k":
+            _open_palette()
+            return
+        if not _palette.value:
+            return
+        if k.escape:
+            _palette.close()
+        elif k.arrow_down:
+            _cmd_move(1)
+        elif k.arrow_up:
+            _cmd_move(-1)
+        elif k.enter:
+            _cmd_run(_cmd_state["idx"])
+
+    ui.keyboard(on_key=_palette_key, ignore=[], repeating=True)
 
     # --- Update banner sits at the top of the page area ------------------
     _render_update_banner(lang)
@@ -1926,11 +2059,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             with ui.dialog() as dialog, ui.card().classes("w-[640px] p-4"):
                 ui.label(f"{t('docs.similar_to', lang)} {fname}").classes("text-h6 ldi-primary")
-                spinner = ui.spinner(size="lg")
+                loading = ui.column().classes("w-full gap-2")
+                with loading:
+                    skeleton_list(4, lines=1)
                 content = ui.column().classes("w-full gap-2")
                 dialog.open()
                 hits = await find_similar(did, top_k=15)
-                spinner.delete()
+                loading.delete()
                 if not hits:
                     with content:
                         ui.label(t("docs.no_similar", lang)).classes("opacity-70")
@@ -1963,12 +2098,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             with ui.dialog() as dialog, ui.card().classes("w-[680px] max-w-[92vw] p-4"):
                 ui.label(f"{t('docs.summary_of', lang)} {fname}").classes("text-h6 ldi-primary")
-                spinner = ui.spinner(size="lg")
+                loading = ui.column().classes("w-full gap-2")
+                with loading:
+                    skeleton_list(1, lines=6)
                 with ui.column().classes("ldi-prose w-full"):
                     md = ui.markdown("")
                 dialog.open()
                 text = await summarize_document(did)
-                spinner.delete()
+                loading.delete()
                 md.content = text
 
         q_input = ui.input(t("docs.filter", lang)).classes("w-full")
@@ -2323,12 +2460,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/search")
         lang = _user_lang(user)
-        page_header("search.title", lang)
 
         # Deep-link params: ?tag=X (browse a tag, e.g. from the Tags page) and
         # ?q=… (pre-filled query). Captured before the input element shadows `q`.
         initial_tag = (tag or "").strip()
         initial_query = (q or "").strip()
+
+        # When browsing a specific tag, show where we came from.
+        if initial_tag:
+            breadcrumbs([(t("nav.tags", lang), "/tags"), (f"#{initial_tag}", None)])
+        page_header("search.title", lang)
 
         # Search bar with embedded icon-button
         with ui.row().classes("w-full gap-2 items-center no-wrap"):
@@ -2644,7 +2785,26 @@ def register_ui(fastapi_app: FastAPI) -> None:
         async def _go() -> None:
             import time as _time
 
-            await _ensure_universe()
+            # Show skeletons while the (possibly slow) universe loads — embedding
+            # + hybrid search can take a moment and the column would go blank.
+            out.clear()
+            with out:
+                skeleton_list(4, lines=2, thumb=True)
+            try:
+                await _ensure_universe()
+            except Exception as e:
+                logger.warning("search universe failed: {}", e)
+                out.clear()
+                with out:
+                    error_state(
+                        "cloud_off",
+                        "search.error_title",
+                        "search.error_hint",
+                        lang,
+                        detail=str(e),
+                        on_retry=_go,
+                    )
+                return
             query = (q.value or "").strip()
             _render_facets()
             _render_chips()
@@ -3641,7 +3801,27 @@ def register_ui(fastapi_app: FastAPI) -> None:
         page_header("settings.title", lang)
         s = get_settings()
 
-        with section_card(lang, title_key="settings.lmstudio", icon="memory"):
+        # Tabbed settings: the section cards below are built flat (so the shared
+        # _save() closure still sees every widget), then relocated into these
+        # panels with .move() — no re-indentation of the long section bodies.
+        with (
+            ui.tabs()
+            .props("align=left active-color=primary inline-label")
+            .classes("w-full") as _settings_tabs
+        ):
+            ui.tab("models", label=t("settings.tab_models", lang), icon="memory")
+            ui.tab("indexing", label=t("settings.tab_indexing", lang), icon="tune")
+            ui.tab("appearance", label=t("settings.tab_appearance", lang), icon="palette")
+            ui.tab("network", label=t("settings.tab_network", lang), icon="lan")
+            ui.tab("account", label=t("settings.tab_account", lang), icon="person")
+        with ui.tab_panels(_settings_tabs, value="models").classes("w-full"):
+            _p_models = ui.tab_panel("models").classes("q-px-none")
+            _p_indexing = ui.tab_panel("indexing").classes("q-px-none")
+            _p_appearance = ui.tab_panel("appearance").classes("q-px-none")
+            _p_network = ui.tab_panel("network").classes("q-px-none")
+            _p_account = ui.tab_panel("account").classes("q-px-none")
+
+        with section_card(lang, title_key="settings.lmstudio", icon="memory") as _card_lm:
             url = ui.input(t("settings.base_url", lang), value=s.lmstudio_base_url).classes("w-full")
 
             # Free-text inputs so any model id can be typed in regardless of
@@ -4021,7 +4201,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.button("Browse models", icon="list", on_click=_browse_models).props("dense")
                 ui.button("Auto-pick", icon="auto_fix_high", on_click=_auto_pick).props("dense color=primary")
 
-        with section_card(lang, title_key="settings.ocr", icon="document_scanner", extra="q-mt-md"):
+        with section_card(
+            lang, title_key="settings.ocr", icon="document_scanner", extra="q-mt-md"
+        ) as _card_ocr:
             tcmd = ui.input(t("settings.tesseract", lang), value=s.tesseract_cmd).classes("w-full")
             tlang = ui.input(t("settings.ocr_langs", lang), value=s.ocr_lang).classes("w-full")
             tess_status = ui.label("").classes("text-caption opacity-80 q-mt-xs")
@@ -4060,11 +4242,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     new_tab=True,
                 ).classes("text-caption q-pa-sm")
 
-        with section_card(lang, title_key="settings.indexing", icon="tune", extra="q-mt-md"):
+        with section_card(lang, title_key="settings.indexing", icon="tune", extra="q-mt-md") as _card_idx:
             csize = ui.number(t("settings.chunk_size", lang), value=s.chunk_size).classes("w-32")
             coverlap = ui.number(t("settings.chunk_overlap", lang), value=s.chunk_overlap).classes("w-32")
 
-        with section_card(lang, title_key="settings.performance", icon="speed", extra="q-mt-md"):
+        with section_card(
+            lang, title_key="settings.performance", icon="speed", extra="q-mt-md"
+        ) as _card_perf:
             from app.services.hardware import detect_hardware, resolve_tuning
 
             _hw = detect_hardware()
@@ -4094,7 +4278,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "text-caption ldi-primary q-mt-xs"
             )
 
-        with section_card(lang, title_key="settings.appearance", icon="palette", extra="q-mt-md"):
+        with section_card(
+            lang, title_key="settings.appearance", icon="palette", extra="q-mt-md"
+        ) as _card_appear:
             theme = ui.select(
                 {k: v.label for k, v in THEMES.items()},
                 value=_user_theme(user),
@@ -4106,7 +4292,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 label=t("common.language", lang),
             ).classes("w-64")
 
-        with section_card(lang, title_key="settings.network", icon="lan", extra="q-mt-md"):
+        with section_card(lang, title_key="settings.network", icon="lan", extra="q-mt-md") as _card_net:
             port_in = ui.number(
                 t("settings.app_port", lang), value=s.port, min=1, max=65535, format="%d"
             ).classes("w-40")
@@ -4147,11 +4333,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.notify(t("settings.saved_reload", lang), color="positive")
             ui.navigate.reload()
 
-        ui.button(t("settings.save", lang), icon="save", on_click=_save).props("color=primary").classes(
-            "q-mt-md"
-        )
-
-        with section_card(lang, title_key="settings.change_pw", icon="lock", extra="q-mt-md"):
+        with section_card(lang, title_key="settings.change_pw", icon="lock", extra="q-mt-md") as _card_pw:
             old = ui.input(
                 t("common.current_password", lang), password=True, password_toggle_button=True
             ).classes("w-full")
@@ -4170,6 +4352,20 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ui.notify(t("settings.pw_updated", lang), color="positive")
 
             ui.button(t("settings.update_pw", lang), on_click=_change).props("color=primary")
+
+        # Relocate each flat-built section card into its tab panel.
+        _card_lm.move(_p_models)
+        _card_ocr.move(_p_models)
+        _card_idx.move(_p_indexing)
+        _card_perf.move(_p_indexing)
+        _card_appear.move(_p_appearance)
+        _card_net.move(_p_network)
+        _card_pw.move(_p_account)
+
+        # Persistent save bar below the tabs (applies to every tab except
+        # Account, which has its own update button).
+        with ui.row().classes("w-full q-mt-md justify-end"):
+            ui.button(t("settings.save", lang), icon="save", on_click=_save).props("color=primary")
 
     @ui.page("/logs")
     def page_logs() -> None:
@@ -4198,6 +4394,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return
         _layout(user, "/compare")
         lang = _user_lang(user)
+        breadcrumbs([(t("nav.documents", lang), "/documents"), (t("compare.title", lang), None)])
         page_header("compare.title", lang)
 
         with session_scope() as session:
@@ -4230,9 +4427,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
             from app.services.compare import compare_documents
 
             with output:
-                spinner = ui.spinner(size="lg")
+                loading = ui.column().classes("w-full gap-2")
+                with loading:
+                    skeleton_list(2, lines=3)
             result = await compare_documents(int(sel_a.value), int(sel_b.value))
-            spinner.delete()
+            loading.delete()
             with output:
                 with section_card(lang, title_key="compare.narrative", icon="compare_arrows"):
                     ui.markdown(result.narrative)
@@ -4534,6 +4733,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 )
                 match_pages = sorted(text_pages | img_pages)
 
+        breadcrumbs([(t("nav.documents", lang), "/documents"), (d.filename, None)])
         ui.label(f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}").classes(
             "text-h5 ldi-primary"
         )

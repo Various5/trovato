@@ -363,6 +363,11 @@ pre {
   height: 16px;
   border: none !important;
 }
+/* Skeleton shape modifiers — compose with .ldi-skeleton */
+.ldi-skeleton-title  { height: 20px; }
+.ldi-skeleton-text   { height: 12px; }
+.ldi-skeleton-circle { border-radius: 50% !important; }
+.ldi-skeleton-thumb  { border-radius: var(--ldi-radius-sm); }
 
 /* ------------------------------------------------------------------ */
 /*  Progress bar (solid, subtle)                                        */
@@ -463,6 +468,80 @@ pre {
   border-radius: 0 3px 3px 0;
   background: var(--ldi-primary);
 }
+
+/* ------------------------------------------------------------------ */
+/*  Command palette (Ctrl/⌘+K)                                          */
+/* ------------------------------------------------------------------ */
+.ldi-cmdk { width: 560px; max-width: 92vw; padding: 0 !important; overflow: hidden; }
+.ldi-cmdk-search {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-bottom: 1px solid var(--ldi-border);
+}
+.ldi-cmdk-search .q-field { flex: 1; }
+.ldi-cmdk-list { max-height: 56vh; overflow-y: auto; padding: 6px; }
+.ldi-cmdk-group {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ldi-muted); padding: 10px 12px 4px;
+}
+.ldi-cmdk-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px; border-radius: var(--ldi-radius-sm);
+  color: var(--ldi-text); cursor: pointer;
+  transition: background var(--ldi-trans), color var(--ldi-trans);
+}
+.ldi-cmdk-item:hover { background: var(--ldi-hover-bg); }
+.ldi-cmdk-item.active { background: var(--ldi-accent-soft); color: var(--ldi-primary); }
+.ldi-cmdk-item.active .ldi-cmdk-icon { color: var(--ldi-primary); }
+.ldi-cmdk-icon  { color: var(--ldi-muted); font-size: 20px; flex-shrink: 0; }
+.ldi-cmdk-label { flex: 1; font-size: 14px; }
+.ldi-cmdk-hint  { font-size: 11px; color: var(--ldi-muted); }
+.ldi-cmdk-empty { padding: 28px; text-align: center; color: var(--ldi-muted); }
+.ldi-cmdk-footer {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 14px; border-top: 1px solid var(--ldi-border);
+  font-size: 11px; color: var(--ldi-muted);
+}
+.ldi-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 5px; border: 1px solid var(--ldi-border);
+  background: var(--ldi-code-bg); color: var(--ldi-muted);
+  font-family: 'JetBrains Mono', 'Cascadia Code', monospace; font-size: 10.5px; font-weight: 500;
+}
+.ldi-cmdk-trigger {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 10px;
+  border-radius: var(--ldi-radius-sm);
+  border: 1px solid var(--ldi-border); background: var(--ldi-surface-2);
+  color: var(--ldi-muted); cursor: pointer; font-size: 13px;
+  transition: border-color var(--ldi-trans), color var(--ldi-trans);
+}
+.ldi-cmdk-trigger:hover { border-color: var(--ldi-border-strong); color: var(--ldi-text); }
+
+/* ------------------------------------------------------------------ */
+/*  Breadcrumbs                                                         */
+/* ------------------------------------------------------------------ */
+.ldi-breadcrumbs {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 13px; margin-bottom: 10px; color: var(--ldi-muted);
+}
+.ldi-breadcrumb {
+  color: var(--ldi-muted); text-decoration: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: color var(--ldi-trans);
+}
+.ldi-breadcrumb:hover { color: var(--ldi-text); }
+.ldi-breadcrumb.current { color: var(--ldi-text); font-weight: 500; cursor: default; }
+.ldi-breadcrumb-sep { color: var(--ldi-border-strong); user-select: none; }
+
+/* ------------------------------------------------------------------ */
+/*  Tabs (settings, etc.)                                               */
+/* ------------------------------------------------------------------ */
+.q-tabs { color: var(--ldi-muted); border-bottom: 1px solid var(--ldi-border); }
+.q-tab { text-transform: none !important; letter-spacing: 0 !important; }
+.q-tab--active { color: var(--ldi-primary) !important; }
+.q-tab .q-tab__indicator { background: var(--ldi-primary) !important; }
+.q-tab-panels, .q-tab-panel { background: transparent !important; }
 
 /* ------------------------------------------------------------------ */
 /*  Brand                                                               */

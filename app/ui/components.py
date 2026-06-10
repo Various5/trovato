@@ -88,6 +88,84 @@ def empty_state(
             ui.button(t(action_label_key, lang), on_click=on_action).props("color=primary").classes("q-mt-md")
 
 
+def error_state(
+    icon: str,
+    title_key: str,
+    hint_key: str,
+    lang: str,
+    *,
+    detail: str | None = None,
+    on_retry: Callable[[], Any] | None = None,
+    retry_key: str = "common.retry",
+) -> None:
+    """A failure panel mirroring :func:`empty_state`, with an optional retry button.
+
+    ``detail`` shows the raw error text muted under the hint (handy for diagnosing
+    LM Studio / network problems without opening the logs).
+    """
+    with ui.card().classes("w-full ldi-section-card column items-center text-center q-py-lg"):
+        ui.icon(icon).classes("text-5xl").style("color: var(--ldi-error); opacity: 0.75;")
+        ui.label(t(title_key, lang)).classes("text-h6 q-mt-sm")
+        ui.label(t(hint_key, lang)).classes("text-caption opacity-70")
+        if detail:
+            ui.label(str(detail)).classes("text-caption opacity-50 break-all q-mt-xs").style(
+                "max-width: 540px;"
+            )
+        if on_retry is not None:
+            ui.button(t(retry_key, lang), icon="refresh", on_click=on_retry).props("color=primary").classes(
+                "q-mt-md"
+            )
+
+
+def skeleton_line(width: str = "100%", *, height: int = 12, mt: int = 0) -> None:
+    """A single shimmering placeholder bar (reuses the ``.ldi-skeleton`` animation)."""
+    style = f"width: {width}; height: {height}px;"
+    if mt:
+        style += f" margin-top: {mt}px;"
+    ui.element("div").classes("ldi-skeleton ldi-skeleton-text").style(style)
+
+
+def skeleton_card(*, lines: int = 2, thumb: bool = False) -> None:
+    """One card-shaped skeleton: optional thumbnail + a title bar + N text lines."""
+    with ui.card().classes("w-full ldi-section-card ldi-static"):
+        with ui.row().classes("w-full gap-3 no-wrap items-start"):
+            if thumb:
+                ui.element("div").classes("ldi-skeleton ldi-skeleton-thumb").style(
+                    "width: 82px; height: 106px; flex-shrink: 0;"
+                )
+            with ui.column().classes("flex-1 gap-2 min-w-0"):
+                ui.element("div").classes("ldi-skeleton ldi-skeleton-title").style("width: 45%;")
+                for i in range(max(1, lines)):
+                    skeleton_line("70%" if i == lines - 1 else "100%")
+
+
+def skeleton_list(count: int = 3, *, lines: int = 2, thumb: bool = False) -> None:
+    """A column of ``count`` card skeletons — drop into a results area while it loads."""
+    with ui.column().classes("w-full gap-2"):
+        for _ in range(max(1, count)):
+            skeleton_card(lines=lines, thumb=thumb)
+
+
+def breadcrumbs(items: list[tuple[str, str | None]]) -> None:
+    """A breadcrumb trail. ``items`` = ``[(label, path_or_None)]``.
+
+    Crumbs with a path render as links; the last crumb (or any with ``path=None``)
+    renders as the current, non-clickable page. Labels are passed already-resolved
+    (filenames aren't translatable), so this helper takes no ``lang``.
+    """
+    if not items:
+        return
+    last = len(items) - 1
+    with ui.row().classes("ldi-breadcrumbs"):
+        for i, (label, path) in enumerate(items):
+            if i:
+                ui.label("/").classes("ldi-breadcrumb-sep")
+            if path and i != last:
+                ui.link(label, path).classes("ldi-breadcrumb")
+            else:
+                ui.label(label).classes("ldi-breadcrumb current")
+
+
 def confirm_dialog(
     title_key: str,
     message_key: str | None,
