@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.security import login_required
@@ -12,6 +14,20 @@ from app.llm import LMStudioClient
 from app.models import User
 
 router = APIRouter()
+
+
+def _reject_metadata_target(url: str | None) -> None:
+    """Block a base_url that points at a literal link-local IP (169.254.0.0/16 /
+    fe80::/10) — the cloud-metadata range, never a legitimate LM Studio host.
+    Loopback/private IPs and hostnames are allowed (those ARE the normal targets:
+    localhost and LAN boxes), so this only stops the clear SSRF-to-metadata case."""
+    host = (urlsplit(url or "").hostname or "").strip()
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # hostname, not a literal IP
+    if ip.is_link_local:
+        raise HTTPException(status_code=400, detail="refused: link-local/metadata address")
 
 
 class TestBody(BaseModel):
@@ -236,6 +252,7 @@ async def models_download(body: DownloadBody, _user: User = Depends(login_requir
 
 @router.post("/test")
 async def test(body: TestBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+    _reject_metadata_target(body.base_url)
     client = LMStudioClient(base_url=body.base_url)
     result: dict[str, Any] = {"base_url": client.base_url}
     result["ping"] = await client.ping()

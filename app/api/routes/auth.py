@@ -18,6 +18,7 @@ from app.auth.security import (
     logout_session,
     make_recovery_key,
     reset_password_with_recovery,
+    session_fingerprint,
     verify_password,
 )
 from app.database import get_session
@@ -124,6 +125,7 @@ def me(user: User = Depends(get_current_user)) -> dict:
 @router.post("/change-password")
 def change_password(
     body: ChangePasswordBody,
+    request: Request,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -131,6 +133,10 @@ def change_password(
         raise HTTPException(status_code=400, detail="old password incorrect")
     user.password_hash = hash_password(body.new_password)
     session.add(user)
+    session.flush()
+    # Revoke every OTHER session (their stamped fingerprint is now stale) but keep
+    # this caller's session valid by re-stamping it with the new fingerprint.
+    request.session["pwv"] = session_fingerprint(user)
     audit.log("auth.password.changed", user_id=user.id)
     return {"ok": True}
 

@@ -63,3 +63,29 @@ def test_privileged_routers_require_auth(client):
     for path in ("/api/settings", "/api/sources", "/api/users", "/api/diagnostics/audit"):
         assert client.get(path).status_code in (401, 403, 404), path
         assert client.get(path).status_code != 200, path
+
+
+def test_session_fingerprint_changes_with_password():
+    # The fingerprint drives password-change session revocation: a new password
+    # → new hash → new fingerprint → old sessions stop validating.
+    from app.auth.security import hash_password, session_fingerprint
+    from app.models import User
+
+    u = User(username="x", password_hash=hash_password("pw1"), recovery_key_hash="")
+    fp1 = session_fingerprint(u)
+    u.password_hash = hash_password("pw2")
+    fp2 = session_fingerprint(u)
+    assert fp1 and fp2 and fp1 != fp2
+
+
+def test_lmstudio_rejects_link_local_metadata():
+    from fastapi import HTTPException
+
+    from app.api.routes.lmstudio import _reject_metadata_target
+
+    with pytest.raises(HTTPException):
+        _reject_metadata_target("http://169.254.169.254/v1")  # cloud metadata
+    # Legitimate LM Studio targets (loopback / LAN / hostnames) pass.
+    _reject_metadata_target("http://localhost:1234/v1")
+    _reject_metadata_target("http://192.168.1.5:1234/v1")
+    _reject_metadata_target(None)

@@ -78,12 +78,23 @@ def set_password(session: Session, user: User, new_password: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def session_fingerprint(user: User) -> str:
+    """A short, stable fingerprint of the user's current password hash, stamped
+    into the session at login. The Argon2 hash is salted+unique per password, so
+    changing the password changes this — and every session stamped with the old
+    value stops validating. Gives password-change session revocation with no
+    schema change and no extra query (the User row is already loaded)."""
+    return (user.password_hash or "")[-24:]
+
+
 def login_session(request: Request, user: User) -> None:
     request.session[SESSION_USER_KEY] = user.id
+    request.session["pwv"] = session_fingerprint(user)
 
 
 def logout_session(request: Request) -> None:
     request.session.pop(SESSION_USER_KEY, None)
+    request.session.pop("pwv", None)
 
 
 def current_user_id(request: Request) -> int | None:
@@ -129,6 +140,10 @@ def get_current_user(request: Request, session: Session = Depends(get_session)) 
     user = session.get(User, uid)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="user not found")
+    # Revoke sessions stamped before a password change (or pre-update sessions
+    # that lack the fingerprint entirely).
+    if request.session.get("pwv") != session_fingerprint(user):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired")
     return user
 
 
@@ -181,6 +196,7 @@ __all__ = [
     "verify_media_token",
     "require_admin",
     "reset_password_with_recovery",
+    "session_fingerprint",
     "set_password",
     "verify_password",
 ]

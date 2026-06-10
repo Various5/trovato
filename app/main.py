@@ -211,9 +211,16 @@ def create_app():  # type: ignore[no-untyped-def]
         lifespan=lifespan,
     )
 
+    # Derive a DISTINCT cookie-signing key from the master secret so a leak of
+    # the session-cookie key doesn't reveal the at-rest encryption key
+    # (sha256(secret_key)) or the media-token key (its own salt). One-time effect:
+    # cookies signed by an older build are invalidated, so users sign in once.
+    import hashlib as _hashlib
+
+    _cookie_key = _hashlib.sha256((s.secret_key + ":session-cookie-v1").encode("utf-8")).hexdigest()
     fastapi_app.add_middleware(
         SessionMiddleware,
-        secret_key=s.secret_key,
+        secret_key=_cookie_key,
         same_site="lax",
         # Secure flag is opt-in (Settings → Network) for HTTPS deployments; the
         # cookie is always HttpOnly (Starlette default), so client JS can't read

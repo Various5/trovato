@@ -17,12 +17,14 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from app import __app_name__, __contact__, __version__
+from app.auth.acl import can_see_document, filter_documents
 from app.auth.security import (
     SESSION_USER_KEY,
     create_user,
     has_users,
     hash_password,
     make_recovery_key,
+    session_fingerprint,
     verify_password,
 )
 from app.config import get_settings, save_user_settings
@@ -83,12 +85,19 @@ def _current_user() -> User | None:
         if uid is None:
             return None
         with session_scope() as session:
-            return session.get(User, uid)
+            user = session.get(User, uid)
+        if not user or not user.is_active:
+            return None
+        # Session invalidation: if the password changed since this session was
+        # stamped (its hash fingerprint differs), treat the session as expired.
+        if nicegui_app.storage.user.get("pwv") != session_fingerprint(user):
+            return None
+        return user
     except Exception:
         return None
 
 
-def _bridge_session_cookie(uid: int | None) -> None:
+def _bridge_session_cookie(user: User | None) -> None:
     """Mirror the UI login into the Starlette session cookie.
 
     The UI authenticates via ``app.storage.user`` (server-side), but the REST
@@ -103,12 +112,17 @@ def _bridge_session_cookie(uid: int | None) -> None:
     during a page build sets the session cookie, so the browser then sends it
     on those sub-requests. Best-effort: browser storage is only writable while
     a page is being built, so guard against the read-only (event-handler) case.
+    Also stamps the password fingerprint so the API's get_current_user can revoke
+    the session on a password change (matching the UI check).
     """
-    if uid is None:
+    if user is None:
         return
     try:
-        if nicegui_app.storage.browser.get(SESSION_USER_KEY) != uid:
-            nicegui_app.storage.browser[SESSION_USER_KEY] = uid
+        if nicegui_app.storage.browser.get(SESSION_USER_KEY) != user.id:
+            nicegui_app.storage.browser[SESSION_USER_KEY] = user.id
+        pwv = session_fingerprint(user)
+        if nicegui_app.storage.browser.get("pwv") != pwv:
+            nicegui_app.storage.browser["pwv"] = pwv
     except Exception:
         # Read-only outside an initial page request — nothing to do.
         pass
@@ -119,7 +133,7 @@ def _require_login() -> User | None:
     if not u:
         ui.navigate.to("/login")
         return None
-    _bridge_session_cookie(u.id)
+    _bridge_session_cookie(u)
     return u
 
 
@@ -1096,6 +1110,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         return
                     record_success(ip, uname)
                     nicegui_app.storage.user[SESSION_USER_KEY] = u.id
+                    nicegui_app.storage.user["pwv"] = session_fingerprint(u)
                 # Remember ONLY the username on this browser — never the password.
                 try:
                     if remember.value:
@@ -4649,6 +4664,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         return
                     u.password_hash = hash_password(new.value)
                     session.add(u)
+                    new_pwv = session_fingerprint(u)
+                # The password change revokes every OTHER session (their stamped
+                # fingerprint is now stale); keep THIS browser signed in.
+                nicegui_app.storage.user["pwv"] = new_pwv
                 # Stored remember-me holds the old password — drop it so the next
                 # sign-in uses the new one.
                 try:
@@ -4762,7 +4781,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
         page_header("compare.title", lang)
 
         with session_scope() as session:
-            docs = session.exec(select(Document).order_by(Document.id.desc()).limit(2000)).all()
+            # ACL: only offer documents this user can see in the compare picker.
+            docs = session.exec(
+                filter_documents(select(Document), user).order_by(Document.id.desc()).limit(2000)
+            ).all()
             options = {d.id: f"#{d.id} — {d.filename}" for d in docs if d.id is not None}
 
         if not options:
@@ -5040,7 +5062,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         with session_scope() as session:
             d = session.get(Document, doc)
-            if not d:
+            # ACL: a non-admin must not open a document they can't see (direct
+            # /viewer?doc=N access). Treated as not-found to avoid id probing.
+            if not d or not can_see_document(user, d):
                 empty_state("find_in_page", "docs.viewer.not_found", "docs.viewer.not_found_hint", lang)
                 return
             from app.models import DocumentPage as _DP
