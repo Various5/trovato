@@ -160,7 +160,17 @@ def create_backup(
                 )
 
         if "settings" in components and s.settings_json_path.exists():
-            zf.write(s.settings_json_path, arcname="settings/settings.json")
+            # Never export the master secret_key (it lives in secret.key now, but
+            # strip it defensively in case a legacy key still lingers here — a
+            # backup carrying the key is a self-decrypting credential bundle).
+            try:
+                import json as _json
+
+                cfg = _json.loads(s.settings_json_path.read_text(encoding="utf-8"))
+                cfg.pop("secret_key", None)
+                zf.writestr("settings/settings.json", _json.dumps(cfg, indent=2, ensure_ascii=False))
+            except Exception:
+                zf.write(s.settings_json_path, arcname="settings/settings.json")
 
         if "logs" in components and s.logs_path.exists():
             _zip_dir(zf, s.logs_path, "logs")

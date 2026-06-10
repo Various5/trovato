@@ -154,13 +154,29 @@ class Settings(BaseSettings):
             p.mkdir(parents=True, exist_ok=True)
 
     def ensure_secret_key(self) -> None:
-        """Persist a generated secret key inside settings.json if one isn't set."""
+        """Load the master secret key from a dedicated keystore file (never
+        settings.json, never a backup). Same value + derivations as before, so
+        existing encrypted secrets/sessions keep working. Migrates a legacy
+        plaintext key out of settings.json on first run after the change."""
         if self.secret_key:
             return
-        key = load_user_settings().get("secret_key")
+        from app.utils.keystore import read_secret_key, write_secret_key
+
+        keyfile = self.data_path / "secret.key"
+        key = read_secret_key(keyfile)
         if not key:
-            key = secrets.token_urlsafe(48)
-            save_user_settings({"secret_key": key})
+            legacy = load_user_settings().get("secret_key")
+            if legacy:
+                key = legacy
+                # Stop exporting it — drop it from settings.json (which is backed up).
+                current = load_user_settings()
+                current.pop("secret_key", None)
+                _settings_json_path().write_text(
+                    json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            else:
+                key = secrets.token_urlsafe(48)
+            write_secret_key(keyfile, key)
         self.secret_key = key
 
 
