@@ -142,6 +142,36 @@ python -m scripts.backup --output backup.zip --include db,vector,chats,memory,se
 python -m scripts.restore --input backup.zip
 ```
 
+## Licensing / activation
+
+The app is unlocked with a **signed license key**. Verification is fully
+**offline** — keys are short Ed25519-signed tokens checked locally against an
+embedded public key, so nothing phones home and keys can't be forged. Keys can
+be **perpetual** or carry an **expiry date**; they are not tied to a machine.
+
+**For users:** on first launch (after sign-in) the app shows an **Activate**
+screen — paste your key and you're in. You can review or replace it later under
+**Settings → License**.
+
+**For the vendor (issuing keys):**
+
+```bash
+# 1) ONE TIME: create the signing keypair. Writes the PRIVATE key OUTSIDE the
+#    repo (~/.localdoc-license/signing_key.pem — keep it safe + backed up) and
+#    prints the PUBLIC key to paste into app/services/licensing.py.
+python -m scripts.gen_keypair
+
+# 2) Mint a key for a customer (omit --expires for a perpetual key):
+python -m scripts.gen_license --licensee "Acme Corp <ops@acme.com>"
+python -m scripts.gen_license --licensee "Jane" --expires 2027-01-31 --plan pro
+```
+
+The private signing key never ships with the app — only the public key is
+embedded, so a build can verify keys but never mint them. **Never commit the
+private key.** Rotating it (re-running `gen_keypair --force`) invalidates every
+previously issued key. (Offline expiry can be bypassed by setting the system
+clock back — an accepted trade-off for a local-first, open-source app.)
+
 ## Project layout
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture.

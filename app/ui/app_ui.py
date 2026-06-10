@@ -16,7 +16,7 @@ from nicegui import ui
 from sqlalchemy import func
 from sqlmodel import select
 
-from app import __app_name__, __version__
+from app import __app_name__, __contact__, __version__
 from app.auth.security import (
     SESSION_USER_KEY,
     create_user,
@@ -38,6 +38,7 @@ from app.models import (
     User,
     UserSetting,
 )
+from app.services import licensing
 from app.services.hardware import detect_hardware
 from app.services.indexer import abort_scan_job, start_scan_in_background
 from app.ui.components import (
@@ -114,6 +115,46 @@ def _require_login() -> User | None:
         return None
     _bridge_session_cookie(u.id)
     return u
+
+
+def _require_license() -> bool:
+    """Whole-app license gate: True if activated, else redirect to ``/activate``.
+
+    The primary gate lives in ``_layout`` (covers every chrome page); this
+    helper is for pages that need to bail out before doing work.
+    """
+    if licensing.is_activated():
+        return True
+    ui.navigate.to("/activate")
+    return False
+
+
+def _render_license_summary(status: licensing.LicenseStatus, lang: str) -> None:
+    """Status pill + licensee/plan/expiry lines for a LicenseStatus (shared by
+    the /activate page and the Settings → License tab)."""
+    info = status.info
+    if status.active and info:
+        with ui.row().classes("items-center gap-2"):
+            ui.label("● " + t("license.status_active", lang)).classes("ldi-pill ldi-pill-success")
+            if info.plan:
+                ui.label(info.plan).classes("ldi-pill")
+        if info.licensee:
+            ui.label(f"{t('license.licensee', lang)}: {info.licensee}").classes("text-body2 q-mt-xs")
+        if info.is_perpetual:
+            ui.label(t("license.perpetual", lang)).classes("text-caption opacity-70")
+        else:
+            days = licensing.days_remaining(info)
+            line = f"{t('license.expires', lang)}: {info.expires}"
+            if days is not None:
+                line += "  ·  " + t("license.days_left", lang).format(n=days)
+            ui.label(line).classes("text-caption opacity-70")
+        return
+    if status.reason == "expired":
+        ui.label(t("license.status_expired", lang)).classes("ldi-pill ldi-pill-error")
+        if info and info.expires:
+            ui.label(t("license.expired_on", lang).format(d=info.expires)).classes("text-caption opacity-70")
+    else:
+        ui.label(t("license.status_inactive", lang)).classes("ldi-pill")
 
 
 def _media_token() -> str:
@@ -620,6 +661,14 @@ def _layout(user: User, current: str) -> None:
     label, theme/lang shortcuts, user menu). The drawer is a glass panel that
     can slide off-screen via the hamburger toggle.
     """
+    # Whole-app license gate. The /activate page builds its own minimal shell
+    # (never calls _layout), and /help stays reachable so a locked-out user can
+    # still read the docs; every other page redirects to activation until a
+    # valid key is entered. Licensed users pass instantly (one local verify).
+    if current not in ("/activate", "/help") and not licensing.is_activated():
+        ui.navigate.to("/activate")
+        return
+
     import asyncio
 
     _apply_theme(_user_theme(user))
@@ -1011,6 +1060,66 @@ def register_ui(fastapi_app: FastAPI) -> None:
             )
             password.on("keydown.enter", lambda _: _login())
             ui.link(t("login.forgot", ph_lang), "/recover").classes("text-caption q-mt-sm")
+
+    @ui.page("/activate")
+    def page_activate() -> None:
+        user = _require_login()
+        if not user:
+            return
+        _apply_theme(_user_theme(user))
+        lang = _user_lang(user)
+        status = licensing.current_status()
+
+        with (
+            ui.column().classes("w-full items-center justify-center p-4").style("min-height: 100vh"),
+            ui.card().classes("ldi-static w-full max-w-md p-6"),
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("workspace_premium").classes("ldi-accent text-3xl")
+                ui.label(t("license.activate_title", lang)).classes("text-h5 ldi-primary")
+            ui.label(t("license.activate_intro", lang)).classes("text-caption opacity-80")
+
+            _render_license_summary(status, lang)
+
+            if status.active:
+                ui.button(
+                    t("license.go_dashboard", lang),
+                    icon="arrow_forward",
+                    on_click=lambda: ui.navigate.to("/"),
+                ).props("color=primary").classes("w-full q-mt-md")
+
+            key_in = (
+                ui.textarea(t("license.key_label", lang))
+                .props("outlined autogrow")
+                .classes("w-full q-mt-sm")
+                .style("font-family: 'JetBrains Mono', monospace;")
+            )
+            msg = ui.label("").classes("text-caption q-mt-xs")
+
+            def _do_activate() -> None:
+                st = licensing.activate(key_in.value or "")
+                if st.active:
+                    ui.notify(t("license.activated", lang), color="positive")
+                    ui.navigate.to("/")
+                    return
+                err_key = (
+                    "license.err_empty"
+                    if st.reason == "none"
+                    else "license.err_expired" if st.reason == "expired" else "license.err_invalid"
+                )
+                msg.text = t(err_key, lang)
+                msg.classes(replace="text-caption q-mt-xs text-negative")
+
+            ui.button(t("license.activate_btn", lang), icon="lock_open", on_click=_do_activate).props(
+                "color=primary"
+            ).classes("w-full q-mt-md")
+
+            ui.separator().classes("q-my-md")
+            ui.label(t("license.how_to_buy", lang)).classes("text-caption opacity-70")
+            ui.link(t("license.contact", lang), f"mailto:{__contact__}").classes("text-caption")
+            ui.button(t("btn.logout", lang), icon="logout", on_click=_do_logout).props("flat").classes(
+                "q-mt-sm"
+            )
 
     @ui.page("/first-run")
     def page_first_run() -> None:
@@ -3814,12 +3923,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.tab("appearance", label=t("settings.tab_appearance", lang), icon="palette")
             ui.tab("network", label=t("settings.tab_network", lang), icon="lan")
             ui.tab("account", label=t("settings.tab_account", lang), icon="person")
+            ui.tab("license", label=t("settings.tab_license", lang), icon="workspace_premium")
         with ui.tab_panels(_settings_tabs, value="models").classes("w-full"):
             _p_models = ui.tab_panel("models").classes("q-px-none")
             _p_indexing = ui.tab_panel("indexing").classes("q-px-none")
             _p_appearance = ui.tab_panel("appearance").classes("q-px-none")
             _p_network = ui.tab_panel("network").classes("q-px-none")
             _p_account = ui.tab_panel("account").classes("q-px-none")
+            _p_license = ui.tab_panel("license").classes("q-px-none")
 
         with section_card(lang, title_key="settings.lmstudio", icon="memory") as _card_lm:
             url = ui.input(t("settings.base_url", lang), value=s.lmstudio_base_url).classes("w-full")
@@ -4353,6 +4464,61 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             ui.button(t("settings.update_pw", lang), on_click=_change).props("color=primary")
 
+        with section_card(
+            lang, title_key="settings.tab_license", icon="workspace_premium", extra="q-mt-md"
+        ) as _card_lic:
+            _lic_status = licensing.current_status()
+            _render_license_summary(_lic_status, lang)
+            ui.separator().classes("q-my-sm")
+            ui.label(t("license.replace", lang)).classes("text-caption opacity-70")
+            lic_key_in = (
+                ui.textarea(t("license.key_label", lang))
+                .props("outlined autogrow")
+                .classes("w-full")
+                .style("font-family: 'JetBrains Mono', monospace;")
+            )
+            lic_msg = ui.label("").classes("text-caption")
+
+            def _lic_apply() -> None:
+                st = licensing.activate(lic_key_in.value or "")
+                if st.active:
+                    ui.notify(t("license.activated", lang), color="positive")
+                    ui.navigate.reload()
+                    return
+                err_key = (
+                    "license.err_empty"
+                    if st.reason == "none"
+                    else "license.err_expired" if st.reason == "expired" else "license.err_invalid"
+                )
+                lic_msg.text = t(err_key, lang)
+                lic_msg.classes(replace="text-caption text-negative")
+
+            with ui.row().classes("gap-2 q-mt-sm"):
+                ui.button(t("license.activate_btn", lang), icon="lock_open", on_click=_lic_apply).props(
+                    "color=primary"
+                )
+
+                if _lic_status.active:
+
+                    def _lic_remove() -> None:
+                        def _do() -> None:
+                            licensing.deactivate()
+                            ui.notify(t("license.removed", lang), color="warning")
+                            ui.navigate.to("/activate")
+
+                        confirm_dialog(
+                            "license.remove",
+                            "license.remove_confirm",
+                            _do,
+                            lang,
+                            danger=True,
+                            confirm_key="license.remove",
+                        )
+
+                    ui.button(t("license.remove", lang), icon="lock", on_click=_lic_remove).props(
+                        "flat color=negative"
+                    )
+
         # Relocate each flat-built section card into its tab panel.
         _card_lm.move(_p_models)
         _card_ocr.move(_p_models)
@@ -4361,6 +4527,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         _card_appear.move(_p_appearance)
         _card_net.move(_p_network)
         _card_pw.move(_p_account)
+        _card_lic.move(_p_license)
 
         # Persistent save bar below the tabs (applies to every tab except
         # Account, which has its own update button).

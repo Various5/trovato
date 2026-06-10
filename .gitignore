@@ -59,7 +59,9 @@ samples/*.pdf
 .env.local
 *.key
 *.pem
+*.lic
 secrets/
+.localdoc-license/
 
 # Installer / build artifacts
 *.spec
