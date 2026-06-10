@@ -26,7 +26,7 @@ from app.auth.security import (
     verify_password,
 )
 from app.config import get_settings, save_user_settings
-from app.database import session_scope
+from app.database import session_scope, write_session
 from app.llm import LMStudioClient, reset_client_cache
 from app.models import (
     Chat,
@@ -1082,11 +1082,30 @@ def register_ui(fastapi_app: FastAPI) -> None:
             err = ui.label("").classes("text-negative q-mt-sm")
 
             def _login() -> None:
+                # Brute-force protection: the UI login runs in-process (it never
+                # hits /api/auth/login), so it must apply the SAME rate limiter —
+                # otherwise a WAN-exposed instance has an unthrottled guess path.
+                from nicegui import context
+
+                from app.auth.rate_limit import is_locked, record_failure, record_success
+
+                ip = getattr(getattr(context, "client", None), "ip", None) or "ui"
+                uname = username.value or ""
+                locked, retry = is_locked(ip, uname)
+                if locked:
+                    err.text = t("login.locked", ph_lang).format(s=int(retry))
+                    return
                 with session_scope() as session:
-                    u = session.exec(select(User).where(User.username == username.value)).first()
-                    if not u or not verify_password(password.value, u.password_hash):
-                        err.text = t("login.invalid", ph_lang)
+                    u = session.exec(select(User).where(User.username == uname)).first()
+                    if not u or not u.is_active or not verify_password(password.value, u.password_hash):
+                        was_locked, lockout = record_failure(ip, uname)
+                        err.text = (
+                            t("login.locked", ph_lang).format(s=int(lockout))
+                            if was_locked
+                            else t("login.invalid", ph_lang)
+                        )
                         return
+                    record_success(ip, uname)
                     nicegui_app.storage.user[SESSION_USER_KEY] = u.id
                 # Encrypted credential persistence — only if the user opted in.
                 try:
@@ -4493,7 +4512,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 t("settings.app_port", lang), value=s.port, min=1, max=65535, format="%d"
             ).classes("w-40")
             lan_sw = ui.switch(t("settings.allow_lan", lang), value=s.allow_lan)
+            secure_sw = ui.switch(
+                t("settings.secure_cookies", lang), value=bool(getattr(s, "secure_cookies", False))
+            )
+            ui.label(t("settings.secure_cookies_hint", lang)).classes("text-caption opacity-60")
             help_callout("settings.network_hint", lang, icon="warning")
+            help_callout("settings.wan_security_hint", lang, icon="security")
             ui.label(t("settings.network_restart", lang)).classes("text-caption opacity-60 q-mt-xs")
 
         def _save() -> None:
@@ -4516,6 +4540,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     "performance_profile": perf.value or s.performance_profile,
                     "port": int(port_in.value or s.port),
                     "allow_lan": bool(lan_sw.value),
+                    "secure_cookies": bool(secure_sw.value),
                 }
             )
             get_settings.cache_clear()
@@ -4529,7 +4554,45 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.notify(t("settings.saved_reload", lang), color="positive")
             ui.navigate.reload()
 
-        with section_card(lang, title_key="settings.change_pw", icon="lock", extra="q-mt-md") as _card_pw:
+        with section_card(
+            lang, title_key="settings.tab_account", icon="manage_accounts", extra="q-mt-md"
+        ) as _card_pw:
+            ui.label(t("settings.account_hint", lang)).classes("text-caption opacity-70")
+
+            # --- Admin username -------------------------------------------
+            uname_in = ui.input(t("settings.admin_username", lang), value=user.username).classes("w-full")
+
+            def _change_username() -> None:
+                new_un = (uname_in.value or "").strip()
+                if not new_un:
+                    ui.notify(t("settings.username_required", lang), color="negative")
+                    return
+                if new_un == user.username:
+                    return
+                with write_session() as session:
+                    clash = session.exec(select(User).where(User.username == new_un)).first()
+                    if clash and clash.id != user.id:
+                        ui.notify(t("settings.username_taken", lang), color="negative")
+                        return
+                    u = session.get(User, user.id)
+                    if u:
+                        u.username = new_un
+                        session.add(u)
+                # The saved remember-me credential still holds the OLD username.
+                try:
+                    delete_secret(REMEMBER_SECRET_NAME)
+                except Exception as e:
+                    logger.warning("username change: clearing remember-me failed: {}", e)
+                ui.notify(t("settings.username_updated", lang), color="positive")
+                ui.navigate.reload()
+
+            ui.button(t("settings.update_username", lang), icon="badge", on_click=_change_username).props(
+                "color=primary"
+            )
+
+            ui.separator().classes("q-my-md")
+
+            # --- Password (requires the current one) ----------------------
             old = ui.input(
                 t("common.current_password", lang), password=True, password_toggle_button=True
             ).classes("w-full")
@@ -4538,16 +4601,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ).classes("w-full")
 
             def _change() -> None:
-                with session_scope() as session:
+                with write_session() as session:
                     u = session.get(User, user.id)
                     if not u or not verify_password(old.value, u.password_hash):
                         ui.notify(t("settings.pw_wrong", lang), color="negative")
                         return
                     u.password_hash = hash_password(new.value)
                     session.add(u)
+                # Stored remember-me holds the old password — drop it so the next
+                # sign-in uses the new one.
+                try:
+                    delete_secret(REMEMBER_SECRET_NAME)
+                except Exception as e:
+                    logger.warning("password change: clearing remember-me failed: {}", e)
                 ui.notify(t("settings.pw_updated", lang), color="positive")
 
-            ui.button(t("settings.update_pw", lang), on_click=_change).props("color=primary")
+            ui.button(t("settings.update_pw", lang), icon="lock", on_click=_change).props("color=primary")
 
         with section_card(
             lang, title_key="settings.tab_license", icon="workspace_premium", extra="q-mt-md"

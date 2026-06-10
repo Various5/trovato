@@ -215,7 +215,11 @@ def create_app():  # type: ignore[no-untyped-def]
         SessionMiddleware,
         secret_key=s.secret_key,
         same_site="lax",
-        https_only=False,
+        # Secure flag is opt-in (Settings → Network) for HTTPS deployments; the
+        # cookie is always HttpOnly (Starlette default), so client JS can't read
+        # it. Setting Secure on plain HTTP would drop the cookie, so it defaults
+        # off for the localhost desktop case.
+        https_only=s.secure_cookies,
         # 90 days — this is a local desktop app, the cookie lives on the same
         # machine. Long expiry means the user only sees the login screen once.
         max_age=90 * 24 * 3600,

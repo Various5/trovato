@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8765
     allow_lan: bool = False
+    # Mark the session cookie ``Secure`` so the browser only sends it over HTTPS.
+    # OFF by default: enabling it while serving plain HTTP makes the browser drop
+    # the cookie entirely (you can't stay logged in). Only turn it on when the
+    # app sits behind HTTPS (a reverse proxy / tunnel).
+    secure_cookies: bool = False
     secret_key: str = ""
     debug: bool = False
     log_level: str = "INFO"
@@ -215,6 +220,7 @@ def get_settings() -> Settings:
         "host",
         "port",
         "allow_lan",
+        "secure_cookies",
         "log_level",
     ):
         if key in user and user[key] not in (None, ""):
