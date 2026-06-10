@@ -152,11 +152,17 @@ def create_app():  # type: ignore[no-untyped-def]
         try:
             import asyncio as _aio
 
-            from app.services.indexer import backfill_image_chunk_sources
+            from app.services.indexer import (
+                backfill_image_chunk_sources,
+                backfill_tag_quality,
+            )
 
             _aio.create_task(_aio.to_thread(backfill_image_chunk_sources))
+            # One-time: clean noisy pre-existing auto-tags (drop bare doc-type +
+            # has:dates/has:amounts, namespace sensitivity). Idempotent.
+            _aio.create_task(_aio.to_thread(backfill_tag_quality))
         except Exception as e:
-            logger.debug("image-chunk backfill not scheduled: {}", e)
+            logger.debug("backfills not scheduled: {}", e)
         # Preload the configured models into LM Studio so they're hot before the
         # first scan/chat, then heal the vector store if the embedding model
         # changed under it. Detached + best-effort: never blocks boot, and if LM

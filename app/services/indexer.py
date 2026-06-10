@@ -96,6 +96,74 @@ def backfill_image_chunk_sources() -> int:
     return relabelled
 
 
+def backfill_tag_quality() -> int:
+    """One-time cleanup of auto-tags created before the tag-quality pass.
+
+    Brings an existing library in line with the new scheme: drop the redundant
+    bare doc-type tags (the type already lives on ``Document.doc_type`` + its own
+    facet), drop the near-universal ``has:dates`` / ``has:amounts`` flags, and
+    namespace the bare sensitivity tags (``finanzen`` → ``sensitive:finanzen``).
+    Only touches ``auto`` tags, is idempotent, and re-points links rather than
+    orphaning documents. Without this, libraries indexed before the change keep
+    showing the old noisy chips until a full reindex.
+    """
+    from app.services.tagging import _DOC_TYPE_KEYWORDS, _SENSITIVE_PATTERNS
+
+    doctype_names = set(_DOC_TYPE_KEYWORDS.keys())
+    sensitivity_names = {name for name, _ in _SENSITIVE_PATTERNS}
+    drop_exact = {"has:dates", "has:amounts"}
+    changed = 0
+    try:
+        with write_session() as session:
+            tags = session.exec(select(Tag)).all()
+            by_name = {t.name: t for t in tags}
+            for tag in tags:
+                if not tag.auto:
+                    continue
+                name = tag.name
+                # 1) Drop redundant doc-type tags + near-universal flags (+ links).
+                if name in doctype_names or name in drop_exact:
+                    for link in session.exec(
+                        select(DocumentTagLink).where(DocumentTagLink.tag_id == tag.id)  # type: ignore[attr-defined]
+                    ).all():
+                        session.delete(link)
+                    session.delete(tag)
+                    changed += 1
+                    continue
+                # 2) Namespace bare sensitivity tags → sensitive:<name>.
+                if name in sensitivity_names:
+                    target = f"sensitive:{name}"
+                    existing = by_name.get(target)
+                    if existing is None:
+                        tag.name = target
+                        session.add(tag)
+                        by_name[target] = tag
+                    else:  # a sensitive:<name> already exists → merge links in
+                        have = {
+                            link.document_id
+                            for link in session.exec(
+                                select(DocumentTagLink).where(DocumentTagLink.tag_id == existing.id)  # type: ignore[attr-defined]
+                            ).all()
+                        }
+                        for link in session.exec(
+                            select(DocumentTagLink).where(DocumentTagLink.tag_id == tag.id)  # type: ignore[attr-defined]
+                        ).all():
+                            if link.document_id in have:
+                                session.delete(link)
+                            else:
+                                link.tag_id = existing.id
+                                have.add(link.document_id)
+                                session.add(link)
+                        session.delete(tag)
+                    changed += 1
+    except Exception as e:
+        logger.debug("tag-quality backfill skipped: {}", e)
+        return 0
+    if changed:
+        logger.info("backfill: cleaned {} auto-tags (tag-quality)", changed)
+    return changed
+
+
 # Guards a vector-store rebuild so a startup heal and a manual rebuild can't run
 # at the same time (each would re-embed the whole library).
 _REEMBED_LOCK = asyncio.Lock()

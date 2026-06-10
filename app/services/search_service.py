@@ -98,9 +98,17 @@ async def hybrid_search(
     tags: list[str] | None = None,
     alpha: float = 0.55,  # weight on vector score vs. FTS
     rerank: bool = False,
+    collapse_per_doc: bool = False,  # keep only the best chunk per document
     user: User | None = None,  # noqa: F821 — forward ref to avoid circular
 ) -> list[SearchHit]:
-    """Run vector + FTS search and merge the results."""
+    """Run vector + FTS search and merge the results.
+
+    With ``collapse_per_doc`` (used by the Search page) only the single
+    highest-scoring chunk per document survives, so a term that appears many
+    times in one PDF can't flood the list with near-identical cards and crowd
+    out other documents. RAG retrieval leaves it off — it wants several chunks
+    per document for context.
+    """
     query = (query or "").strip()
     if not query:
         return []
@@ -210,6 +218,15 @@ async def hybrid_search(
             )
 
     hits.sort(key=lambda h: h.score, reverse=True)
+    if collapse_per_doc:
+        seen_docs: set[int] = set()
+        collapsed: list[SearchHit] = []
+        for h in hits:
+            if h.document_id in seen_docs:
+                continue
+            seen_docs.add(h.document_id)
+            collapsed.append(h)
+        hits = collapsed
     hits = hits[:top_k]
 
     # Normalise to 0..1 BEFORE reranking. The LLM reranker blends

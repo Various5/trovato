@@ -23,7 +23,16 @@ _DOC_TYPE_KEYWORDS = {
 _SENSITIVE_PATTERNS = [
     ("personenbezogene_daten", re.compile(r"\b(geburtsdatum|date of birth|iban|bic|tax id)\b", re.I)),
     ("zugangsdaten", re.compile(r"\b(password|passwort|api[_ -]?key|secret)\b", re.I)),
-    ("finanzen", re.compile(r"\b(betrag|total|amount|sum|eur|usd)\b", re.I)),
+    # Require a real monetary amount or a banking/billing term — the old pattern
+    # matched the bare words total/amount/sum and so fired on almost every
+    # business document, making "finanzen" a near-universal, meaningless tag.
+    (
+        "finanzen",
+        re.compile(
+            r"[€$£]\s*\d|\b\d[\d.,]*\s?(?:eur|usd|gbp|chf)\b|\b(?:iban|bic|rechnungsbetrag|zahlungsbetrag)\b",
+            re.I,
+        ),
+    ),
     ("medizin", re.compile(r"\b(diagnose|patient|medication|therapy)\b", re.I)),
 ]
 
@@ -52,7 +61,9 @@ def detect_doc_type(text: str) -> str | None:
     if not scores:
         return None
     top, score = scores.most_common(1)[0]
-    return top if score > 0 else None
+    # Require at least two keyword hits so a single incidental word (one stray
+    # "report"/"note") doesn't slap a confident doc-type on the document.
+    return top if score >= 2 else None
 
 
 def detect_sensitivity_tags(text: str) -> list[str]:
@@ -94,28 +105,27 @@ def extract_entities(text: str) -> dict[str, list[str]]:
 
 
 def auto_tags(text: str, *, vision_text: str = "") -> list[str]:
-    """Build a tag list from text + optional vision-description text.
+    """Build an auto-tag list from text + optional vision-description text.
 
-    Adds: doc-type, language, sensitivity, and high-level flags like
-    ``has:dates``, ``has:amounts``, ``has:org``.
+    Every auto-tag is **namespaced** (``lang:`` / ``sensitive:`` / ``has:``) so it
+    stays out of the free "topic" bucket the UI reserves for real subjects. We
+    deliberately do NOT emit a doc-type tag — the doc type already lives on
+    ``Document.doc_type`` (and its own search facet), so a bare ``rechnung`` tag
+    was pure duplication. We also drop the old ``has:dates`` / ``has:amounts``
+    flags: almost every document has a date or a number, so they carried no
+    signal and just crowded the chips. ``has:org`` / ``has:images`` are kept
+    because they actually distinguish documents.
     """
     tags: list[str] = []
     haystack = text or ""
     if vision_text:
         haystack = haystack + "\n" + vision_text
-    dt = detect_doc_type(haystack)
-    if dt:
-        tags.append(dt)
     lang = detect_language(haystack)
     if lang:
         tags.append(f"lang:{lang}")
-    tags.extend(detect_sensitivity_tags(haystack))
+    tags.extend(f"sensitive:{s}" for s in detect_sensitivity_tags(haystack))
 
     ent = extract_entities(haystack)
-    if ent["dates"]:
-        tags.append("has:dates")
-    if ent["amounts"]:
-        tags.append("has:amounts")
     if ent["organisations"]:
         tags.append("has:org")
     if vision_text:

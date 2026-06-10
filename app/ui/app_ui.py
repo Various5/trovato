@@ -427,15 +427,30 @@ def highlight_terms(text: str, query: str) -> str:
         return safe
 
 
-def render_tag_chips(
-    tags: list[str], *, limit: int = 8, clickable: bool = True, show_overflow: bool = True
-) -> None:
-    """Compact, screen-fitting tag chips with a ``+N`` overflow.
+# Friendly leading icon per system-tag namespace. The raw "lang:de" / "has:org"
+# keys look like debug output, so chips show an icon + the suffix instead.
+_TAG_NS_ICON = {"lang": "language", "has": "check_circle", "sensitive": "shield", "type": "description"}
 
-    Free topic tags come first (rendered as solid pills), then namespaced system
-    tags (``lang:`` / ``has:`` / ``type:`` …, rendered muted). Clickable chips
-    deep-link to ``/search?tag=``. Shared by document cards, search results and
-    the viewer so tags look and behave the same everywhere.
+
+def _tag_display(tg: str) -> tuple[str, str | None]:
+    """``(label, icon)`` for a chip: namespaced system tags show their suffix +
+    an icon; free topics show their name and no icon."""
+    if ":" in tg:
+        prefix, _, suffix = tg.partition(":")
+        return (suffix or tg), _TAG_NS_ICON.get(prefix.lower())
+    return tg, None
+
+
+def render_tag_chips(
+    tags: list[str], *, limit: int = 6, clickable: bool = True, show_overflow: bool = True
+) -> None:
+    """Compact, screen-fitting tag chips with a ``+N`` overflow popover.
+
+    Free topic tags come first (solid pills), then namespaced system tags
+    (``lang:`` / ``has:`` / ``sensitive:`` …) rendered muted with an icon + the
+    suffix only — never the raw ``prefix:`` key. Clickable chips deep-link to
+    ``/search?tag=`` using the FULL tag value. Shared by document cards, search
+    results and the viewer so tags look and behave the same everywhere.
     """
     seen: list[str] = []
     for tg in tags:
@@ -447,37 +462,67 @@ def render_tag_chips(
     system = [tg for tg in seen if ":" in tg]
     ordered = topics + system
     shown = ordered[:limit]
-    extra = len(ordered) - len(shown)
+    rest = ordered[limit:]
     with ui.row().classes("items-center gap-1 flex-wrap"):
         for tg in shown:
+            label, icon = _tag_display(tg)
             cls = "ldi-pill" if ":" not in tg else "ldi-pill ldi-muted"
             if clickable:
-                ui.button(tg, on_click=lambda n=tg: ui.navigate.to(f"/search?tag={quote(n)}")).props(
-                    "flat dense no-caps size=sm"
-                ).classes(cls)
+                ui.button(
+                    label, icon=icon, on_click=lambda n=tg: ui.navigate.to(f"/search?tag={quote(n)}")
+                ).props("flat dense no-caps size=sm").classes(cls)
             else:
-                ui.label(tg).classes(cls)
-        if extra > 0 and show_overflow:
-            ui.label(f"+{extra}").classes("ldi-pill ldi-muted").style("font-size: 12px;")
+                with ui.row().classes(cls + " items-center gap-1 no-wrap").style("padding: 2px 8px;"):
+                    if icon:
+                        ui.icon(icon).style("font-size: 13px;")
+                    ui.label(label)
+        if rest and show_overflow:
+            if clickable:
+                with (
+                    ui.button(f"+{len(rest)}")
+                    .props("flat dense no-caps size=sm")
+                    .classes("ldi-pill ldi-muted")
+                ):
+                    with ui.menu():
+                        for tg in rest:
+                            label, _ic = _tag_display(tg)
+                            ui.menu_item(
+                                label, on_click=lambda n=tg: ui.navigate.to(f"/search?tag={quote(n)}")
+                            )
+            else:
+                ui.label(f"+{len(rest)}").classes("ldi-pill ldi-muted").style("font-size: 12px;")
 
 
 def tags_for_documents(doc_ids) -> dict[int, list[str]]:
-    """Batch-fetch tag names per document id (one query), ranked topic-first.
-    Used to show tags on search results without N+1 queries."""
+    """Batch-fetch tag names per document id (two queries), ordered by global
+    document-frequency so the most-used tags rank first — that way, when chips
+    are truncated to a limit, the meaningful tags survive instead of an
+    arbitrary id-order slice. ``render_tag_chips`` then floats topics ahead of
+    namespaced system tags. Avoids N+1 on search results."""
     ids = [int(i) for i in doc_ids if i is not None]
     if not ids:
         return {}
+    from sqlalchemy import func as _func
+
     from app.models import DocumentTagLink as _DTL
     from app.models import Tag as _Tag
 
-    out: dict[int, list[str]] = {}
     with session_scope() as session:
-        for did, name in session.exec(
-            select(_DTL.document_id, _Tag.name)
+        counts = dict(
+            session.exec(select(_DTL.tag_id, _func.count(_DTL.document_id)).group_by(_DTL.tag_id)).all()
+        )
+        rows = session.exec(
+            select(_DTL.document_id, _DTL.tag_id, _Tag.name)
             .join(_Tag, _Tag.id == _DTL.tag_id)
             .where(_DTL.document_id.in_(ids))
-        ).all():
-            out.setdefault(did, []).append(name)
+        ).all()
+    by_doc: dict[int, list[tuple[int, str]]] = {}
+    for did, tid, name in rows:
+        by_doc.setdefault(did, []).append((tid, name))
+    out: dict[int, list[str]] = {}
+    for did, items in by_doc.items():
+        items.sort(key=lambda it: (-counts.get(it[0], 0), it[1].lower()))
+        out[did] = [name for _tid, name in items]
     return out
 
 
@@ -2473,7 +2518,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     f"{t('docs.type', lang)}: {d.doc_type or '—'} · "
                                     f"{t('docs.lang', lang)}: {d.language or '—'}"
                                 ).classes("text-caption")
-                                _dtags = tags_by_doc.get(d.id, [])
+                                # The caption already shows type + language, so
+                                # drop lang:* from the chips to avoid duplication.
+                                _dtags = [
+                                    tg for tg in tags_by_doc.get(d.id, []) if not tg.startswith("lang:")
+                                ]
                                 if _dtags:
                                     with ui.element("div").classes("q-mt-xs"):
                                         render_tag_chips(_dtags, limit=6)
@@ -2781,7 +2830,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             if search_cache["key"] == key and search_cache["facets"] is not None:
                 return
             if query:
-                universe = await hybrid_search(query, top_k=150, rerank=rerank_toggle.value, user=user)
+                universe = await hybrid_search(
+                    query, top_k=150, rerank=rerank_toggle.value, collapse_per_doc=True, user=user
+                )
                 browse = False
             else:
                 universe = await _aio.to_thread(browse_documents, user=user, top_k=400)
@@ -2965,14 +3016,12 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 f"flex-shrink:0;background:rgba(255,255,255,0.03);'/>"
                             )
                             with ui.column().classes("flex-1 gap-2 min-w-0"):
-                                # Header row
+                                # Header row — rank is conveyed by order; the full
+                                # path moves to a tooltip on the filename.
                                 with ui.row().classes("items-center gap-2 w-full no-wrap"):
-                                    ui.label(f"#{rank}").classes("ldi-pill").style(
-                                        "min-width: 38px; justify-content: center;"
-                                    )
-                                    with ui.column().classes("flex-1 gap-0 min-w-0"):
-                                        ui.label(h.filename).classes("text-body1").style("font-weight: 600;")
-                                        ui.label(h.path).classes("text-caption opacity-60 ellipsis")
+                                    ui.label(h.filename).classes("text-body1 flex-1 ellipsis").style(
+                                        "font-weight: 600;"
+                                    ).tooltip(h.path)
                                     ui.label(f"p.{h.page_from}").classes("ldi-pill")
                                     if h.source and h.source != "native_text":
                                         ui.html(_source_pill(h.source)).style("flex-shrink: 0;")
@@ -2985,23 +3034,24 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                 _imgs = _img_map.get((h.document_id, h.page_from), [])
                                 if _imgs:
                                     with ui.row().classes("gap-1 flex-wrap q-mt-xs"):
-                                        for _iid in _imgs[:6]:
+                                        for _iid in _imgs[:3]:
                                             ui.html(
                                                 f"<img src='{doc_image_url(h.document_id, _iid)}' "
                                                 f"loading='lazy' referrerpolicy='no-referrer' "
                                                 f"style='height:60px;width:auto;border-radius:6px;"
                                                 f"border:1px solid var(--ldi-glass-border);'/>"
                                             )
-                                # Footer: score bar + actions
+                                # Footer: a single relevance bar (% on hover) + actions
                                 with ui.row().classes("items-center gap-3 w-full no-wrap"):
-                                    with ui.column().classes("gap-0").style("min-width: 130px;"):
-                                        ui.label(f"{t('search.score', lang)} {h.score:.3f}").classes(
-                                            "text-caption opacity-70"
+                                    with (
+                                        ui.element("div")
+                                        .classes("ldi-progress")
+                                        .style("height: 4px; max-width: 120px;")
+                                        .tooltip(f"{score_pct:.0f}%")
+                                    ):
+                                        ui.element("div").classes("ldi-progress-fill").style(
+                                            f"width: {score_pct:.1f}%;"
                                         )
-                                        with ui.element("div").classes("ldi-progress").style("height: 4px;"):
-                                            ui.element("div").classes("ldi-progress-fill").style(
-                                                f"width: {score_pct:.1f}%;"
-                                            )
                                     ui.space()
                                     ui.button(
                                         t("search.btn_view", lang),
