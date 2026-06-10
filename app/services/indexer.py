@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.config import get_settings
@@ -162,6 +163,75 @@ def backfill_tag_quality() -> int:
     if changed:
         logger.info("backfill: cleaned {} auto-tags (tag-quality)", changed)
     return changed
+
+
+async def backfill_llm_topics(*, progress=None, limit: int | None = None, only_missing: bool = True) -> int:
+    """Generate LLM subject-topic tags for indexed documents.
+
+    Reads each document's stored chunk text, asks the chat model for topics and
+    attaches them. Sequential (one LLM call at a time) to be gentle on LM Studio;
+    best-effort per document. With ``only_missing`` it skips documents that
+    already carry a topic (non-namespaced) tag. ``progress(done, total)`` is
+    invoked after each document for UI feedback. Returns the number tagged.
+    """
+    from app.llm import get_client
+    from app.services.tagging import llm_topics
+
+    client = get_client()
+    with session_scope() as session:
+        docs = session.exec(
+            select(Document)
+            .where(Document.status == DocumentStatus.indexed)
+            .order_by(Document.id)  # type: ignore[attr-defined]
+        ).all()
+        targets = [(d.id, d.language) for d in docs if d.id is not None]
+        vocab = [n for n in session.exec(select(Tag.name)).all() if ":" not in n]
+        if only_missing:
+            rows = session.exec(
+                select(DocumentTagLink.document_id, Tag.name).join(Tag, Tag.id == DocumentTagLink.tag_id)
+            ).all()
+            topiced = {did for did, name in rows if ":" not in name}
+            targets = [(did, lg) for did, lg in targets if did not in topiced]
+    if limit:
+        targets = targets[:limit]
+    total = len(targets)
+    tagged = 0
+    seen_vocab = list(dict.fromkeys(vocab))
+    for i, (did, lg) in enumerate(targets):
+        with session_scope() as session:
+            rows = session.exec(
+                select(DocumentChunk.text)
+                .where(DocumentChunk.document_id == did)  # type: ignore[attr-defined]
+                .order_by(DocumentChunk.id)
+                .limit(40)
+            ).all()
+        text = "\n".join(c for c in rows if c)[:8000]
+        topics = await llm_topics(text, client=client, lang=lg, existing=seen_vocab, max_tags=6)
+        if topics:
+            with write_session() as session:
+                for name in topics:
+                    tag_obj = session.exec(select(Tag).where(func.lower(Tag.name) == name.lower())).first()
+                    if not tag_obj:
+                        tag_obj = Tag(name=name, auto=True)
+                        session.add(tag_obj)
+                        session.flush()
+                        seen_vocab.append(name)
+                    link = session.exec(
+                        select(DocumentTagLink).where(
+                            DocumentTagLink.document_id == did,  # type: ignore[attr-defined]
+                            DocumentTagLink.tag_id == tag_obj.id,
+                        )
+                    ).first()
+                    if not link:
+                        session.add(DocumentTagLink(document_id=did, tag_id=tag_obj.id, auto=True))
+            tagged += 1
+        if progress is not None:
+            try:
+                progress(i + 1, total)
+            except Exception:  # noqa: BLE001 — progress is cosmetic
+                pass
+    logger.info("llm topic backfill: tagged {}/{} document(s)", tagged, total)
+    return tagged
 
 
 # Guards a vector-store rebuild so a startup heal and a manual rebuild can't run
@@ -836,6 +906,10 @@ async def index_document(
         tags = auto_tags(agg_text, vision_text=vision_text)
         language = detect_language(agg_text)
         doc_type = detect_doc_type(agg_text)
+        # Merge the LLM subject topics computed in the async scope below — the
+        # chat call can't run in this worker thread. Empty unless opt-in.
+        if llm_extra_tags:
+            tags = sorted(set(tags) | set(llm_extra_tags))
 
         if doc_id is not None:
             delete_for_document(doc_id)  # Chroma — outside the SQLite write lock
@@ -891,7 +965,9 @@ async def index_document(
 
             # Auto-tagging on aggregated text + vision descriptions
             for tag_name in tags:
-                tag_obj = session.exec(select(Tag).where(Tag.name == tag_name)).first()
+                # Case-insensitive match so LLM topics ("Kostenplanung" /
+                # "kostenplanung") don't create near-duplicate tags.
+                tag_obj = session.exec(select(Tag).where(func.lower(Tag.name) == tag_name.lower())).first()
                 if not tag_obj:
                     tag_obj = Tag(name=tag_name, auto=True)
                     session.add(tag_obj)
@@ -924,6 +1000,18 @@ async def index_document(
                 )
             except Exception as e:
                 logger.warning("chroma upsert failed: {}", e)
+
+    # Real subject topics (opt-in) — computed here in the async scope and merged
+    # inside _persist_index_sync (which runs off the event loop). Best-effort.
+    llm_extra_tags: list[str] = []
+    if getattr(get_settings(), "llm_topics_enabled", False):
+        try:
+            from app.services.tagging import llm_topics
+
+            _agg = "\n".join(t for _, t in all_pages_text)[:50_000]
+            llm_extra_tags = await llm_topics(_agg, client=client, lang=detect_language(_agg), max_tags=6)
+        except Exception as e:
+            logger.debug("llm topics during index skipped: {}", e)
 
     await asyncio.to_thread(_persist_index_sync)
 

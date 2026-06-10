@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # Preference for the hardware-aware model auto-picker (Settings → Auto-pick):
     # "fastest" | "balanced" | "max" (quality). See app/services/model_advisor.py.
     model_quality: str = "balanced"
+    # Use the chat model to generate real SUBJECT topic tags during indexing
+    # (in addition to the heuristic system tags). Off by default: it adds an LLM
+    # call per document, so it's opt-in. The Tags page also has a manual
+    # "generate topics" backfill that works regardless of this flag.
+    llm_topics_enabled: bool = False
     # Preload the configured models into LM Studio at startup so they're hot
     # before the first scan/chat (warm_up_configured). Set false to keep boot
     # light and rely on just-in-time loading instead.
@@ -207,6 +212,7 @@ def get_settings() -> Settings:
         "embedding_model",
         "vision_language",
         "model_quality",
+        "llm_topics_enabled",
         "preload_models",
         "unload_on_exit",
         "ocr_backend",

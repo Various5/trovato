@@ -3672,6 +3672,38 @@ def register_ui(fastapi_app: FastAPI) -> None:
         from app.models import DocumentTagLink, Tag
         from app.services.tag_insights import merge_tags, tag_overview
 
+        # Real subject topics come from the chat model — the heuristic tagger only
+        # makes system flags. This runs the LLM over documents missing a topic.
+        with ui.row().classes("items-center gap-3 q-mb-sm no-wrap"):
+            gen_btn = ui.button(
+                t("tags.gen_btn", lang), icon="auto_awesome", on_click=lambda: _generate_topics()
+            ).props("color=primary")
+            gen_status = ui.label("").classes("text-caption ldi-primary")
+            ui.label(t("tags.gen_hint", lang)).classes("text-caption opacity-60")
+
+        async def _generate_topics() -> None:
+            if not (get_settings().chat_model or "").strip():
+                ui.notify(t("tags.gen_no_model", lang), color="warning")
+                return
+            from app.services.indexer import backfill_llm_topics
+
+            gen_btn.props("loading")
+
+            def _p(done: int, total: int) -> None:
+                gen_status.text = t("tags.gen_running", lang).format(d=done, n=total)
+
+            try:
+                n = await backfill_llm_topics(progress=_p)
+                gen_status.text = ""
+                ui.notify(t("tags.gen_done", lang).format(n=n), color="positive")
+            except Exception as e:
+                logger.warning("generate topics failed: {}", e)
+                gen_status.text = ""
+                ui.notify(f"{t('common.error', lang)}: {e}", color="negative")
+            finally:
+                gen_btn.props(remove="loading")
+                _refresh()
+
         container = ui.column().classes("w-full gap-3")
 
         def _render_tag_row(s) -> None:
@@ -4121,6 +4153,18 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
                 unload_sw.on("update:model-value", lambda _e: _save_unload())
 
+                topics_sw = ui.switch(
+                    t("settings.llm_topics", lang),
+                    value=bool(getattr(s, "llm_topics_enabled", False)),
+                )
+
+                def _save_topics() -> None:
+                    save_user_settings({"llm_topics_enabled": bool(topics_sw.value)})
+                    get_settings.cache_clear()
+
+                topics_sw.on("update:model-value", lambda _e: _save_topics())
+
+            ui.label(t("settings.llm_topics_hint", lang)).classes("text-caption opacity-60")
             connection_status = ui.label("").classes("text-caption q-mt-sm opacity-80")
 
             # ----- Model browser dialog -----------------------------------

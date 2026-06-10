@@ -1,3 +1,4 @@
+from app.services import tagging
 from app.services.tagging import auto_tags, detect_doc_type, detect_language
 
 
@@ -48,3 +49,51 @@ def test_auto_tags_are_all_namespaced_and_denoised() -> None:
 def test_finanzen_no_longer_fires_on_bare_words() -> None:
     # The word "total" alone must not tag a document as financial anymore.
     assert "sensitive:finanzen" not in auto_tags("The total summary of our amount of work.")
+
+
+# --- LLM topic tagger -------------------------------------------------------
+def test_parse_topics_plain_json() -> None:
+    assert tagging.parse_topics('["alpha", "beta", "gamma"]') == ["alpha", "beta", "gamma"]
+
+
+def test_parse_topics_code_fence_and_prose() -> None:
+    assert tagging.parse_topics('```json\n["x1", "y2"]\n```') == ["x1", "y2"]
+    assert tagging.parse_topics('Sure! ["foo", "bar"] — hope that helps.') == ["foo", "bar"]
+
+
+def test_parse_topics_bullets_fallback() -> None:
+    assert tagging.parse_topics("- alpha\n- beta\n* gamma") == ["alpha", "beta", "gamma"]
+
+
+def test_parse_topics_filters_colon_dups_and_length() -> None:
+    out = tagging.parse_topics('["lang:de", "Foo", "foo", "' + "z" * 50 + '", "ok"]')
+    assert out == ["Foo", "ok"]  # colon dropped, case-insensitive dup dropped, 50-char dropped
+
+
+def test_parse_topics_respects_max() -> None:
+    assert tagging.parse_topics('["aa","bb","cc","dd","ee"]', max_tags=3) == ["aa", "bb", "cc"]
+
+
+class _FakeChat:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    async def chat(self, messages, **kw) -> str:
+        return self.reply
+
+
+async def test_llm_topics_parses_reply() -> None:
+    out = await tagging.llm_topics("a long document " * 20, client=_FakeChat('["kostenplanung", "SIA 416"]'))
+    assert out == ["kostenplanung", "SIA 416"]
+
+
+async def test_llm_topics_skips_short_text() -> None:
+    assert await tagging.llm_topics("tiny", client=_FakeChat('["x"]')) == []
+
+
+async def test_llm_topics_is_error_safe() -> None:
+    class _Boom:
+        async def chat(self, *a, **k):
+            raise RuntimeError("offline")
+
+    assert await tagging.llm_topics("long text " * 20, client=_Boom()) == []
