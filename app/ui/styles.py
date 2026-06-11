@@ -13,11 +13,44 @@ Motion stays subtle and honours ``prefers-reduced-motion: reduce``.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from app.ui.themes import SYSTEM_DARK, SYSTEM_LIGHT, THEMES, Theme
 
-_FONT_IMPORT = (
-    "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;"
-    "600;700&family=JetBrains+Mono:wght@400;500&display=swap');"
+# Fonts ship with the app (app/ui/static/fonts, served at /ldi-static) instead
+# of a Google Fonts @import: the import was a render-blocking external fetch on
+# every navigation and stalled first paint for seconds on offline/air-gapped
+# machines — breaking the "100% offline" promise. Variable woff2 files from
+# fontsource (Inter 5.2.5, JetBrains Mono 5.2.5), latin + latin-ext subsets
+# with the same unicode-range split fontsource uses.
+_LATIN = (
+    "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, "
+    "U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, "
+    "U+2212, U+2215, U+FEFF, U+FFFD"
+)
+_LATIN_EXT = (
+    "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, "
+    "U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, "
+    "U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF"
+)
+
+
+def _font_face(family: str, file_stem: str, weight_range: str, unicode_range: str) -> str:
+    return (
+        "@font-face { "
+        f"font-family: '{family}'; font-style: normal; font-weight: {weight_range}; "
+        f"font-display: swap; src: url('/ldi-static/fonts/{file_stem}.woff2') format('woff2'); "
+        f"unicode-range: {unicode_range}; }}"
+    )
+
+
+_FONT_IMPORT = "\n".join(
+    [
+        _font_face("Inter", "inter-latin-wght-normal", "100 900", _LATIN),
+        _font_face("Inter", "inter-latin-ext-wght-normal", "100 900", _LATIN_EXT),
+        _font_face("JetBrains Mono", "jetbrains-mono-latin-wght-normal", "100 800", _LATIN),
+        _font_face("JetBrains Mono", "jetbrains-mono-latin-ext-wght-normal", "100 800", _LATIN_EXT),
+    ]
 )
 
 
@@ -126,8 +159,14 @@ def _root_block(theme_name: str) -> str:
     return f":root {{\n{_vars_css(t)}\n{_SCALE_TOKENS}}}"
 
 
+@lru_cache(maxsize=16)
 def build_global_css(theme_name: str) -> str:
-    """Return the full <style> body for the active theme."""
+    """Return the full stylesheet for the theme (cached — themes are static).
+
+    Served as a cacheable static resource (``/ldi/theme/{name}.css``) instead
+    of being inlined into every page, so the browser fetches it once per
+    app version rather than re-parsing ~24 KB on every navigation.
+    """
     return _FONT_IMPORT + "\n" + _root_block(theme_name) + "\n" + _STATIC_CSS
 
 
@@ -643,6 +682,96 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {
 }
 
 .q-spinner { animation-duration: 0.9s !important; color: var(--ldi-primary); }
+
+/* ------------------------------------------------------------------ */
+/*  PDF viewer (continuous scroll)                                      */
+/* ------------------------------------------------------------------ */
+.ldi-pdfscroll {
+  overflow: auto;
+  height: calc(100vh - 320px);
+  min-height: 420px;
+  background: var(--ldi-subtle-bg);
+  border: 1px solid var(--ldi-border);
+  border-radius: var(--ldi-radius-sm);
+  padding: 12px;
+  outline: none;
+  overscroll-behavior: contain;
+}
+.ldi-pdfpages {
+  width: calc(var(--ldi-pgzoom, 1) * 100%);
+  margin: 0 auto;
+  max-width: calc(var(--ldi-pgzoom, 1) * 980px);
+}
+.ldi-pgwrap {
+  position: relative;
+  margin: 0 auto 14px;
+  background: #fff;
+  box-shadow: var(--ldi-shadow);
+  border-radius: 2px;
+}
+.ldi-pgwrap > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 2px;
+}
+.ldi-pgov { position: absolute; inset: 0; pointer-events: none; }
+.ldi-pghl {
+  position: absolute;
+  background: rgba(255, 213, 0, 0.42);
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.ldi-pgbadge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 9px;
+  pointer-events: none;
+  user-select: none;
+}
+.ldi-pginput {
+  width: 64px;
+  text-align: center;
+  background: var(--ldi-surface);
+  color: var(--ldi-text);
+  border: 1px solid var(--ldi-border);
+  border-radius: var(--ldi-radius-sm);
+  padding: 5px 4px;
+  font: inherit;
+  font-size: 13px;
+}
+.ldi-pginput:focus { outline: none; border-color: var(--ldi-accent); box-shadow: 0 0 0 2px var(--ldi-focus); }
+/* Read mode: native element fullscreen (or the .ldi-fakefull fallback).
+   flex-wrap MUST be nowrap: Quasar's .column wraps by default, and with the
+   fixed fullscreen height the scroll pane would wrap into a second column
+   off-screen. min-height: 0 lets flex shrink it below its content height. */
+#ldi-viewer-root:fullscreen,
+#ldi-viewer-root.ldi-fakefull {
+  background: var(--ldi-bg);
+  padding: 10px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+#ldi-viewer-root.ldi-fakefull { position: fixed; inset: 0; z-index: 5000; }
+#ldi-viewer-root:fullscreen .ldi-pdfscroll,
+#ldi-viewer-root.ldi-fakefull .ldi-pdfscroll {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+#ldi-viewer-root:fullscreen .ldi-pdfpages,
+#ldi-viewer-root.ldi-fakefull .ldi-pdfpages {
+  max-width: calc(var(--ldi-pgzoom, 1) * 1280px);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Reduced motion                                                      */

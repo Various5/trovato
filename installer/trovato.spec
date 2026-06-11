@@ -111,6 +111,11 @@ try:
 except Exception:
     pass
 
+# Bundled UI assets (fonts served at /ldi-static) — collect_submodules only
+# pulls .py files, so package data needs an explicit entry. Dest path mirrors
+# the source tree because app_ui resolves it via Path(__file__).parent/"static".
+datas += [(str(PROJECT_ROOT / "app" / "ui" / "static"), "app/ui/static")]
+
 
 a = Analysis(
     [ENTRY],

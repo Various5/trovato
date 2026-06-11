@@ -51,6 +51,29 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def purge_page_render_cache(doc_id: int) -> None:
+    """Delete cached page renders for a document whose content changed.
+
+    Width-bucketed renders (``page_NNNN_w{bucket}.png``, served by the viewer)
+    have no DB pointer — file existence is their cache key — so a re-scan of a
+    modified file must delete them or the viewer keeps showing the old page
+    images forever. Legacy ``page_NNNN.png`` files go too: the OCR scan only
+    rewrites them for pages that need OCR, and native-text pages would stay
+    stale. Renders are re-created on demand from the new file.
+    """
+    cache_dir = get_settings().cache_path / "pages" / str(doc_id)
+    if not cache_dir.is_dir():
+        return
+    try:
+        for f in cache_dir.glob("page_*.png"):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError as e:
+        logger.debug("page-render cache purge failed for doc {}: {}", doc_id, e)
+
+
 def backfill_image_chunk_sources() -> int:
     """Relabel pre-existing image-description chunks as ``image_description``.
 
@@ -565,6 +588,12 @@ async def index_document(
                     status=DocumentStatus.processing,
                 )
             else:
+                if doc_row.content_hash != ch and doc_row.id is not None:
+                    # The file changed: stale page renders must go. Bucketed
+                    # ?w= renders have no DB pointer — file existence IS their
+                    # cache key — so without this purge the viewer would keep
+                    # serving the pre-edit page images forever.
+                    purge_page_render_cache(doc_row.id)
                 doc_row.size_bytes = stat.st_size
                 doc_row.modified_at_fs = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
                 doc_row.status = DocumentStatus.processing

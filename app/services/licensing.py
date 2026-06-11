@@ -172,13 +172,47 @@ def read_stored_token() -> str:
     return ""
 
 
+# The license gate runs in _layout on EVERY page navigation. Re-reading and
+# re-verifying license.lic each time is only ~0.5 ms, but it's pure waste —
+# memoize on the file's (mtime, size) signature, which also catches manual
+# edits/swaps of the file. activate()/deactivate() invalidate explicitly.
+_status_cache: dict[str, Any] = {"sig": None, "status": None}
+
+
+def _license_file_sig() -> tuple[float, int] | None:
+    try:
+        st = license_file_path().stat()
+        return (st.st_mtime, st.st_size)
+    except OSError:
+        return None
+
+
 def current_status() -> LicenseStatus:
-    """Status of the currently-stored license (re-read + re-verified each call)."""
-    return verify_token(read_stored_token())
+    """Status of the currently-stored license (memoized on the file signature)."""
+    sig = _license_file_sig()
+    cached = _status_cache["status"]
+    # Serve from cache unless the key carries an expiry — that's a date
+    # comparison, so re-verify it daily work-free: a key expiring overnight
+    # must lock without requiring the file to change.
+    if (
+        cached is not None
+        and _status_cache["sig"] == sig
+        and not (cached.active and cached.info and cached.info.expires)
+    ):
+        return cached
+    status = verify_token(read_stored_token())
+    _status_cache["sig"] = sig
+    _status_cache["status"] = status
+    return status
 
 
 def is_activated() -> bool:
     return current_status().active
+
+
+def _invalidate_status_cache() -> None:
+    _status_cache["sig"] = None
+    _status_cache["status"] = None
 
 
 def activate(token: str) -> LicenseStatus:
@@ -188,6 +222,7 @@ def activate(token: str) -> LicenseStatus:
         p = license_file_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(token.strip(), encoding="utf-8")
+    _invalidate_status_cache()
     return status
 
 
@@ -197,3 +232,4 @@ def deactivate() -> None:
         license_file_path().unlink(missing_ok=True)
     except OSError:
         pass
+    _invalidate_status_cache()

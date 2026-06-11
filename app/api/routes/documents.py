@@ -148,13 +148,63 @@ async def similar(
     return [asdict(h) for h in hits]
 
 
+# Allowed pixel widths for ?w= page renders. Fixed buckets keep the render
+# work and disk usage bounded (no ?w=99999 render-DoS) and let the browser's
+# srcset pick the closest match for the actual display resolution.
+PAGE_WIDTH_BUCKETS = (768, 1024, 1536, 2048, 3072)
+
+
+def snap_width_bucket(w: int) -> int:
+    """Smallest allowed bucket >= w (largest bucket when w exceeds them all)."""
+    for b in PAGE_WIDTH_BUCKETS:
+        if w <= b:
+            return b
+    return PAGE_WIDTH_BUCKETS[-1]
+
+
+def _cache_file_ok(p: Path) -> bool:
+    """A cached render counts only if non-empty (a kill mid-write can leave a
+    truncated file; writes are atomic via os.replace, so size>0 means complete)."""
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _media_file_response(request: Request, path: Path, media_type: str):
+    """FileResponse with ETag + ``Cache-Control: private, no-cache``.
+
+    ``no-cache`` lets the browser STORE the bytes but forces a revalidation on
+    every use — the conditional GET re-runs ``media_user`` (token max-age,
+    ``is_active``, per-document ACL) and gets a 304, so authorization stays
+    per-request while the multi-MB PNG body is never re-downloaded. A plain
+    ``max-age`` would keep serving document content from the local cache after
+    logout/deactivation with no server round-trip at all.
+    """
+    try:
+        st = path.stat()
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+    except OSError:
+        etag = None
+    headers = {"Cache-Control": "private, no-cache"}
+    if etag:
+        headers["ETag"] = etag
+        if request.headers.get("if-none-match") == etag:
+            from fastapi import Response
+
+            return Response(status_code=304, headers=headers)
+    return FileResponse(str(path), media_type=media_type, headers=headers)
+
+
 @router.get("/{doc_id}/page/{page_no}/image")
 def get_page_image(
+    request: Request,
     doc_id: int,
     page_no: int,
+    w: int | None = None,
     user: User = Depends(media_user),
     session: Session = Depends(get_session),
-) -> FileResponse:
+):
     from app.auth.acl import can_see_document
 
     # Enforce the per-document ACL before serving any rendered page (these PNGs
@@ -166,60 +216,134 @@ def get_page_image(
     if not can_see_document(user, doc):
         raise HTTPException(status_code=403, detail="forbidden")
 
+    # The scan's render pointer doubles as the offline fallback below.
     page = session.exec(
         select(DocumentPage).where(DocumentPage.document_id == doc_id, DocumentPage.page_number == page_no)
     ).first()
-    if page and page.rendered_image_path and Path(page.rendered_image_path).exists():
-        return FileResponse(page.rendered_image_path, media_type="image/png")
 
-    # On-the-fly render
+    if w is None and page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
+        # Legacy path (no width requested): reuse whatever render exists —
+        # the OCR scan's PNG or a previous on-the-fly 2x render.
+        return _media_file_response(request, Path(page.rendered_image_path), "image/png")
+
+    from app.config import get_settings
+
+    s = get_settings()
+    cache_dir = s.cache_path / "pages" / str(doc_id)
+    bucket = snap_width_bucket(max(1, w)) if w is not None else None
+    # Bucketed renders use their own filenames; file existence IS the cache
+    # (no DB pointer, so no write_session contention with the indexer). The
+    # indexer purges these files when a re-scan sees a changed content hash.
+    out = cache_dir / f"page_{page_no:04d}_w{bucket}.png" if bucket else cache_dir / f"page_{page_no:04d}.png"
+    # Serve any existing render BEFORE requiring the original file — sources
+    # on unplugged drives / unreachable shares are a normal state here.
+    if _cache_file_ok(out):
+        return _media_file_response(request, out, "image/png")
+
     src_path = Path(doc.path)
     if not src_path.exists():
+        # Original offline: fall back to whatever other render exists.
+        if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
+            return _media_file_response(request, Path(page.rendered_image_path), "image/png")
+        legacy = cache_dir / f"page_{page_no:04d}.png"
+        if _cache_file_ok(legacy):
+            return _media_file_response(request, legacy, "image/png")
         raise HTTPException(status_code=410, detail="original file missing")
+
     try:
+        import os
+
         import fitz
 
-        from app.config import get_settings
-
-        s = get_settings()
-        cache_dir = s.cache_path / "pages" / str(doc_id)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        out = cache_dir / f"page_{page_no:04d}.png"
-        if not out.exists():
-            d = fitz.open(str(src_path))
-            try:
-                if page_no < 1 or page_no > d.page_count:
-                    raise HTTPException(status_code=404, detail="page out of range")
+        d = fitz.open(str(src_path))
+        try:
+            if page_no < 1 or page_no > d.page_count:
+                raise HTTPException(status_code=404, detail="page out of range")
+            pg = d.load_page(page_no - 1)
+            if bucket:
+                # page.rect is rotation-aware, so width is the displayed width.
+                zoom = bucket / pg.rect.width if pg.rect.width > 0 else 2.0
+                zoom = max(0.1, min(zoom, 6.0))
+                mat = fitz.Matrix(zoom, zoom)
+            else:
                 mat = fitz.Matrix(2, 2)
-                pix = d.load_page(page_no - 1).get_pixmap(matrix=mat, alpha=False)
-                out.write_bytes(pix.tobytes("png"))
-            finally:
-                d.close()
-            if page is not None and page.id is not None:
-                # Persist the cache pointer through the serialized write path:
-                # this endpoint runs on a request worker thread and can fire
-                # while a scan is indexing, so a lock-free write here would race
-                # the indexer and hit "database is locked". The fitz render
-                # above stays outside the lock.
-                with write_session() as ws:
-                    p = ws.get(DocumentPage, page.id)
-                    if p is not None:
-                        p.rendered_image_path = str(out)
-                        ws.add(p)
-        return FileResponse(str(out), media_type="image/png")
+            pix = pg.get_pixmap(matrix=mat, alpha=False)
+            # Atomic write: a process kill mid-write must not leave a truncated
+            # PNG behind that existence-keyed caching would then serve forever.
+            tmp = out.with_name(out.name + f".tmp{os.getpid()}")
+            tmp.write_bytes(pix.tobytes("png"))
+            os.replace(tmp, out)
+        finally:
+            d.close()
+        if bucket is None and page is not None and page.id is not None:
+            # Persist the cache pointer through the serialized write path:
+            # this endpoint runs on a request worker thread and can fire
+            # while a scan is indexing, so a lock-free write here would race
+            # the indexer and hit "database is locked". The fitz render
+            # above stays outside the lock.
+            with write_session() as ws:
+                p = ws.get(DocumentPage, page.id)
+                if p is not None:
+                    p.rendered_image_path = str(out)
+                    ws.add(p)
+        return _media_file_response(request, out, "image/png")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"render failed: {e}")
 
 
+@router.get("/{doc_id}/matches")
+def get_match_rects(
+    doc_id: int,
+    q: str,
+    pages: str = "",
+    user: User = Depends(media_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Normalized highlight rectangles for the query's meaningful terms.
+
+    ``pages`` is a comma-separated list of 1-based page numbers (capped).
+    Returns ``{"rects": {"<page>": [[x, y, w, h], …]}}`` with fractions of the
+    displayed page size — resolution-independent, so the viewer can overlay
+    them on any cached render. Pages without a text layer yield no entries.
+    """
+    from app.auth.acl import can_see_document
+    from app.services.page_matches import MAX_PAGES, match_rects_for_pages
+    from app.utils.terms import meaningful_terms
+
+    doc = session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    if not can_see_document(user, doc):
+        raise HTTPException(status_code=403, detail="forbidden")
+    page_nos: list[int] = []
+    for part in pages.split(","):
+        part = part.strip()
+        # isdecimal, not isdigit: '²' passes isdigit() but int() raises.
+        if part.isdecimal() and len(part) <= 6:
+            try:
+                page_nos.append(int(part))
+            except ValueError:
+                continue
+        if len(page_nos) >= MAX_PAGES:
+            break
+    terms = meaningful_terms(q)
+    if not terms or not page_nos or not Path(doc.path).exists():
+        return {"rects": {}}
+    rects = match_rects_for_pages(doc.path, page_nos, terms)
+    return {"rects": {str(k): [list(r) for r in v] for k, v in rects.items()}}
+
+
 @router.get("/{doc_id}/img/{image_id}")
 def get_extracted_image(
+    request: Request,
     doc_id: int,
     image_id: int,
     user: User = Depends(media_user),
     session: Session = Depends(get_session),
-) -> FileResponse:
+):
     """Serve an embedded image extracted from the PDF during a vision scan.
 
     Used by search/chat result cards to show the actual pictures (logos,
@@ -240,4 +364,4 @@ def get_extracted_image(
         raise HTTPException(status_code=410, detail="image no longer available on disk")
     suffix = p.suffix.lower().lstrip(".") or "png"
     media = "image/jpeg" if suffix in ("jpg", "jpeg") else f"image/{suffix}"
-    return FileResponse(str(p), media_type=media)
+    return _media_file_response(request, p, media)

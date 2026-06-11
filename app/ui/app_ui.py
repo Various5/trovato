@@ -60,6 +60,12 @@ from app.utils.i18n import SUPPORTED_LANGUAGES, t
 from app.utils.logging import logger
 from app.utils.secret_store import delete_secret, get_secret, put_secret
 
+# Shared with the page-match API (app/api/routes/documents.py) — the on-image
+# highlight rects, the snippet highlighter and find-in-document must agree on
+# which query tokens count. Re-exported here for the existing UI call sites.
+from app.utils.terms import HL_STOPWORDS as _HL_STOPWORDS  # noqa: F401
+from app.utils.terms import meaningful_terms  # noqa: F401
+
 REMEMBER_SECRET_NAME = "ui_login_remember"  # legacy encrypted creds — scrubbed on login
 # Per-browser remembered USERNAME (app.storage.user is keyed to a per-browser
 # cookie). We deliberately never store the password and never auto-login: the
@@ -266,163 +272,6 @@ def download_pdf(document_id: int) -> None:
         f"a.href={url!r};a.download='';"
         "document.body.appendChild(a);a.click();a.remove();"
     )
-
-
-# Function words we never highlight — a natural-language chat question
-# ("in welchen dokumenten hat es bilder von einem pool") is mostly these, and
-# marking every one of them turns the snippet into a wall of coloured blocks.
-# Only the meaningful terms (pool, wiese, sia, norm, 103, …) should light up.
-_HL_STOPWORDS = {
-    # German
-    "der",
-    "die",
-    "das",
-    "den",
-    "dem",
-    "des",
-    "ein",
-    "eine",
-    "einem",
-    "einen",
-    "einer",
-    "eines",
-    "und",
-    "oder",
-    "ist",
-    "sind",
-    "war",
-    "wird",
-    "wurde",
-    "hat",
-    "habe",
-    "haben",
-    "es",
-    "im",
-    "an",
-    "am",
-    "auf",
-    "aus",
-    "bei",
-    "bis",
-    "für",
-    "von",
-    "vom",
-    "vor",
-    "mit",
-    "nach",
-    "zu",
-    "zum",
-    "zur",
-    "über",
-    "unter",
-    "sich",
-    "sie",
-    "wie",
-    "wo",
-    "wer",
-    "wann",
-    "warum",
-    "welche",
-    "welcher",
-    "welchem",
-    "welchen",
-    "welches",
-    "dass",
-    "nicht",
-    "auch",
-    "nur",
-    "noch",
-    "wenn",
-    "dieser",
-    "diese",
-    "dieses",
-    "man",
-    "mir",
-    "mein",
-    "meine",
-    "dokument",
-    "dokumente",
-    "dokumenten",
-    "dokuments",
-    "gibt",
-    "kann",
-    "kannst",
-    # English
-    "the",
-    "of",
-    "to",
-    "and",
-    "or",
-    "are",
-    "were",
-    "be",
-    "in",
-    "on",
-    "at",
-    "by",
-    "for",
-    "with",
-    "as",
-    "from",
-    "that",
-    "this",
-    "these",
-    "those",
-    "it",
-    "its",
-    "which",
-    "what",
-    "where",
-    "who",
-    "when",
-    "why",
-    "how",
-    "do",
-    "does",
-    "did",
-    "has",
-    "have",
-    "had",
-    "can",
-    "could",
-    "would",
-    "should",
-    "about",
-    "show",
-    "list",
-    "find",
-    "me",
-    "my",
-    "you",
-    "your",
-    "any",
-    "all",
-    "was",
-    "is",
-    "a",
-    "document",
-    "documents",
-    "image",
-    "images",
-    "picture",
-    "pictures",
-}
-
-
-def meaningful_terms(query: str) -> list[str]:
-    """Distinct, meaningful (>=2 char, non-stopword) lower-cased query tokens.
-
-    A full-sentence chat question is mostly function words; both the snippet
-    highlighter and the viewer's find-in-document need the same short list of
-    terms that actually matter so they agree on what to mark/match.
-    """
-    import re as _re
-
-    seen: list[str] = []
-    for w in _re.findall(r"\w+", (query or "").lower()):
-        if len(w) >= 2 and w not in _HL_STOPWORDS and w not in seen:
-            seen.append(w)
-    return seen
 
 
 def highlight_terms(text: str, query: str) -> str:
@@ -664,20 +513,49 @@ def _apply_theme(theme_name: str = DEFAULT_THEME) -> None:
     else:
         theme = THEMES.get(theme_name) or THEMES[DEFAULT_THEME]
         ui.dark_mode().set_value(theme.is_dark)
-    ui.add_head_html(f"<style>{build_global_css(theme_name)}</style>")
+    # A cacheable <link> instead of ~24 KB inline <style>: the browser fetches
+    # the stylesheet once per app version (?v= busts on update) instead of
+    # re-parsing it on every navigation. Served by /ldi/theme/{name}.css below.
+    if theme_name not in THEMES and theme_name != "system":
+        theme_name = DEFAULT_THEME
+    ui.add_head_html(f'<link rel="stylesheet" href="/ldi/theme/{theme_name}.css?v={quote(__version__)}">')
+
+
+def _user_prefs(user: User, *, fresh: bool = False) -> tuple[str, str]:
+    """``(theme, lang)`` from the user's UserSetting row — ONE query per page build.
+
+    ``_layout`` needs the theme, then the lang, and most page bodies ask for the
+    lang again; without caching that's three identical SELECTs per navigation.
+    The result is pinned to the current NiceGUI client (= this page build), so
+    a fresh navigation re-reads the DB and theme/language changes (which always
+    reload) are picked up immediately. Handlers that MUTATE prefs based on the
+    current value (theme cycle) must pass ``fresh=True`` — another tab may have
+    changed the DB since this client was built.
+    """
+    client = None
+    try:
+        client = ui.context.client
+        cached = getattr(client, "_ldi_prefs", None)
+        if not fresh and cached is not None and cached[0] == user.id:
+            return cached[1], cached[2]
+    except Exception:
+        pass
+    with session_scope() as session:
+        s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
+        theme = s.theme if s and s.theme in THEMES else DEFAULT_THEME
+        lang = (s.language if s else "en") or "en"
+        lang = lang if lang in SUPPORTED_LANGUAGES else "en"
+    if client is not None:
+        client._ldi_prefs = (user.id, theme, lang)
+    return theme, lang
 
 
 def _user_theme(user: User) -> str:
-    with session_scope() as session:
-        s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
-        return s.theme if s and s.theme in THEMES else DEFAULT_THEME
+    return _user_prefs(user)[0]
 
 
 def _user_lang(user: User) -> str:
-    with session_scope() as session:
-        s = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
-        lang = (s.language if s else "en") or "en"
-        return lang if lang in SUPPORTED_LANGUAGES else "en"
+    return _user_prefs(user)[1]
 
 
 # Each entry: (i18n key, path, icon, expert_only).
@@ -818,8 +696,11 @@ def _layout(user: User, current: str) -> bool:
         # Theme cycle button (light/dark quick swap)
         def _cycle_theme() -> None:
             # Cycle through System + restrained themes first, then bold/legacy.
+            # fresh=True: the client-pinned prefs cache holds the page-build
+            # theme; another tab (or a double-click racing the reload) may have
+            # advanced it since — cycling from a stale value would skip/undo.
             order = THEME_ORDER
-            cur = _user_theme(user)
+            cur = _user_prefs(user, fresh=True)[0]
             nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else DEFAULT_THEME
             with session_scope() as session:
                 us = session.exec(select(UserSetting).where(UserSetting.user_id == user.id)).first()
@@ -827,6 +708,10 @@ def _layout(user: User, current: str) -> bool:
                     us = UserSetting(user_id=user.id)
                 us.theme = nxt
                 session.add(us)
+            try:
+                ui.context.client._ldi_prefs = None
+            except Exception:
+                pass
             ui.navigate.reload()
 
         ui.button(icon="palette", on_click=_cycle_theme).props("flat round dense").tooltip(
@@ -999,25 +884,30 @@ def _layout(user: User, current: str) -> bool:
 
     _cmd_search.on_value_change(lambda _e: _cmd_filter())
 
-    def _palette_key(e: Any) -> None:
-        if not e.action.keydown:
-            return
-        k = e.key
-        if (e.modifiers.ctrl or e.modifiers.meta) and (k.name or "").lower() == "k":
-            _open_palette()
-            return
-        if not _palette.value:
-            return
-        if k.escape:
-            _palette.close()
-        elif k.arrow_down:
-            _cmd_move(1)
-        elif k.arrow_up:
-            _cmd_move(-1)
-        elif k.enter:
-            _cmd_run(_cmd_state["idx"])
-
-    ui.keyboard(on_key=_palette_key, ignore=[], repeating=True)
+    # Ctrl/⌘+K is captured in the BROWSER and forwarded as one custom event.
+    # The previous ui.keyboard(ignore=[]) handler shipped every keydown AND
+    # keyup from every input on every page to the server — two websocket
+    # round-trips per keystroke app-wide, i.e. visible typing lag. Navigation
+    # keys are bound to the palette's search input instead (it autofocuses, so
+    # all typing lands there while the dialog is open).
+    ui.add_head_html(
+        "<script>"
+        "window.addEventListener('keydown', function(e) {"
+        "  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {"
+        "    e.preventDefault();"
+        "    if (window.emitEvent) emitEvent('ldi_cmdk');"
+        "  }"
+        "});"
+        "</script>"
+    )
+    ui.on("ldi_cmdk", lambda: _open_palette())
+    _cmd_search.on("keydown.down.prevent", lambda: _cmd_move(1))
+    _cmd_search.on("keydown.up.prevent", lambda: _cmd_move(-1))
+    _cmd_search.on("keydown.enter", lambda: _cmd_run(_cmd_state["idx"]))
+    _cmd_search.on("keydown.escape", lambda: _palette.close())
+    # Clicking dialog chrome (group labels, footer, padding) blurs the input
+    # and would leave arrow/Enter navigation dead — refocus on any click.
+    _palette.on("click", lambda: _cmd_search.run_method("focus"))
 
     # --- Update banner sits at the top of the page area ------------------
     _render_update_banner(lang)
@@ -1038,6 +928,30 @@ def _do_logout() -> None:
 
 
 def register_ui(fastapi_app: FastAPI) -> None:
+    # Bundled fonts (Inter / JetBrains Mono woff2) — replaces the Google Fonts
+    # @import so first paint never waits on an external fetch (offline-safe).
+    from pathlib import Path as _Path
+
+    _static_dir = _Path(__file__).parent / "static"
+    if _static_dir.is_dir():
+        nicegui_app.add_static_files("/ldi-static", str(_static_dir))
+
+    @fastapi_app.get("/ldi/theme/{name}.css", include_in_schema=False)
+    def theme_css(name: str):  # type: ignore[no-untyped-def]
+        from fastapi import Response
+
+        if name != "system" and name not in THEMES:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404)
+        return Response(
+            build_global_css(name),
+            media_type="text/css",
+            # Immutable per app version — the <link> URL carries ?v=__version__,
+            # so updates bust the cache by changing the URL, never by expiry.
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     @ui.page("/login")
     def page_login() -> None:
         _apply_theme(DEFAULT_THEME)
@@ -5053,7 +4967,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
         ui.button(t("diag.refresh", lang), icon="refresh", on_click=lambda: _refresh()).props("dense")
 
     @ui.page("/viewer")
-    def page_viewer(doc: int = 0, page: int = 1, q: str = "") -> None:
+    async def page_viewer(doc: int = 0, page: int = 1, q: str = "") -> None:
+        """Continuous-scroll PDF viewer.
+
+        All pages render as one lazy-loading scroll (like a real PDF reader):
+        page flips, the page-number jump, zoom and the fullscreen read mode run
+        entirely client-side (app/ui/static/viewer.js) — no full page reload
+        per flip. Page images come from the width-bucketed render endpoint via
+        ``srcset``, so the browser picks a resolution matching the actual
+        display. Search terms are highlighted ON the page images (normalized
+        rects from app/services/page_matches.py) and in the sidebar text.
+        """
         user = _require_login()
         if not user:
             return
@@ -5067,88 +4991,90 @@ def register_ui(fastapi_app: FastAPI) -> None:
             if not d or not can_see_document(user, d):
                 empty_state("find_in_page", "docs.viewer.not_found", "docs.viewer.not_found_hint", lang)
                 return
-            from app.models import DocumentPage as _DP
-
-            total_pages = d.page_count or 1
-            page = max(1, min(page or 1, total_pages))
-            page_row = session.exec(
-                select(_DP).where(_DP.document_id == doc, _DP.page_number == page)
-            ).first()
-            page_text = (page_row.native_text or page_row.ocr_text or "") if page_row else ""
-            # Image descriptions on this page — chat often cites an IMAGE match,
-            # whose text lives here (DocumentImage.vision_description), NOT in the
-            # page's plain text. Showing + highlighting them is what makes "it
-            # found an image, take me there" actually point at something.
             from app.models import DocumentImage as _DI
-
-            page_image_descs = [
-                (img.vision_description or "").strip()
-                for img in session.exec(
-                    select(_DI)
-                    .where(_DI.document_id == doc, _DI.page_number == page)
-                    .order_by(_DI.image_index)
-                ).all()
-                if (img.vision_description or "").strip()
-            ]
-            # The document's tags (topic + system), for the viewer sidebar.
+            from app.models import DocumentPage as _DP
             from app.models import DocumentTagLink as _DTL
             from app.models import Tag as _Tag
 
+            total_pages = d.page_count or 1
+            page = max(1, min(page or 1, total_pages))
+            # Per-page dimensions (PDF points) → aspect-ratio placeholders, so
+            # the lazy-loading scroll keeps its geometry before images arrive.
+            # Rows from older scans may carry 0/0; viewer.js falls back to A4.
+            dims_by_no: dict[int, tuple[int, int]] = {}
+            for pn, w, h in session.exec(
+                select(_DP.page_number, _DP.width, _DP.height).where(_DP.document_id == doc)
+            ).all():
+                dims_by_no[pn] = (w or 0, h or 0)
+            dims = [list(dims_by_no.get(n, (0, 0))) for n in range(1, total_pages + 1)]
+            # The document's tags (topic + system), for the viewer sidebar.
             doc_tags = list(
                 session.exec(
                     select(_Tag.name).join(_DTL, _DTL.tag_id == _Tag.id).where(_DTL.document_id == doc)
                 ).all()
             )
-            # Find-in-document: pages whose native/OCR text OR an image
-            # description contains ANY meaningful query term. The query may be a
-            # whole chat sentence, so matching it verbatim would never hit.
-            match_pages: list[int] = []
-            terms = meaningful_terms(q)
-            if terms:
-                from sqlalchemy import or_ as _or
+            doc_path = d.path
+            doc_filename = d.filename
 
+        state: dict[str, Any] = {"q": q, "page": page}
+
+        # ---- find-in-document -----------------------------------------------
+        def _find_matches(term: str) -> tuple[list[int], dict[int, list[tuple]]]:
+            """(matching pages, on-image highlight rects) for the term's
+            meaningful tokens. Pages match on native/OCR text OR an image
+            description (chat often cites an IMAGE match whose text lives in
+            DocumentImage.vision_description, not in the page text)."""
+            terms = meaningful_terms(term)
+            if not terms:
+                return [], {}
+            from sqlalchemy import or_ as _or
+
+            with session_scope() as s2:
                 conds = []
-                for term in terms:
-                    like = f"%{term}%"
+                for tm in terms:
+                    like = f"%{tm}%"
                     conds.append(_DP.native_text.ilike(like))
                     conds.append(_DP.ocr_text.ilike(like))
-                img_pages = set()
-                img_conds = [_DI.vision_description.ilike(f"%{term}%") for term in terms]
-                for pn in session.exec(
-                    select(_DI.page_number).where(_DI.document_id == doc, _or(*img_conds))
-                ).all():
-                    img_pages.add(pn)
                 text_pages = set(
-                    session.exec(select(_DP.page_number).where(_DP.document_id == doc, _or(*conds))).all()
+                    s2.exec(select(_DP.page_number).where(_DP.document_id == doc, _or(*conds))).all()
                 )
-                match_pages = sorted(text_pages | img_pages)
+                img_conds = [_DI.vision_description.ilike(f"%{tm}%") for tm in terms]
+                img_pages = set(
+                    s2.exec(select(_DI.page_number).where(_DI.document_id == doc, _or(*img_conds))).all()
+                )
+            pages = sorted(text_pages | img_pages)
+            from app.services.page_matches import match_rects_for_pages
 
-        breadcrumbs([(t("nav.documents", lang), "/documents"), (d.filename, None)])
-        ui.label(f"{d.filename} — {t('docs.viewer.page_of', lang)} {page}/{total_pages}").classes(
-            "text-h5 ldi-primary"
-        )
-        with ui.row().classes("gap-2 q-mb-md"):
-            ui.button(
-                t("docs.viewer.prev", lang),
-                icon="navigate_before",
-                on_click=lambda: ui.navigate.to(f"/viewer?doc={doc}&page={max(1, page - 1)}&q={quote(q)}"),
-            ).props("dense")
-            ui.button(
-                t("docs.viewer.next", lang),
-                icon="navigate_next",
-                on_click=lambda: ui.navigate.to(
-                    f"/viewer?doc={doc}&page={min(total_pages, page + 1)}&q={quote(q)}"
-                ),
-            ).props("dense")
+            rects = match_rects_for_pages(doc_path, pages, terms) if pages else {}
+            return pages, rects
+
+        # io_bound: _find_matches runs ILIKE scans + PyMuPDF text search over up
+        # to 80 pages — seconds on big scanned PDFs. Sync page builders execute
+        # on the asyncio event loop, which would freeze EVERY connected client.
+        from nicegui import run as _run
+
+        match_pages, match_rects = (await _run.io_bound(_find_matches, q)) if q else ([], {})
+
+        # ---- header row -----------------------------------------------------
+        breadcrumbs([(t("nav.documents", lang), "/documents"), (doc_filename, None)])
+        pdf_base = pdf_url(doc, None, _media_token())
+        with ui.row().classes("items-center w-full gap-2 no-wrap q-mb-sm"):
+            ui.label(doc_filename).classes("text-h5 ldi-primary").style(
+                "min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+            )
+            ui.space()
             ui.button(
                 t("docs.viewer.open_pdf", lang),
                 icon="picture_as_pdf",
-                on_click=lambda d=doc, p=page: open_pdf(d, p),
+                # Opens the original at the page currently in view (client-side).
+                on_click=lambda: ui.run_javascript(
+                    f"window.open({pdf_base!r} + '#page=' + ldiViewer.current(), '_blank')"
+                ),
             ).props("dense color=primary")
             ui.button(
                 t("common.download_pdf", lang),
                 icon="download",
-                on_click=lambda d=doc: download_pdf(d),
+                on_click=lambda: download_pdf(doc),
             ).props("dense outline")
             if q:
                 ui.button(
@@ -5157,99 +5083,203 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     on_click=lambda qq=q: ui.navigate.to(f"/search?q={quote(qq)}"),
                 ).props("dense flat")
 
-        # Find-in-document: jump to the first page whose text contains the term.
-        def _find_in_doc(term: str) -> None:
-            term = (term or "").strip()
-            if not term:
-                ui.navigate.to(f"/viewer?doc={doc}&page={page}")
-                return
-            with session_scope() as s2:
-                from sqlalchemy import or_ as _or2
-
-                like = f"%{term}%"
-                first = s2.exec(
-                    select(_DP.page_number)
-                    .where(
-                        _DP.document_id == doc,
-                        _or2(_DP.native_text.ilike(like), _DP.ocr_text.ilike(like)),
-                    )
-                    .order_by(_DP.page_number)
-                ).first()
-            target = first or page
-            ui.navigate.to(f"/viewer?doc={doc}&page={target}&q={quote(term)}")
-            if first is None:
-                ui.notify(t("docs.viewer.find_none", lang).format(q=term), color="warning")
-
-        with ui.row().classes("items-center gap-2 q-mb-sm w-full"):
+        # ---- find row ---------------------------------------------------------
+        with ui.row().classes("items-center gap-2 q-mb-sm w-full no-wrap"):
             find_in = (
                 ui.input(placeholder=t("docs.viewer.find_placeholder", lang), value=q)
                 .props("dense outlined clearable")
                 .classes("min-w-[260px]")
             )
-            find_in.on("keydown.enter", lambda: _find_in_doc(find_in.value))
-            ui.button(icon="search", on_click=lambda: _find_in_doc(find_in.value)).props("dense")
-            if q:
-                if match_pages:
-                    ui.label(t("docs.viewer.find_count", lang).format(n=len(match_pages))).classes(
+
+            async def _on_find_click() -> None:
+                await _apply_find(find_in.value)
+
+            ui.button(icon="search", on_click=_on_find_click).props("dense")
+            chips_row = (
+                ui.row().classes("items-center gap-2 no-wrap").style("overflow-x: auto; min-width: 0;")
+            )
+
+        def _render_chips(pages: list[int], term: str) -> None:
+            chips_row.clear()
+            if not term:
+                return
+            with chips_row:
+                if pages:
+                    ui.label(t("docs.viewer.find_count", lang).format(n=len(pages))).classes(
+                        "text-caption opacity-70 no-wrap"
+                    )
+                    for _pn in pages[:40]:
+                        ui.button(
+                            str(_pn),
+                            on_click=lambda pn=_pn: ui.run_javascript(f"ldiViewer.jump({pn})"),
+                        ).props("dense flat size=sm")
+                    ui.label(t("docs.viewer.hl_hint", lang)).classes("text-caption opacity-50 no-wrap")
+                else:
+                    ui.label(t("docs.viewer.find_none", lang).format(q=term)).classes(
                         "text-caption opacity-70"
                     )
-                    with ui.row().classes("gap-1 items-center no-wrap").style("overflow-x:auto;"):
-                        for _pn in match_pages[:40]:
-                            ui.button(
-                                str(_pn),
-                                on_click=lambda pn=_pn: ui.navigate.to(
-                                    f"/viewer?doc={doc}&page={pn}&q={quote(q)}"
-                                ),
-                            ).props("dense flat size=sm" + (" color=primary" if _pn == page else ""))
-                else:
-                    ui.label(t("docs.viewer.find_none", lang).format(q=q)).classes("text-caption opacity-70")
 
-        with ui.row().classes("w-full gap-4 no-wrap"):
-            with ui.column().classes("gap-2").style("min-width: 0; flex: 2; overflow: auto;"):
-                _zoom = {"w": 100}
-                _img = (
-                    ui.image(media_image_url(doc, page))
-                    .classes("ldi-border")
-                    .style("border: 1px solid; width: 100%; height: auto; display: block;")
-                )
-
-                def _apply_zoom() -> None:
-                    _img.style(f"width: {_zoom['w']}%; height: auto; max-width: none;")
-
-                with ui.row().classes("gap-1 items-center q-mt-xs"):
-                    ui.button(icon="fit_screen", on_click=lambda: (_zoom.update(w=100), _apply_zoom())).props(
+        # ---- viewer + sidebar -------------------------------------------------
+        with ui.row().classes("w-full gap-4 no-wrap items-start"):
+            with (
+                ui.element("div")
+                .classes("column gap-2")
+                .style("min-width: 0; flex: 2;")
+                .props("id=ldi-viewer-root")
+            ):
+                with ui.row().classes("items-center gap-1 no-wrap w-full"):
+                    ui.button(
+                        icon="navigate_before",
+                        on_click=lambda: ui.run_javascript("ldiViewer.prev()"),
+                    ).props("dense flat").tooltip(t("docs.viewer.prev", lang))
+                    # Plain HTML input: viewer.js keeps it in sync while
+                    # scrolling and jumps on Enter — zero server round-trips.
+                    ui.html(
+                        f"""<input id="ldi-pginput" class="ldi-pginput" type="number" min="1" """
+                        f"""max="{total_pages}" value="{page}" """
+                        f"""aria-label="{t("docs.viewer.jump_to", lang)}">"""
+                    )
+                    ui.label(t("docs.viewer.of_pages", lang).format(n=total_pages)).classes(
+                        "text-caption opacity-70 no-wrap"
+                    )
+                    ui.button(
+                        icon="navigate_next",
+                        on_click=lambda: ui.run_javascript("ldiViewer.next()"),
+                    ).props("dense flat").tooltip(t("docs.viewer.next", lang))
+                    ui.space()
+                    ui.button(
+                        icon="zoom_out", on_click=lambda: ui.run_javascript("ldiViewer.zoomOut()")
+                    ).props("dense flat").tooltip(t("docs.viewer.zoom_out", lang))
+                    ui.button(icon="fit_screen", on_click=lambda: ui.run_javascript("ldiViewer.fit()")).props(
                         "dense flat"
                     ).tooltip(t("docs.viewer.fit_width", lang))
+                    ui.button(icon="zoom_in", on_click=lambda: ui.run_javascript("ldiViewer.zoomIn()")).props(
+                        "dense flat"
+                    ).tooltip(t("docs.viewer.zoom_in", lang))
+                    ui.space()
                     ui.button(
-                        icon="zoom_out",
-                        on_click=lambda: (_zoom.update(w=max(50, _zoom["w"] - 25)), _apply_zoom()),
-                    ).props("dense flat")
-                    ui.button(
-                        icon="zoom_in",
-                        on_click=lambda: (_zoom.update(w=min(300, _zoom["w"] + 25)), _apply_zoom()),
-                    ).props("dense flat")
+                        icon="fullscreen",
+                        on_click=lambda: ui.run_javascript("ldiViewer.fullscreen()"),
+                    ).props("dense flat").tooltip(
+                        t("docs.viewer.read_mode", lang) + " — " + t("docs.viewer.read_mode_exit", lang)
+                    )
+                # viewer.js builds all page wrappers + lazy images in here.
+                ui.element("div").classes("ldi-pdfscroll w-full").props("id=ldi-pdfscroll")
             with ui.column().classes("gap-2").style("min-width: 280px; flex: 1"):
                 if doc_tags:
                     with section_card(lang, title_key="tags.section", icon="label"):
                         render_tag_chips(doc_tags, limit=20)
                 with section_card(lang, title_key="docs.viewer.page_text", icon="article"):
-                    if page_text:
-                        # Highlight every occurrence of the term on this page.
+                    side_caption = ui.label("").classes("text-caption opacity-60")
+                    side_text = ui.element("div").classes("w-full")
+                imgs_box = ui.element("div").classes("w-full")
+
+        def _update_side(n: int) -> None:
+            """Refresh the sidebar (page text + image descriptions) for page n.
+
+            Called at build time and from the debounced 'ldi_page' scroll event
+            — the only viewer interaction that talks to the server at all.
+            """
+            state["page"] = n
+            with session_scope() as s3:
+                row = s3.exec(select(_DP).where(_DP.document_id == doc, _DP.page_number == n)).first()
+                text = (row.native_text or row.ocr_text or "") if row else ""
+                descs = [
+                    (img.vision_description or "").strip()
+                    for img in s3.exec(
+                        select(_DI)
+                        .where(_DI.document_id == doc, _DI.page_number == n)
+                        .order_by(_DI.image_index)
+                    ).all()
+                    if (img.vision_description or "").strip()
+                ]
+            side_caption.set_text(t("docs.viewer.text_of_page", lang).format(n=n))
+            side_text.clear()
+            with side_text:
+                if text:
+                    ui.html(
+                        f"<div class='text-body2' style='white-space:pre-wrap;"
+                        f"max-height:56vh;overflow:auto;'>{highlight_terms(text, state['q'])}</div>"
+                    )
+                elif not descs:
+                    ui.markdown(f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
+            imgs_box.clear()
+            if descs:
+                with imgs_box, section_card(lang, title_key="docs.viewer.images", icon="image"):
+                    for _desc in descs:
                         ui.html(
-                            f"<div class='text-body2' style='white-space:pre-wrap;"
-                            f"max-height:70vh;overflow:auto;'>{highlight_terms(page_text, q)}</div>"
+                            f"<div class='text-body2 q-mb-sm' style='white-space:pre-wrap;'>"
+                            f"{highlight_terms(_desc, state['q'])}</div>"
                         )
-                    elif not page_image_descs:
-                        ui.markdown(f"_{t('docs.viewer.no_text', lang)}_").classes("text-body2")
-                # Image descriptions on this page (highlighted) — so a chat answer
-                # that matched a photo/figure actually shows what it matched here.
-                if page_image_descs:
-                    with section_card(lang, title_key="docs.viewer.images", icon="image"):
-                        for _desc in page_image_descs:
-                            ui.html(
-                                f"<div class='text-body2 q-mb-sm' style='white-space:pre-wrap;'>"
-                                f"{highlight_terms(_desc, q)}</div>"
-                            )
+
+        async def _apply_find(term: str) -> None:
+            import json as _json
+
+            term = (term or "").strip()
+            state["q"] = term
+            # Worker thread — same event-loop-freeze reasoning as the build.
+            pages, rects = (await _run.io_bound(_find_matches, term)) if term else ([], {})
+            payload = _json.dumps({str(k): [list(r) for r in v] for k, v in rects.items()}).replace(
+                "<", "\\u003c"
+            )
+            js = f"ldiViewer.setHighlights({payload}, {_json.dumps(term)}, {_json.dumps(pages)});"
+            if pages:
+                js += f"ldiViewer.jump({pages[0]});"
+            ui.run_javascript(js)
+            _render_chips(pages, term)
+            _update_side(state["page"])
+            if term and not pages:
+                ui.notify(t("docs.viewer.find_none", lang).format(q=term), color="warning")
+
+        async def _on_find_submit() -> None:
+            await _apply_find(find_in.value)
+
+        async def _on_find_clear() -> None:
+            await _apply_find("")
+
+        find_in.on("keydown.enter", _on_find_submit)
+        find_in.on("clear", _on_find_clear)
+
+        def _on_page_evt(e: Any) -> None:
+            try:
+                n = int((e.args or {}).get("n", 0))
+            except Exception:
+                return
+            if 1 <= n <= total_pages and n != state.get("page"):
+                _update_side(n)
+
+        ui.on("ldi_page", _on_page_evt)
+
+        _render_chips(match_pages, q)
+        _update_side(page)
+
+        # ---- client bootstrap --------------------------------------------------
+        import json as _json
+
+        from app.api.routes.documents import PAGE_WIDTH_BUCKETS
+
+        tok = _media_token()
+        url_tpl = f"/api/documents/{doc}/page/{{n}}/image" + (f"?t={tok}" if tok else "")
+        # matchesTpl lets viewer.js lazily fetch highlight rects for matching
+        # pages beyond the initial server-computed window (MAX_PAGES).
+        matches_tpl = f"/api/documents/{doc}/matches" + (f"?t={tok}" if tok else "")
+        init_payload = _json.dumps(
+            {
+                "doc": doc,
+                "total": total_pages,
+                "page": page,
+                "q": q,
+                "dims": dims,
+                "rects": {str(k): [list(r) for r in v] for k, v in match_rects.items()},
+                "matchPages": match_pages,
+                "urlTpl": url_tpl,
+                "matchesTpl": matches_tpl,
+                "buckets": list(PAGE_WIDTH_BUCKETS),
+                "defaultW": 1024,
+            }
+        ).replace("<", "\\u003c")
+        ui.add_body_html(f"<script>window.__ldiViewerInit = {init_payload};</script>")
+        ui.add_body_html(f'<script src="/ldi-static/viewer.js?v={quote(__version__)}" defer></script>')
 
     @ui.page("/about")
     def page_about() -> None:

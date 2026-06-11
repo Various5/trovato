@@ -110,6 +110,14 @@ def current_user_id(request: Request) -> int | None:
 
 _MEDIA_SALT = "ldi-media-access-v1"
 
+# Reuse a freshly minted token per user for a while: itsdangerous embeds the
+# signing timestamp, so re-minting on every page build changes the ?t= query
+# string and busts the browser's image cache — every viewer visit re-downloads
+# multi-MB page PNGs. One token per hour keeps URLs stable (and cacheable)
+# while staying far inside the 24 h verification window.
+_MEDIA_TOKEN_REUSE = 3600.0
+_media_token_cache: dict[tuple[int, int], tuple[float, str]] = {}
+
 
 def make_media_token(user_id: int) -> str:
     """Return a signed, time-limited token authorizing media access.
@@ -119,8 +127,20 @@ def make_media_token(user_id: int) -> str:
     NiceGUI/Starlette session, so the UI appends ``?t=<token>`` and the
     endpoints accept it via ``media_user`` (app/api/routes/documents.py).
     """
-    s = URLSafeTimedSerializer(get_settings().secret_key, salt=_MEDIA_SALT)
-    return s.dumps({"uid": int(user_id)})
+    import time
+
+    secret = get_settings().secret_key
+    # Keyed on the signing secret too, so a rotated/changed secret can never
+    # serve a stale (now-unverifiable) cached token.
+    key = (int(user_id), hash(secret))
+    now = time.time()
+    cached = _media_token_cache.get(key)
+    if cached and now - cached[0] < _MEDIA_TOKEN_REUSE:
+        return cached[1]
+    s = URLSafeTimedSerializer(secret, salt=_MEDIA_SALT)
+    token = s.dumps({"uid": int(user_id)})
+    _media_token_cache[key] = (now, token)
+    return token
 
 
 def verify_media_token(token: str, max_age: int = 86400) -> int | None:
