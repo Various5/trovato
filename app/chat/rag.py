@@ -52,7 +52,13 @@ ALL provided sources, synthesise across them, and name every relevant document w
 citation. Don't answer from just the first one or two.
 6. Prefer concise, accurate answers. Quote short snippets when helpful.
 7. If the user explicitly asks for opinions or summaries beyond the documents, make \
-clear that the answer is reasoning, not from sources."""
+clear that the answer is reasoning, not from sources.
+8. The LIBRARY OVERVIEW line states how many documents the user's whole library \
+really contains. The numbered SOURCES are only the few excerpts retrieved for the \
+current question — NEVER present the number of SOURCES as the size of the library or \
+of "your context/index". When the user asks how many documents you have, know, or can \
+access, answer with the LIBRARY OVERVIEW numbers (and you may add that excerpts from \
+N documents were retrieved for this particular question)."""
 
 
 # Common function words used to guess the user's language for short queries —
@@ -276,6 +282,47 @@ def _build_context_block(
     return "\n".join(parts), cites
 
 
+def _library_overview(user: User, filters: dict[str, Any], session) -> str:
+    """True index stats for the system prompt — one cheap COUNT query.
+
+    The model only ever sees the few SOURCES retrieved for the current
+    question. Without the real numbers it answers meta questions like
+    "wieviele Dokumente hast du?" with the SOURCES count (e.g. 10) — wildly
+    wrong for a 100+ file library. ACL-filtered, so a non-admin's overview
+    only counts documents they can actually see.
+    """
+    from sqlalchemy import func as _func
+
+    from app.auth.acl import filter_documents
+    from app.models import DocumentStatus
+
+    try:
+        row = session.exec(
+            filter_documents(
+                select(
+                    _func.count(Document.id),
+                    _func.coalesce(_func.sum(Document.page_count), 0),
+                ).where(Document.status == DocumentStatus.indexed),
+                user,
+            )
+        ).one()
+        doc_count, page_count = int(row[0] or 0), int(row[1] or 0)
+    except Exception as e:  # never break a chat over a stats line
+        logger.debug("library overview failed: {}", e)
+        return ""
+    text = (
+        f"LIBRARY OVERVIEW: the user's library contains {doc_count} indexed documents "
+        f"({page_count} pages) in total. The SOURCES below are ONLY the excerpts "
+        "retrieved for this question."
+    )
+    if filters:
+        text += (
+            " Note: this chat is restricted by context filters to a subset of the "
+            "library; retrieval only searches that subset."
+        )
+    return text
+
+
 def _gather_user_memory(user_id: int, session) -> str:
     memories = session.exec(
         select(UserMemory).where(UserMemory.user_id == user_id, UserMemory.confirmed == True)  # noqa: E712
@@ -315,6 +362,7 @@ async def answer_question(
             raise ValueError("chat not found")
         filters = _chat_context_filters(chat_id, session)
         memory_block = _gather_user_memory(user.id, session)
+        overview_block = _library_overview(user, filters, session)
         history = session.exec(
             select(ChatMessage)
             .where(ChatMessage.chat_id == chat_id)
@@ -349,6 +397,8 @@ async def answer_question(
     )
 
     sys = SYSTEM_PROMPT
+    if overview_block:
+        sys += "\n\n" + overview_block
     if memory_block:
         sys += "\n\nUser memory (use only if relevant):\n" + memory_block
 
@@ -428,6 +478,7 @@ async def stream_answer(
             return
         filters = _chat_context_filters(chat_id, session)
         memory_block = _gather_user_memory(user.id, session)
+        overview_block = _library_overview(user, filters, session)
         history = session.exec(
             select(ChatMessage)
             .where(ChatMessage.chat_id == chat_id)
@@ -458,6 +509,8 @@ async def stream_answer(
     )
 
     sys = SYSTEM_PROMPT
+    if overview_block:
+        sys += "\n\n" + overview_block
     if memory_block:
         sys += "\n\nUser memory (use only if relevant):\n" + memory_block
 
