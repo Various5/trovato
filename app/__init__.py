@@ -1,6 +1,6 @@
 """Trovato — local PDF intelligence package."""
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 __app_name__ = "Trovato"
 __author__ = "Varous 555"
 __contact__ = "varous555@gmail.com"
