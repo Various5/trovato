@@ -227,9 +227,10 @@ def create_app():  # type: ignore[no-untyped-def]
         # it. Setting Secure on plain HTTP would drop the cookie, so it defaults
         # off for the localhost desktop case.
         https_only=s.secure_cookies,
-        # 90 days — this is a local desktop app, the cookie lives on the same
-        # machine. Long expiry means the user only sees the login screen once.
-        max_age=90 * 24 * 3600,
+        # Stateless signed cookie → no server-side revocation beyond a password
+        # change, so keep the window short (default 7 days, configurable) to
+        # bound replay of a captured cookie on an exposed deployment.
+        max_age=max(1, s.session_max_age_days) * 24 * 3600,
     )
 
     # CORS: the app is single-origin (the UI is served from the same host as the
@@ -246,13 +247,33 @@ def create_app():  # type: ignore[no-untyped-def]
         allow_headers=["*"],
     )
 
+    from starlette.responses import JSONResponse
+
+    # Request-body size cap. The app takes no file uploads (sources are
+    # filesystem paths), so every API body is small JSON. Without a cap an
+    # UNAUTHENTICATED client could POST a multi-GB body to a license-open
+    # endpoint (/api/auth/login, /recover) — FastAPI buffers it into RAM before
+    # any auth/rate-limit runs — and OOM the single-process server. Reject early
+    # on Content-Length; the few large bodies (chat) stay well under the cap.
+    _MAX_BODY_BYTES = 4 * 1024 * 1024  # 4 MiB
+
+    @fastapi_app.middleware("http")
+    async def _body_size_limit(request, call_next):  # type: ignore[no-untyped-def]
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            cl = request.headers.get("content-length")
+            if cl is not None:
+                try:
+                    if int(cl) > _MAX_BODY_BYTES:
+                        return JSONResponse({"detail": "request body too large"}, status_code=413)
+                except ValueError:
+                    return JSONResponse({"detail": "invalid Content-Length"}, status_code=400)
+        return await call_next(request)
+
     # Server-side license gate. The UI redirect alone is not enough — every
     # /api data route must refuse to serve content until the app is activated,
     # else a logged-in-but-unlicensed user could pull the whole library straight
     # over HTTP. Auth/health/about/docs stay open so login, liveness and the
     # version check keep working while the app is locked.
-    from starlette.responses import JSONResponse
-
     _license_open = ("/api/auth", "/api/health", "/api/about", "/api/docs", "/api/openapi.json")
 
     @fastapi_app.middleware("http")

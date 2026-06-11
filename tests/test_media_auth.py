@@ -116,7 +116,14 @@ def test_extracted_image_route_serves_and_acls(tmp_path) -> None:
     )
 
     init_db()
-    imgfile = tmp_path / "logo.png"
+    # Extracted images live under the app cache dir in production; the media
+    # routes now confine served files to cache/data/source roots, so the test
+    # fixture must reflect that real location (not an arbitrary tmp dir).
+    from app.config import get_settings
+
+    cache_imgs = get_settings().cache_path / "images" / "test"
+    cache_imgs.mkdir(parents=True, exist_ok=True)
+    imgfile = cache_imgs / "logo.png"
     imgfile.write_bytes(b"\x89PNG\r\n\x1a\nFAKE-IMAGE-BYTES")
     with session_scope() as session:
         owner = create_user(session, username="img-owner", password="pw-123456", role=UserRole.user)

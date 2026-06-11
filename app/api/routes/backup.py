@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.auth.security import login_required
+from app.auth.security import login_required, require_admin
 from app.backup import BACKUP_COMPONENTS, create_backup, list_backups, restore_backup
 from app.models import User
 
@@ -41,7 +41,7 @@ def listing(_user: User = Depends(login_required)) -> list[dict[str, Any]]:
 
 
 @router.post("")
-def create(body: CreateBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+def create(body: CreateBody, _user: User = Depends(require_admin)) -> dict[str, Any]:
     res = create_backup(
         body.components,
         encrypt_password=body.encrypt_password or None,
@@ -56,7 +56,7 @@ def create(body: CreateBody, _user: User = Depends(login_required)) -> dict[str,
 
 
 @router.post("/restore")
-def restore(body: RestoreBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+def restore(body: RestoreBody, _user: User = Depends(require_admin)) -> dict[str, Any]:
     p = Path(body.archive_path)
     if not p.exists():
         raise HTTPException(status_code=404, detail="archive not found")

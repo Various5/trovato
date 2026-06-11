@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from app.auth.security import login_required
 from app.chat.rag import answer_question, stream_answer, summarize_document
 from app.database import get_session
-from app.models import Chat, ChatContextItem, ChatMessage, User
+from app.models import Chat, ChatContextItem, ChatMessage, Document, DocumentSource, User
 
 router = APIRouter()
 
@@ -42,13 +42,22 @@ def create_chat(
     user: User = Depends(login_required),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    from app.auth.acl import can_see_document, can_see_source
+
     chat = Chat(user_id=user.id, title=body.title)  # type: ignore[arg-type]
     session.add(chat)
     session.flush()
+    # Only attach context the caller is actually allowed to see — otherwise a
+    # user could scope a chat to a foreign document/source id and have the RAG
+    # pipeline retrieve and quote its content back to them.
     for did in body.document_ids:
-        session.add(ChatContextItem(chat_id=chat.id, kind="document", ref_id=did))
+        d = session.get(Document, did)
+        if d and can_see_document(user, d):
+            session.add(ChatContextItem(chat_id=chat.id, kind="document", ref_id=did))
     for sid in body.source_ids:
-        session.add(ChatContextItem(chat_id=chat.id, kind="source", ref_id=sid))
+        sc = session.get(DocumentSource, sid)
+        if sc and can_see_source(user, sc):
+            session.add(ChatContextItem(chat_id=chat.id, kind="source", ref_id=sid))
     for t in body.tags:
         session.add(ChatContextItem(chat_id=chat.id, kind="tag", value=t))
     return chat.model_dump(mode="json")
@@ -148,6 +157,15 @@ def delete_chat(
 
 
 @router.post("/summarize/{document_id}")
-async def summarize(document_id: int, _user: User = Depends(login_required)) -> dict[str, str]:
+async def summarize(
+    document_id: int,
+    user: User = Depends(login_required),
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    from app.auth.acl import can_see_document
+
+    doc = session.get(Document, document_id)
+    if not doc or not can_see_document(user, doc):
+        raise HTTPException(status_code=404, detail="not found")
     text = await summarize_document(document_id)
     return {"summary": text}

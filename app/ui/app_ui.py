@@ -194,13 +194,17 @@ def _media_token() -> str:
     """
     try:
         uid = nicegui_app.storage.user.get(SESSION_USER_KEY)
+        # The pwv fingerprint is already in session storage (stamped at login),
+        # so the media token binds to it without a per-image DB lookup.
+        fp = nicegui_app.storage.user.get("pwv")
     except Exception:
         uid = None
+        fp = None
     if uid is None:
         return ""
     from app.auth.security import make_media_token
 
-    return make_media_token(int(uid))
+    return make_media_token(int(uid), fp)
 
 
 def pdf_url(document_id: int, page: int | None = None, token: str | None = None) -> str:

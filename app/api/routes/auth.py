@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from app.auth.rate_limit import is_locked, record_failure, record_success
 from app.auth.security import (
     create_user,
+    dummy_verify,
     get_current_user,
     has_users,
     hash_password,
@@ -86,7 +87,14 @@ def login(body: LoginBody, request: Request, session: Session = Depends(get_sess
         )
 
     user = session.exec(select(User).where(User.username == body.username)).first()
-    if not user or not user.is_active or not verify_password(body.password, user.password_hash):
+    # Constant-time: always run one Argon2 verify so a missing/inactive user
+    # takes the same time as a wrong password — no username-enumeration oracle.
+    if user and user.is_active:
+        password_ok = verify_password(body.password, user.password_hash)
+    else:
+        dummy_verify()
+        password_ok = False
+    if not password_ok:
         was_locked, lockout = record_failure(ip, body.username)
         audit.log(
             "auth.login.failed",

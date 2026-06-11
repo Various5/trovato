@@ -10,9 +10,12 @@ from __future__ import annotations
 from app.auth.security import make_media_token, verify_media_token
 
 
-def test_round_trip_returns_uid() -> None:
-    token = make_media_token(42)
-    assert verify_media_token(token) == 42
+def test_round_trip_returns_uid_and_fingerprint() -> None:
+    token = make_media_token(42, "fp-abc")
+    payload = verify_media_token(token)
+    assert payload is not None
+    assert payload["uid"] == 42
+    assert payload["fp"] == "fp-abc"
 
 
 def test_tampered_token_is_rejected() -> None:

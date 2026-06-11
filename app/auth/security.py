@@ -38,6 +38,20 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+# A throwaway hash to verify against when the user doesn't exist / is inactive,
+# so login takes the same (memory-hard) time whether or not the username is
+# valid — removing the timing oracle that otherwise enumerates real accounts.
+_DUMMY_HASH = _ph.hash(secrets.token_urlsafe(32))
+
+
+def dummy_verify() -> None:
+    """Burn one Argon2 verify against a constant dummy hash (always fails)."""
+    try:
+        _ph.verify(_DUMMY_HASH, "x")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # User lifecycle
 # ---------------------------------------------------------------------------
@@ -110,45 +124,72 @@ def current_user_id(request: Request) -> int | None:
 
 _MEDIA_SALT = "ldi-media-access-v1"
 
-# Reuse a freshly minted token per user for a while: itsdangerous embeds the
-# signing timestamp, so re-minting on every page build changes the ?t= query
-# string and busts the browser's image cache — every viewer visit re-downloads
-# multi-MB page PNGs. One token per hour keeps URLs stable (and cacheable)
-# while staying far inside the 24 h verification window.
+# Token verification window. Kept short (2 h) so a captured ?t= URL — which
+# rides in cleartext on a plain-HTTP deployment and can land in logs/history —
+# stops working quickly. The reuse cache below keeps URLs stable for 1 h so
+# browser image caching still works inside the window.
+MEDIA_TOKEN_MAX_AGE = 2 * 3600
 _MEDIA_TOKEN_REUSE = 3600.0
-_media_token_cache: dict[tuple[int, int], tuple[float, str]] = {}
+# Cache key includes the fingerprint, so a password change re-mints immediately.
+_media_token_cache: dict[tuple[int, int, str], tuple[float, str]] = {}
 
 
-def make_media_token(user_id: int) -> str:
-    """Return a signed, time-limited token authorizing media access.
+def _fingerprint_for(user_id: int) -> str:
+    """session_fingerprint for a user id (one PK lookup). Empty if gone."""
+    from app.database import session_scope
+
+    try:
+        with session_scope() as s2:
+            u = s2.get(User, int(user_id))
+            return session_fingerprint(u) if u else ""
+    except Exception:
+        return ""
+
+
+def make_media_token(user_id: int, fingerprint: str | None = None) -> str:
+    """Return a signed, short-lived token authorizing media access.
 
     Browser-issued requests for ``/api/documents/{id}/file`` (opened in a new
     tab) and ``/page/{n}/image`` (an ``<img>`` src) don't reliably carry the
     NiceGUI/Starlette session, so the UI appends ``?t=<token>`` and the
     endpoints accept it via ``media_user`` (app/api/routes/documents.py).
+
+    The token embeds the user's password fingerprint so a password change (the
+    natural incident response) revokes every outstanding media token — mirroring
+    the session-cookie ``pwv`` revocation. ``fingerprint`` is passed by the UI
+    (it has it cheaply from the session); other callers omit it and it is
+    derived with one PK lookup.
     """
     import time
 
+    uid = int(user_id)
+    if fingerprint is None:
+        fingerprint = _fingerprint_for(uid)
     secret = get_settings().secret_key
-    # Keyed on the signing secret too, so a rotated/changed secret can never
-    # serve a stale (now-unverifiable) cached token.
-    key = (int(user_id), hash(secret))
+    # Keyed on the signing secret + fingerprint, so a rotated secret or a
+    # changed password can never serve a stale (now-unverifiable) cached token.
+    key = (uid, hash(secret), fingerprint)
     now = time.time()
     cached = _media_token_cache.get(key)
     if cached and now - cached[0] < _MEDIA_TOKEN_REUSE:
         return cached[1]
     s = URLSafeTimedSerializer(secret, salt=_MEDIA_SALT)
-    token = s.dumps({"uid": int(user_id)})
+    token = s.dumps({"uid": uid, "fp": fingerprint})
     _media_token_cache[key] = (now, token)
     return token
 
 
-def verify_media_token(token: str, max_age: int = 86400) -> int | None:
-    """Return the user id from a valid, unexpired media token, else ``None``."""
+def verify_media_token(token: str, max_age: int = MEDIA_TOKEN_MAX_AGE) -> dict | None:
+    """Return the ``{"uid", "fp"}`` payload of a valid, unexpired token, else None.
+
+    The caller MUST still confirm ``fp`` matches the loaded user's current
+    fingerprint (see ``media_user``), so a token minted before a password change
+    is rejected.
+    """
     try:
         s = URLSafeTimedSerializer(get_settings().secret_key, salt=_MEDIA_SALT)
         data = s.loads(token, max_age=max_age)
-        return int(data["uid"])
+        return {"uid": int(data["uid"]), "fp": str(data.get("fp", ""))}
     except Exception:
         return None
 
@@ -192,6 +233,7 @@ def reset_password_with_recovery(
 ) -> bool:
     user = session.exec(select(User).where(User.username == username)).first()
     if not user or not user.recovery_key_hash:
+        dummy_verify()  # constant-time: don't leak which usernames exist
         return False
     if not verify_password(recovery_key, user.recovery_key_hash):
         return False
@@ -205,6 +247,7 @@ __all__ = [
     "SESSION_USER_KEY",
     "create_user",
     "current_user_id",
+    "dummy_verify",
     "get_current_user",
     "has_users",
     "hash_password",

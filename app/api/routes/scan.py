@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.auth.security import login_required
+from app.auth.security import login_required, require_admin
 from app.database import get_session
 from app.models import ScanJob, User
 from app.services.indexer import JOB_CONTROLLER, resume_scan_job, start_scan_in_background
@@ -26,7 +26,7 @@ class ScanStartBody(BaseModel):
 
 
 @router.post("/start")
-def start(body: ScanStartBody, _user: User = Depends(login_required)) -> dict[str, Any]:
+def start(body: ScanStartBody, _user: User = Depends(require_admin)) -> dict[str, Any]:
     task = start_scan_in_background(
         body.source_id,
         force_ocr=body.force_ocr,
@@ -61,7 +61,7 @@ def get_job(
 
 
 @router.post("/jobs/{job_id}/pause")
-def pause_job(job_id: int, _user: User = Depends(login_required)) -> dict[str, str]:
+def pause_job(job_id: int, _user: User = Depends(require_admin)) -> dict[str, str]:
     ctrl = JOB_CONTROLLER.get(job_id)
     if not ctrl:
         raise HTTPException(status_code=404, detail="job not running")
@@ -70,7 +70,7 @@ def pause_job(job_id: int, _user: User = Depends(login_required)) -> dict[str, s
 
 
 @router.post("/jobs/{job_id}/resume")
-def resume_job(job_id: int, _user: User = Depends(login_required)) -> dict[str, str]:
+def resume_job(job_id: int, _user: User = Depends(require_admin)) -> dict[str, str]:
     ctrl = JOB_CONTROLLER.get(job_id)
     if not ctrl:
         raise HTTPException(status_code=404, detail="job not running")
@@ -79,7 +79,7 @@ def resume_job(job_id: int, _user: User = Depends(login_required)) -> dict[str, 
 
 
 @router.post("/jobs/{job_id}/resume_job")
-def resume_job_endpoint(job_id: int, _user: User = Depends(login_required)) -> dict[str, Any]:
+def resume_job_endpoint(job_id: int, _user: User = Depends(require_admin)) -> dict[str, Any]:
     import asyncio
 
     asyncio.create_task(resume_scan_job(job_id), name=f"resume-{job_id}")
@@ -87,7 +87,7 @@ def resume_job_endpoint(job_id: int, _user: User = Depends(login_required)) -> d
 
 
 @router.post("/jobs/{job_id}/abort")
-def abort_job(job_id: int, _user: User = Depends(login_required)) -> dict[str, str]:
+def abort_job(job_id: int, _user: User = Depends(require_admin)) -> dict[str, str]:
     ctrl = JOB_CONTROLLER.get(job_id)
     if not ctrl:
         raise HTTPException(status_code=404, detail="job not running")

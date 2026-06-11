@@ -10,11 +10,38 @@ from fastapi.responses import FileResponse
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.auth.security import current_user_id, login_required, verify_media_token
+from app.auth.security import (
+    current_user_id,
+    login_required,
+    session_fingerprint,
+    verify_media_token,
+)
 from app.database import get_session, write_session
-from app.models import Document, DocumentImage, DocumentPage, User
+from app.models import Document, DocumentImage, DocumentPage, DocumentSource, User
 
 router = APIRouter()
+
+
+def _served_path_allowed(path: Path, doc: Document, session: Session) -> bool:
+    """Containment guard for any file streamed to a client.
+
+    Without this, ``download_document`` / ``get_*_image`` would stream
+    ``Document.path`` / ``cache_path`` verbatim — and an admin can point a
+    source at ``C:\\`` (or the app's own data dir) and catalog arbitrary host
+    files, turning these routes into an arbitrary-file-read primitive. We only
+    serve a file that lives under (a) the app CACHE dir (all app-generated page
+    renders / extracted images) or (b) the configured root of the document's
+    OWNING source (the legitimate location of the original). The cache dir ONLY,
+    NOT the whole data dir — the data dir also holds ``secret.key`` and the DB.
+    """
+    from app.config import get_settings
+    from app.utils.paths import is_under
+
+    s = get_settings()
+    if is_under(path, s.cache_path):
+        return True
+    src = session.get(DocumentSource, doc.source_id) if doc.source_id else None
+    return bool(src and src.path and is_under(path, src.path))
 
 
 def media_user(
@@ -26,15 +53,32 @@ def media_user(
 
     PDF "open in browser" (new tab) and page-image previews (``<img>`` src) can't
     rely on the NiceGUI session being carried, so the UI appends a signed token.
+
+    Both paths re-check the password fingerprint (``pwv``), so a password change
+    revokes a stolen cookie AND any outstanding ``?t=`` media token — the token
+    is no longer a 24h credential that outlives credential rotation.
     """
     uid = current_user_id(request)
+    token_fp: str | None = None
+    via_token = False
     if uid is None and t:
-        uid = verify_media_token(t)
+        payload = verify_media_token(t)
+        if payload:
+            uid = payload["uid"]
+            token_fp = payload["fp"]
+            via_token = True
     if uid is None:
         raise HTTPException(status_code=401, detail="login required")
     user = session.get(User, uid)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="login required")
+    expected_fp = session_fingerprint(user)
+    if via_token:
+        if token_fp != expected_fp:
+            raise HTTPException(status_code=401, detail="token expired")
+    elif request.session.get("pwv") != expected_fp:
+        # Cookie path: enforce pwv revocation like get_current_user.
+        raise HTTPException(status_code=401, detail="session expired")
     return user
 
 
@@ -108,6 +152,8 @@ def download_document(
     if not can_see_document(user, d):
         raise HTTPException(status_code=403, detail="forbidden")
     p = Path(d.path)
+    if not _served_path_allowed(p, d, session):
+        raise HTTPException(status_code=403, detail="path outside the document's source")
     if not p.exists():
         raise HTTPException(status_code=410, detail="file no longer available on disk")
     disposition = "attachment" if download else "inline"
@@ -117,16 +163,37 @@ def download_document(
     return FileResponse(str(p), media_type="application/pdf", headers=headers)
 
 
+def _require_can_see(doc_id: int, user: User, session: Session) -> Document:
+    """Load a document and enforce the per-document ACL, or 404/403.
+
+    404 (not 403) for an invisible doc avoids confirming its existence to a
+    user who can't see it — but a visible-but-forbidden case still 403s.
+    """
+    from app.auth.acl import can_see_document
+
+    doc = session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="not found")
+    if not can_see_document(user, doc):
+        raise HTTPException(status_code=404, detail="not found")
+    return doc
+
+
 @router.get("/compare/{doc_a}/{doc_b}")
 async def compare(
     doc_a: int,
     doc_b: int,
-    _user: User = Depends(login_required),
+    user: User = Depends(login_required),
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     from dataclasses import asdict
 
     from app.services.compare import compare_documents
 
+    # ACL: compare reveals full text + an LLM diff of BOTH documents, so the
+    # caller must be allowed to see each one (else it's a cross-tenant leak).
+    _require_can_see(doc_a, user, session)
+    _require_can_see(doc_b, user, session)
     try:
         result = await compare_documents(doc_a, doc_b)
     except ValueError as e:
@@ -138,13 +205,23 @@ async def compare(
 async def similar(
     doc_id: int,
     top_k: int = 10,
-    _user: User = Depends(login_required),
+    user: User = Depends(login_required),
+    session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     from dataclasses import asdict
 
+    from app.auth.acl import allowed_document_ids
     from app.services.similar import find_similar
 
+    _require_can_see(doc_id, user, session)
     hits = await find_similar(doc_id, top_k=top_k)
+    # Filter results to documents the caller may see (non-admins must not learn
+    # foreign filenames / absolute paths via the similarity neighbours).
+    from app.models import UserRole
+
+    if user.role != UserRole.admin:
+        visible = allowed_document_ids(user, session)
+        hits = [h for h in hits if getattr(h, "document_id", None) in visible]
     return [asdict(h) for h in hits]
 
 
@@ -241,6 +318,12 @@ def get_page_image(
         return _media_file_response(request, out, "image/png")
 
     src_path = Path(doc.path)
+    if not _served_path_allowed(src_path, doc, session):
+        # Never rasterize a file outside the document's source root (arbitrary
+        # file read otherwise). Fall back to any app-generated render we have.
+        if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
+            return _media_file_response(request, Path(page.rendered_image_path), "image/png")
+        raise HTTPException(status_code=403, detail="path outside the document's source")
     if not src_path.exists():
         # Original offline: fall back to whatever other render exists.
         if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
@@ -330,7 +413,9 @@ def get_match_rects(
         if len(page_nos) >= MAX_PAGES:
             break
     terms = meaningful_terms(q)
-    if not terms or not page_nos or not Path(doc.path).exists():
+    if not terms or not page_nos or not _served_path_allowed(Path(doc.path), doc, session):
+        return {"rects": {}}
+    if not Path(doc.path).exists():
         return {"rects": {}}
     rects = match_rects_for_pages(doc.path, page_nos, terms)
     return {"rects": {str(k): [list(r) for r in v] for k, v in rects.items()}}
@@ -360,6 +445,8 @@ def get_extracted_image(
     if not img or img.document_id != doc_id:
         raise HTTPException(status_code=404, detail="image not found")
     p = Path(img.cache_path)
+    if not _served_path_allowed(p, doc, session):
+        raise HTTPException(status_code=403, detail="path outside the document's source")
     if not p.exists():
         raise HTTPException(status_code=410, detail="image no longer available on disk")
     suffix = p.suffix.lower().lstrip(".") or "png"

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app.auth.security import login_required
+from app.auth.security import login_required, require_admin
 from app.database import get_session
 from app.models import DocumentSource, SourceType, User
 from app.services.watcher import is_watching, start_watcher, stop_watcher
@@ -29,6 +29,41 @@ class SourceIn(BaseModel):
     scan_interval_minutes: int | None = None
 
 
+def _validate_source(body: SourceIn) -> None:
+    """Confine a LOCAL source root server-side.
+
+    A source root + glob patterns drive which host files get catalogued and
+    then become downloadable through the document routes. Without limits an
+    admin (or anyone replaying an admin credential) could point a source at a
+    filesystem root or at the app's own data dir and exfiltrate ``secret.key``
+    / ``trovato.db``. Remote (SMB/WebDAV/SFTP) paths are not local FS paths and
+    are left to their provider.
+    """
+    from pathlib import Path
+
+    from app.config import get_settings
+    from app.utils.paths import is_under
+
+    # Bound the pattern lists so they can't be abused as an unbounded payload.
+    for patterns in (body.include_patterns, body.exclude_patterns):
+        if len(patterns) > 50 or any(len(p) > 200 for p in patterns):
+            raise HTTPException(status_code=400, detail="too many / too long glob patterns")
+
+    if body.type != SourceType.local:
+        return
+    try:
+        resolved = Path(body.path).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid source path")
+    # A filesystem / drive root (C:\, /, \\server) is far too broad.
+    if resolved.parent == resolved:
+        raise HTTPException(status_code=400, detail="source path may not be a filesystem root")
+    # Never let a source overlap the app data dir (it holds secret.key + the DB).
+    data = get_settings().data_path.resolve()
+    if resolved == data or is_under(resolved, data) or is_under(data, resolved):
+        raise HTTPException(status_code=400, detail="source path overlaps the app data directory")
+
+
 @router.get("")
 def list_sources(
     user: User = Depends(login_required),
@@ -44,9 +79,10 @@ def list_sources(
 @router.post("")
 def create_source(
     body: SourceIn,
-    user: User = Depends(login_required),
+    user: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _validate_source(body)
     src = DocumentSource(**body.model_dump(), owner_id=user.id)
     session.add(src)
     session.flush()
@@ -57,9 +93,10 @@ def create_source(
 def update_source(
     source_id: int,
     body: SourceIn,
-    _user: User = Depends(login_required),
+    _user: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
+    _validate_source(body)
     src = session.get(DocumentSource, source_id)
     if not src:
         raise HTTPException(status_code=404, detail="not found")
@@ -82,7 +119,7 @@ class CredentialsBody(BaseModel):
 def set_credentials(
     source_id: int,
     body: CredentialsBody,
-    _user: User = Depends(login_required),
+    _user: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     src = session.get(DocumentSource, source_id)
@@ -101,7 +138,7 @@ def set_credentials(
 @router.delete("/{source_id}/credentials")
 def delete_credentials(
     source_id: int,
-    _user: User = Depends(login_required),
+    _user: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict[str, str]:
     src = session.get(DocumentSource, source_id)
@@ -117,13 +154,13 @@ def delete_credentials(
 
 
 @router.post("/{source_id}/watch")
-def watch(source_id: int, _user: User = Depends(login_required)) -> dict[str, Any]:
+def watch(source_id: int, _user: User = Depends(require_admin)) -> dict[str, Any]:
     start_watcher(source_id)
     return {"watching": is_watching(source_id)}
 
 
 @router.post("/{source_id}/unwatch")
-def unwatch(source_id: int, _user: User = Depends(login_required)) -> dict[str, Any]:
+def unwatch(source_id: int, _user: User = Depends(require_admin)) -> dict[str, Any]:
     stopped = stop_watcher(source_id)
     return {"stopped": stopped}
 
@@ -131,7 +168,7 @@ def unwatch(source_id: int, _user: User = Depends(login_required)) -> dict[str, 
 @router.delete("/{source_id}")
 def delete_source(
     source_id: int,
-    _user: User = Depends(login_required),
+    _user: User = Depends(require_admin),
 ) -> dict[str, str]:
     # A bare DELETE fails the moment the source has documents or scan-job
     # history (enforced FKs, no cascade). Tear the children down first.

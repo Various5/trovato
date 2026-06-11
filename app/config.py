@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # the cookie entirely (you can't stay logged in). Only turn it on when the
     # app sits behind HTTPS (a reverse proxy / tunnel).
     secure_cookies: bool = False
+    # Session-cookie lifetime (days). The cookie is a stateless signed token —
+    # there is no server-side revocation beyond a password change — so a shorter
+    # window bounds how long a captured cookie stays replayable. 7 days keeps the
+    # local desktop case "log in about weekly"; lower it for exposed deployments.
+    session_max_age_days: int = 7
     secret_key: str = ""
     debug: bool = False
     log_level: str = "INFO"
