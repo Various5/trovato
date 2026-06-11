@@ -6,11 +6,11 @@
 
 #define MyAppName      "Trovato"
 #define MyAppShort     "Trovato"
-#define MyAppVersion   "0.7.2"
+#define MyAppVersion   "0.7.3"
 ; Numeric quad for Windows version-info / uninstall comparison. Final releases
 ; map straight through (0.4.14 -> 0.4.14.0); pre-release bN builds encode the beta
 ; number in the 4th component (0.4.0b8 -> 0.4.0.8).
-#define MyAppVersionInfo "0.7.2.0"
+#define MyAppVersionInfo "0.7.3.0"
 #define MyAppPublisher "Varous 555"
 #define MyAppURL       "https://github.com/Various5/trovato"
 #define MyAppExeName   "Trovato.exe"
