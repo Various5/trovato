@@ -230,17 +230,25 @@ def make_recovery_key() -> str:
 
 def reset_password_with_recovery(
     session: Session, *, username: str, recovery_key: str, new_password: str
-) -> bool:
+) -> str | None:
+    """Reset the password using the one-shot recovery key.
+
+    The old key is consumed and a NEW one is generated. Returns the new plaintext
+    recovery key on success — the caller MUST show it to the user once: only its
+    hash is stored, so it can never be retrieved again, and without it the user
+    could not recover a second time. Returns ``None`` on failure.
+    """
     user = session.exec(select(User).where(User.username == username)).first()
     if not user or not user.recovery_key_hash:
         dummy_verify()  # constant-time: don't leak which usernames exist
-        return False
+        return None
     if not verify_password(recovery_key, user.recovery_key_hash):
-        return False
+        return None
     user.password_hash = hash_password(new_password)
-    user.recovery_key_hash = hash_password(make_recovery_key())
+    new_recovery_key = make_recovery_key()
+    user.recovery_key_hash = hash_password(new_recovery_key)
     session.add(user)
-    return True
+    return new_recovery_key
 
 
 __all__ = [

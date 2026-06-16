@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trovato"
-version = "0.8.5"
+version = "0.8.6"
 description = "Trovato — local PDF indexing, OCR, image analysis, semantic search and chat over your documents. 100% local via LM Studio."
 readme = "README.md"
 requires-python = ">=3.11"

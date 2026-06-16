@@ -162,14 +162,18 @@ def recover(body: RecoveryBody, request: Request, session: Session = Depends(get
             detail=f"too many attempts; retry in {int(retry_after)}s",
             headers={"Retry-After": str(int(retry_after))},
         )
-    ok = reset_password_with_recovery(
+    new_recovery_key = reset_password_with_recovery(
         session,
         username=body.username,
         recovery_key=body.recovery_key,
         new_password=body.new_password,
     )
-    if not ok:
+    if not new_recovery_key:
         record_failure(ip, bucket)
         raise HTTPException(status_code=400, detail="invalid recovery")
     record_success(ip, bucket)
-    return {"ok": True}
+    # Return the freshly generated recovery key so the caller can show it once —
+    # the old key was just consumed, and only the hash is stored, so without
+    # this the user could never recover again. Travels in the response exactly
+    # like first-run's recovery key already does.
+    return {"ok": True, "recovery_key": new_recovery_key}

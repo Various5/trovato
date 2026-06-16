@@ -1496,30 +1496,54 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.card().classes("ldi-static w-full max-w-sm p-6"),
         ):
             ui.label(t("recover.title", rl)).classes("text-h5 ldi-primary")
-            uname = ui.input(t("common.username", rl)).classes("w-full")
-            rkey = ui.input(t("recover.recovery_key", rl)).classes("w-full")
-            new_pw = ui.input(
-                t("common.new_password", rl), password=True, password_toggle_button=True
-            ).classes("w-full")
-            err = ui.label("").classes("text-negative")
+            form = ui.column().classes("w-full")
+            # Revealed after a successful reset to show the NEW one-shot recovery
+            # key (the old one was just consumed; only the hash is stored, so it
+            # can never be shown again — without it the user couldn't recover a
+            # second time).
+            done_box = ui.column().classes("w-full q-mt-sm")
+            done_box.visible = False
 
             def _go() -> None:
                 from app.auth.security import reset_password_with_recovery
 
                 with session_scope() as session:
-                    ok = reset_password_with_recovery(
+                    new_key = reset_password_with_recovery(
                         session,
                         username=uname.value,
                         recovery_key=rkey.value,
                         new_password=new_pw.value,
                     )
-                if not ok:
+                if not new_key:
                     err.text = t("recover.invalid", rl)
-                else:
-                    ui.notify(t("recover.success", rl))
-                    ui.navigate.to("/login")
+                    return
+                err.text = ""
+                ui.notify(t("recover.success", rl))
+                form.visible = False
+                done_box.clear()
+                with done_box:
+                    ui.label(t("recover.new_key_title", rl)).classes("text-subtitle2 ldi-primary")
+                    ui.label(t("recover.new_key_hint", rl)).classes("text-caption ldi-muted")
+                    ui.label(new_key).classes("text-positive break-all q-mt-xs").style(
+                        "font-family: 'JetBrains Mono', monospace;"
+                    )
+                    ack = ui.checkbox(t("recover.new_key_ack", rl)).classes("q-mt-sm")
+                    cont = (
+                        ui.button(t("recover.continue", rl), on_click=lambda: ui.navigate.to("/login"))
+                        .props("color=primary")
+                        .classes("w-full q-mt-sm")
+                    )
+                    cont.bind_enabled_from(ack, "value")
+                done_box.visible = True
 
-            ui.button(t("recover.btn", rl), on_click=_go).props("color=primary").classes("w-full")
+            with form:
+                uname = ui.input(t("common.username", rl)).classes("w-full")
+                rkey = ui.input(t("recover.recovery_key", rl)).classes("w-full")
+                new_pw = ui.input(
+                    t("common.new_password", rl), password=True, password_toggle_button=True
+                ).classes("w-full")
+                err = ui.label("").classes("text-negative")
+                ui.button(t("recover.btn", rl), on_click=_go).props("color=primary").classes("w-full")
 
     # ---- protected pages -------------------------------------------------
 
