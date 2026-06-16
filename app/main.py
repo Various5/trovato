@@ -295,6 +295,26 @@ def create_app():  # type: ignore[no-untyped-def]
 
     _unsafe_methods = {"POST", "PUT", "PATCH", "DELETE"}
 
+    # Content-Security-Policy, shipped in REPORT-ONLY mode first: it reports
+    # would-be violations to the browser console WITHOUT enforcing, so it can't
+    # break the NiceGUI live-reload WebSocket, the PDF/media viewer, or the
+    # inline Vue/Quasar bootstrap while we confirm the policy is clean. Once
+    # verified in the running app, flip the header name below to the enforcing
+    # "Content-Security-Policy". NiceGUI requires 'unsafe-inline'/'unsafe-eval'
+    # (Vue/Quasar) and a ws/wss connect-src; all app assets, media and fonts are
+    # same-origin ('self'), so no CDN/host allowances are needed.
+    _CSP = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'self'"
+    )
+
     @fastapi_app.middleware("http")
     async def _security(request, call_next):  # type: ignore[no-untyped-def]
         if request.method in _unsafe_methods and request.url.path.startswith("/api/"):
@@ -305,6 +325,7 @@ def create_app():  # type: ignore[no-untyped-def]
         resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        resp.headers.setdefault("Content-Security-Policy-Report-Only", _CSP)
         return resp
 
     fastapi_app.include_router(api_router)

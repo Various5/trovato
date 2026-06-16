@@ -50,6 +50,12 @@ def test_security_headers_present(client):
     assert r.headers.get("X-Frame-Options") == "SAMEORIGIN"
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert r.headers.get("Referrer-Policy") == "no-referrer"
+    # CSP ships in Report-Only mode first (observe, don't enforce). It must
+    # permit the NiceGUI ws/wss and not enforce (no plain Content-Security-Policy
+    # header yet, so it can't break the viewer/WebSocket).
+    csp = r.headers.get("Content-Security-Policy-Report-Only")
+    assert csp and "connect-src 'self' ws: wss:" in csp
+    assert r.headers.get("Content-Security-Policy") is None
 
 
 def test_about_and_health_require_auth(client):
