@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,7 @@ class SearchHit:
     score: float
     source: str  # native_text | ocr_text | image_description | table
     tags: list[str]
+    text: str = ""  # full chunk body for LLM context; `snippet` stays the UI preview
 
 
 def _query_terms(query: str) -> list[str]:
@@ -113,129 +115,155 @@ async def hybrid_search(
     if not query:
         return []
 
-    vector_results: list[dict[str, Any]] = []
+    # Embed on the event loop (it's an awaitable HTTP call); everything after is
+    # synchronous Chroma + SQLite + ORM work that would otherwise block the
+    # single shared uvicorn/NiceGUI loop and freeze the whole UI for every
+    # client while one search runs. Offload it to a worker thread.
+    emb_vec: list[float] | None = None
+    where: dict[str, Any] | None = None
     try:
         client = get_client()
         emb = await client.embed([query])
         if emb:
-            where: dict[str, Any] | None = None
+            emb_vec = emb[0]
             if document_ids:
                 where = {"document_id": {"$in": [int(i) for i in document_ids]}}
             elif source_ids:
                 where = {"source_id": {"$in": [int(i) for i in source_ids]}}
-            vector_results = similarity_search(emb[0], top_k=top_k * 2, where=where)
     except Exception as e:
-        logger.warning("vector search failed: {}", e)
+        logger.warning("vector search embed failed: {}", e)
 
-    fts_results = fts_search(query, limit=top_k * 2)
+    def _blocking() -> list[SearchHit]:
+        vector_results: list[dict[str, Any]] = []
+        if emb_vec is not None:
+            try:
+                vector_results = similarity_search(emb_vec, top_k=top_k * 2, where=where)
+            except Exception as e:
+                logger.warning("vector search failed: {}", e)
 
-    # --- Reciprocal Rank Fusion (RRF) -------------------------------------
-    # Vector (cosine) and FTS (bm25) scores live on incomparable scales, so the
-    # old linear `alpha*v + (1-alpha)*f` blend was unstable — and the FTS
-    # normalisation `1 - score/max_bm` collapsed to 0 whenever results tied or a
-    # single row came back, which is exactly why exact keyword matches sank to
-    # the bottom. RRF fuses by *rank* instead: scale-free and robust. Each list
-    # contributes 1/(K + rank); a result near the top of either list ranks high.
-    K_RRF = 60
-    combined: dict[int, dict[str, Any]] = {}
-    for rank, r in enumerate(vector_results, start=1):
-        try:
-            cid = int(r["id"])
-        except Exception:
-            continue
-        e = combined.setdefault(cid, {"rrf": 0.0})
-        e["rrf"] += 1.0 / (K_RRF + rank)
-        e["meta"] = r.get("metadata") or {}
-        e["text"] = r.get("text") or ""
+        fts_results = fts_search(query, limit=top_k * 2)
 
-    for rank, (cid, _did, _score) in enumerate(fts_results, start=1):
-        e = combined.setdefault(int(cid), {"rrf": 0.0})
-        e["rrf"] += 1.0 / (K_RRF + rank)
-
-    if not combined:
-        return []
-
-    chunk_ids = list(combined.keys())
-    with session_scope() as session:
-        chunks = session.exec(
-            select(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids))  # type: ignore
-        ).all()
-        chunk_by_id = {c.id: c for c in chunks}
-        doc_ids_needed = {c.document_id for c in chunks}
-        docs_stmt = select(Document).where(Document.id.in_(list(doc_ids_needed)))  # type: ignore
-        if user is not None:
-            from app.auth.acl import filter_documents
-
-            docs_stmt = filter_documents(docs_stmt, user)
-        docs = session.exec(docs_stmt).all()
-        doc_by_id = {d.id: d for d in docs}
-
-        tag_filter_ids: set[int] = set()
-        if tags:
-            tag_rows = session.exec(select(Tag).where(Tag.name.in_(tags))).all()  # type: ignore
-            tag_ids = [t.id for t in tag_rows if t.id is not None]
-            if tag_ids:
-                links = session.exec(
-                    select(DocumentTagLink).where(DocumentTagLink.tag_id.in_(tag_ids))  # type: ignore
-                ).all()
-                tag_filter_ids = {l.document_id for l in links}
-
-        hits: list[SearchHit] = []
-        for cid, scores in combined.items():
-            chunk = chunk_by_id.get(cid)
-            if not chunk:
+        # --- Reciprocal Rank Fusion (RRF) ---------------------------------
+        # Vector (cosine) and FTS (bm25) scores live on incomparable scales, so
+        # the old linear `alpha*v + (1-alpha)*f` blend was unstable — and the
+        # FTS normalisation `1 - score/max_bm` collapsed to 0 whenever results
+        # tied or a single row came back, which is exactly why exact keyword
+        # matches sank to the bottom. RRF fuses by *rank* instead: scale-free
+        # and robust. Each list contributes 1/(K + rank).
+        K_RRF = 60
+        combined: dict[int, dict[str, Any]] = {}
+        for rank, r in enumerate(vector_results, start=1):
+            try:
+                cid = int(r["id"])
+            except Exception:
                 continue
-            doc = doc_by_id.get(chunk.document_id)
-            if not doc:
-                continue
-            if document_ids and doc.id not in set(document_ids):
-                continue
-            if source_ids and doc.source_id not in set(source_ids):
-                continue
-            if tag_filter_ids and doc.id not in tag_filter_ids:
-                continue
+            e = combined.setdefault(cid, {"rrf": 0.0})
+            e["rrf"] += 1.0 / (K_RRF + rank)
+            e["meta"] = r.get("metadata") or {}
+            e["text"] = r.get("text") or ""
 
-            # RRF base fusion + a lexical boost so verbatim term matches win
-            # ties against purely-semantic neighbours. Top-of-both-lists RRF is
-            # ~0.033, so weighting the lexical signal (≤1.5) by ~0.02 makes a
-            # full phrase match worth roughly one fusion rank — enough to lift
-            # an exact hit without degenerating into pure keyword search.
-            rrf = scores.get("rrf", 0.0)
-            score = rrf + 0.02 * _lexical_score(chunk.text, query)
-            hits.append(
-                SearchHit(
-                    chunk_id=cid,
-                    document_id=doc.id,
-                    filename=doc.filename,
-                    path=doc.path,
-                    page_from=chunk.page_from,
-                    page_to=chunk.page_to,
-                    snippet=_snippet(chunk.text, query),
-                    score=score,
-                    source=getattr(chunk.source, "value", str(chunk.source)),
-                    tags=list(chunk.tags or []),
+        for rank, (cid, _did, _score) in enumerate(fts_results, start=1):
+            e = combined.setdefault(int(cid), {"rrf": 0.0})
+            e["rrf"] += 1.0 / (K_RRF + rank)
+
+        if not combined:
+            return []
+
+        chunk_ids = list(combined.keys())
+        with session_scope() as session:
+            chunks = session.exec(
+                select(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids))  # type: ignore
+            ).all()
+            chunk_by_id = {c.id: c for c in chunks}
+            doc_ids_needed = {c.document_id for c in chunks}
+            docs_stmt = select(Document).where(Document.id.in_(list(doc_ids_needed)))  # type: ignore
+            if user is not None:
+                from app.auth.acl import filter_documents
+
+                docs_stmt = filter_documents(docs_stmt, user)
+            docs = session.exec(docs_stmt).all()
+            doc_by_id = {d.id: d for d in docs}
+
+            tag_filter_ids: set[int] = set()
+            if tags:
+                tag_rows = session.exec(select(Tag).where(Tag.name.in_(tags))).all()  # type: ignore
+                tag_ids = [t.id for t in tag_rows if t.id is not None]
+                if tag_ids:
+                    links = session.exec(
+                        select(DocumentTagLink).where(DocumentTagLink.tag_id.in_(tag_ids))  # type: ignore
+                    ).all()
+                    tag_filter_ids = {l.document_id for l in links}
+
+            q_lower = query.lower().strip()
+            hits: list[SearchHit] = []
+            for cid, scores in combined.items():
+                chunk = chunk_by_id.get(cid)
+                if not chunk:
+                    continue
+                doc = doc_by_id.get(chunk.document_id)
+                if not doc:
+                    continue
+                if document_ids and doc.id not in set(document_ids):
+                    continue
+                if source_ids and doc.source_id not in set(source_ids):
+                    continue
+                if tag_filter_ids and doc.id not in tag_filter_ids:
+                    continue
+
+                # RRF base fusion + a lexical boost so verbatim term matches win
+                # ties against purely-semantic neighbours. Top-of-both-lists RRF
+                # is ~0.033, so weighting the lexical signal (≤1.5) by ~0.02
+                # makes a full phrase match worth roughly one fusion rank.
+                rrf = scores.get("rrf", 0.0)
+                ctext = chunk.text or ""
+                score = rrf + 0.02 * _lexical_score(ctext, query)
+                # Verbatim phrase match: a strong, bounded extra boost (~1.5
+                # ranks) so pasting a known sentence reliably surfaces its chunk
+                # — the user's exact-search case — without collapsing hybrid
+                # search into pure keyword matching. Gated on length so short,
+                # common phrases don't dominate.
+                if len(q_lower) >= 12 and q_lower in ctext.lower():
+                    score += 0.05
+                hits.append(
+                    SearchHit(
+                        chunk_id=cid,
+                        document_id=doc.id,
+                        filename=doc.filename,
+                        path=doc.path,
+                        page_from=chunk.page_from,
+                        page_to=chunk.page_to,
+                        snippet=_snippet(ctext, query),
+                        score=score,
+                        source=getattr(chunk.source, "value", str(chunk.source)),
+                        tags=list(chunk.tags or []),
+                        text=ctext,
+                    )
                 )
-            )
 
-    hits.sort(key=lambda h: h.score, reverse=True)
-    if collapse_per_doc:
-        seen_docs: set[int] = set()
-        collapsed: list[SearchHit] = []
-        for h in hits:
-            if h.document_id in seen_docs:
-                continue
-            seen_docs.add(h.document_id)
-            collapsed.append(h)
-        hits = collapsed
-    hits = hits[:top_k]
+        # Deterministic order: pinning the chunk_id tiebreaker stops equal-scored
+        # boundary hits from reordering run-to-run (a cause of "different sources
+        # on the second ask").
+        hits.sort(key=lambda h: (-h.score, h.chunk_id))
+        if collapse_per_doc:
+            seen_docs: set[int] = set()
+            collapsed: list[SearchHit] = []
+            for h in hits:
+                if h.document_id in seen_docs:
+                    continue
+                seen_docs.add(h.document_id)
+                collapsed.append(h)
+            hits = collapsed
+        hits = hits[:top_k]
+        _normalise_scores(hits)
+        return hits
+
+    hits = await asyncio.to_thread(_blocking)
 
     # Normalise to 0..1 BEFORE reranking. The LLM reranker blends
     # ``0.6*model + 0.4*original`` assuming the original score is in [0, 1];
     # raw RRF values are ~0.03, which would otherwise wash the original signal
     # out entirely (and break its "can't do worse than baseline" guarantee).
-    # Then renormalise the blended result so the displayed top hit is 1.0 and
-    # the UI shows an intuitive relevance figure rather than raw ~0.0x values.
-    _normalise_scores(hits)
+    # Then renormalise the blended result so the displayed top hit is 1.0.
     if rerank and len(hits) > 1:
         try:
             from app.services.reranker import rerank as _do_rerank
@@ -341,32 +369,30 @@ def browse_documents(
     ranking. ACL-filtered when ``user`` is given.
     """
     with session_scope() as session:
+        # Filter / order / limit in SQL rather than hydrating the entire Document
+        # table into Python first — keeps query-less browse and tag-chip
+        # navigation fast as the library grows to thousands of documents.
         stmt = select(Document)
         if user is not None:
             from app.auth.acl import filter_documents
 
             stmt = filter_documents(stmt, user)
-        docs = list(session.exec(stmt).all())
-
         if source_ids:
-            ss = {int(i) for i in source_ids}
-            docs = [d for d in docs if d.source_id in ss]
+            stmt = stmt.where(Document.source_id.in_({int(i) for i in source_ids}))  # type: ignore
         if doc_types:
-            dd = set(doc_types)
-            docs = [d for d in docs if d.doc_type in dd]
+            stmt = stmt.where(Document.doc_type.in_(list(doc_types)))  # type: ignore
         if tags:
-            tag_rows = session.exec(select(Tag).where(Tag.name.in_(tags))).all()  # type: ignore
-            tag_ids = [t.id for t in tag_rows if t.id is not None]
-            doc_ids_with_tag: set[int] = set()
-            if tag_ids:
-                links = session.exec(
-                    select(DocumentTagLink).where(DocumentTagLink.tag_id.in_(tag_ids))  # type: ignore
-                ).all()
-                doc_ids_with_tag = {link.document_id for link in links}
-            docs = [d for d in docs if d.id in doc_ids_with_tag]
-
-        docs.sort(key=lambda d: d.id or 0, reverse=True)
-        docs = docs[:top_k]
+            # IN-subquery (not a JOIN) preserves ANY-tag semantics without
+            # duplicate rows; an unknown tag yields an empty set → no results.
+            stmt = stmt.where(
+                Document.id.in_(  # type: ignore
+                    select(DocumentTagLink.document_id).join(
+                        Tag, Tag.id == DocumentTagLink.tag_id
+                    ).where(Tag.name.in_(list(tags)))
+                )
+            )
+        stmt = stmt.order_by(Document.id.desc()).limit(top_k)  # type: ignore
+        docs = list(session.exec(stmt).all())
         if not docs:
             return []
 
@@ -398,6 +424,7 @@ def browse_documents(
                     score=0.0,
                     source=getattr(fc.source, "value", str(fc.source)) if fc else "native_text",
                     tags=list(fc.tags or []) if fc else [],
+                    text=fc.text if fc and fc.text else "",
                 )
             )
         return hits

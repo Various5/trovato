@@ -123,6 +123,15 @@ def chat_to_markdown(chat_id: int) -> str:
         return "\n".join(lines)
 
 
+def _hit_export_dict(h: SearchHit) -> dict[str, Any]:
+    """SearchHit as a plain dict for export, minus ``text`` — that field is the
+    full chunk body fed to the LLM, not something users want dumped into a CSV/
+    JSON row (the ``snippet`` is the human-facing preview)."""
+    d = asdict(h)
+    d.pop("text", None)
+    return d
+
+
 def search_hits_to_csv(hits: list[SearchHit]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(
@@ -139,18 +148,19 @@ def search_hits_to_csv(hits: list[SearchHit]) -> str:
             "snippet",
             "tags",
         ],
+        extrasaction="ignore",
     )
     writer.writeheader()
     for h in hits:
-        row = asdict(h)
+        row = _hit_export_dict(h)
         row["tags"] = ";".join(h.tags or [])
         writer.writerow(row)
     return buf.getvalue()
 
 
 def search_hits_to_json(hits: list[SearchHit]) -> str:
-    return json.dumps([asdict(h) for h in hits], indent=2, ensure_ascii=False)
+    return json.dumps([_hit_export_dict(h) for h in hits], indent=2, ensure_ascii=False)
 
 
 def search_hits_to_dict_list(hits: list[SearchHit]) -> list[dict[str, Any]]:
-    return [asdict(h) for h in hits]
+    return [_hit_export_dict(h) for h in hits]

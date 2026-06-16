@@ -8,7 +8,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from app import __app_name__, __author__, __contact__, __handle__, __version__
+from app import (
+    __app_name__,
+    __author__,
+    __contact__,
+    __handle__,
+    __lead_programmer__,
+    __version__,
+)
 from app.auth.security import login_required
 from app.models import User
 from app.vectorstore import collection_size
@@ -35,6 +42,7 @@ def about(_user: User = Depends(login_required)) -> dict[str, Any]:
         "app": __app_name__,
         "version": __version__,
         "author": __author__,
+        "lead_programmer": __lead_programmer__,
         "contact": __contact__,
         "handle": __handle__,
         "python": sys.version,

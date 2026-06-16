@@ -8,6 +8,7 @@ The system prompt instructs the model to:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -195,12 +196,17 @@ class RAGResult:
 # Library-wide questions ("which documents…", "compare all…", "list every…")
 # should pull from MANY documents, not drill into one. Detect them to widen
 # retrieval and favour cross-document breadth.
+# Trimmed to genuine aggregation / cross-document signals. The dropped tokens
+# (list, most, common, count, each, jede[rsn]?, häufig) appear too often in
+# ordinary single-fact questions and used to flip them into the breadth plan —
+# which then capped each document to one chunk and threw away the very chunk
+# that answered the question on a reworded follow-up.
 _BROAD_RX = re.compile(
     r"\b("
-    r"all|every|each|across|compare|comparison|overview|summar(?:y|ize|ise)|list|"
-    r"which docs?|which documents?|how many|count|most|common|"
-    r"alle|jede[rsn]?|sämtliche|welche dokumente|welche unterlagen|vergleich|"
-    r"überblick|zusammenfass|auflisten|wie viele|häufig|insgesamt"
+    r"all|every|across|compare|comparison|overview|summar(?:y|ize|ise)|"
+    r"which docs?|which documents?|how many|"
+    r"alle|sämtliche|welche dokumente|welche unterlagen|vergleich|"
+    r"überblick|zusammenfass|auflisten|wie viele|insgesamt"
     r")\b",
     re.IGNORECASE,
 )
@@ -212,9 +218,14 @@ def _is_broad_query(question: str) -> bool:
 
 def _retrieval_plan(question: str, base_top_k: int) -> tuple[int, int]:
     """(effective_top_k, max_chunks_per_doc). Broad questions retrieve far more
-    candidates and take fewer chunks per document → maximum library coverage."""
+    candidates and take *fewer* chunks per document → maximum library coverage.
+
+    The broad cap is 2 (not 1): one chunk per document is so aggressive that a
+    cited document's actual answer chunk is often dropped, so two phrasings of
+    the same intent return disjoint sources. Two keeps breadth while leaving
+    enough depth that the answer chunk survives."""
     if _is_broad_query(question):
-        return max(base_top_k, 40), 1
+        return max(base_top_k, 40), 2
     return base_top_k, 3
 
 
@@ -246,6 +257,14 @@ def _build_context_block(
             order.append(h.document_id)
         by_doc[h.document_id].append(h)
 
+    # Feed the model the actual chunk body, not the 220-char UI highlight
+    # preview — otherwise the right document is cited but its answer text is
+    # invisible to the model. Focused questions (max_per_doc > 1) want depth, so
+    # take nearly the whole ~1100-token chunk; broad "which documents…" queries
+    # (max_per_doc == 1, now 2) want many documents, so cap each chunk shorter
+    # to fit more sources in the budget.
+    per_chunk_cap = 1200 if max_per_doc <= 1 else 3600
+
     parts: list[str] = []
     cites: list[Citation] = []
     used = 0
@@ -257,7 +276,8 @@ def _build_context_block(
         for h in doc_hits:
             pages = f"p.{h.page_from}" + (f"-{h.page_to}" if h.page_to != h.page_from else "")
             kind = getattr(h, "source", "") or ""
-            seg_lines.append(f"  {_chunk_label(kind, pages)}: {h.snippet}")
+            body = ((getattr(h, "text", "") or h.snippet) or "")[:per_chunk_cap]
+            seg_lines.append(f"  {_chunk_label(kind, pages)}: {body}")
             pages_used.append(h.page_from)
             if h.page_to:
                 pages_used.append(h.page_to)
@@ -380,19 +400,24 @@ async def answer_question(
         session.add(chat)
 
     eff_top_k, max_per_doc = _retrieval_plan(question, top_k)
-    hits = await hybrid_search(
-        question,
-        top_k=eff_top_k,
-        document_ids=filters.get("document_ids"),
-        source_ids=filters.get("source_ids"),
-        tags=filters.get("tags"),
-        user=user,
+    # Overlap the context-length probe with retrieval (they're independent) and
+    # reuse a single client for the whole turn → faster time-to-first-token.
+    client = get_client()
+    hits, ctx_tokens = await asyncio.gather(
+        hybrid_search(
+            question,
+            top_k=eff_top_k,
+            document_ids=filters.get("document_ids"),
+            source_ids=filters.get("source_ids"),
+            tags=filters.get("tags"),
+            user=user,
+        ),
+        client.model_context_length(),
     )
 
-    _ctx_client = get_client()
     context_block, citations = _build_context_block(
         hits,
-        max_chars=context_char_budget(await _ctx_client.model_context_length()),
+        max_chars=context_char_budget(ctx_tokens),
         max_per_doc=max_per_doc,
     )
 
@@ -413,7 +438,8 @@ async def answer_question(
             + context_block
             + "\n\nQUESTION:\n"
             + question
-            + "\n\nAnswer using the SOURCES above. Cite with [#]."
+            + "\n\nAnswer using the SOURCES above. Cite with [#]. The SOURCES are "
+            "authoritative for THIS question and supersede anything stated in earlier turns."
             + _lang_directive(question)
         )
     else:
@@ -425,9 +451,10 @@ async def answer_question(
         )
     messages.append({"role": "user", "content": prompt_user})
 
-    client = get_client()
     try:
-        answer_text = await client.chat(messages, temperature=0.2, max_tokens=900)
+        # temperature 0 → a repeated identical question gives the same grounded
+        # answer instead of flip-flopping between "here it is" and "not found".
+        answer_text = await client.chat(messages, temperature=0.0, max_tokens=900)
     except LMStudioError as e:
         answer_text = f"_LM Studio is not reachable ({e}). Configure it in Settings → LM Studio._"
     except Exception as e:
@@ -493,18 +520,21 @@ async def stream_answer(
         session.add(chat)
 
     eff_top_k, max_per_doc = _retrieval_plan(question, top_k)
-    hits = await hybrid_search(
-        question,
-        top_k=eff_top_k,
-        document_ids=filters.get("document_ids"),
-        source_ids=filters.get("source_ids"),
-        tags=filters.get("tags"),
-        user=user,
+    client = get_client()
+    hits, ctx_tokens = await asyncio.gather(
+        hybrid_search(
+            question,
+            top_k=eff_top_k,
+            document_ids=filters.get("document_ids"),
+            source_ids=filters.get("source_ids"),
+            tags=filters.get("tags"),
+            user=user,
+        ),
+        client.model_context_length(),
     )
-    _ctx_client = get_client()
     context_block, citations = _build_context_block(
         hits,
-        max_chars=context_char_budget(await _ctx_client.model_context_length()),
+        max_chars=context_char_budget(ctx_tokens),
         max_per_doc=max_per_doc,
     )
 
@@ -526,7 +556,8 @@ async def stream_answer(
                 + context_block
                 + "\n\nQUESTION:\n"
                 + question
-                + "\n\nAnswer using the SOURCES above. Cite with [#]."
+                + "\n\nAnswer using the SOURCES above. Cite with [#]. The SOURCES are "
+                "authoritative for THIS question and supersede anything stated in earlier turns."
                 + _lang_directive(question),
             }
         )
@@ -546,9 +577,8 @@ async def stream_answer(
     }
 
     full: list[str] = []
-    client = get_client()
     try:
-        async for piece in client.chat_stream(messages, temperature=0.2, max_tokens=900):
+        async for piece in client.chat_stream(messages, temperature=0.0, max_tokens=900):
             full.append(piece)
             yield {"type": "token", "text": piece}
     except LMStudioError as e:
@@ -567,12 +597,12 @@ async def stream_answer(
     if not full:
         logger.info("rag: streaming yielded no content — trying non-stream fallback")
         try:
-            import asyncio as _aio
-
             # Bound it: client.chat() retries up to 3× and each attempt can wait
             # out a long CPU timeout, so cap the whole fallback so it can't hang
             # for minutes after the user already saw streaming finish.
-            answer = await _aio.wait_for(client.chat(messages, temperature=0.2, max_tokens=900), timeout=60)
+            answer = await asyncio.wait_for(
+                client.chat(messages, temperature=0.0, max_tokens=900), timeout=60
+            )
         except Exception as e:
             logger.warning("rag non-stream fallback failed: {}", e)
             answer = ""

@@ -7,7 +7,7 @@
 **Trovato** (Italian for *found*) is a local-first document intelligence
 desktop app.
 
-**Status: v0.7.3 (stable).** Feature-complete and stabilising toward 1.0. The
+**Status: v0.8.0 (stable).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 Unlocked with a signed key — see *Licensing / activation* below.
 
@@ -183,7 +183,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## About
 
-- Author: **Varous 555** · `varous555@gmail.com` · `@varous555`
+- Author: **Jörg Schmidt** · `varous555@gmail.com` · `@varous555`
+- Lead programmer: **Claude Code**
 - GitHub: <https://github.com/Various5/trovato>
 - Privacy: all processing is local. The app never contacts the internet
   unless you point a source at a cloud-sync folder you own.

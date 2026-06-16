@@ -258,7 +258,7 @@ def fts_search(query: str, limit: int = 25) -> list[tuple[int, int, float]]:
                 text(
                     "SELECT chunk_id, document_id, bm25(chunks_fts) AS score "
                     "FROM chunks_fts WHERE chunks_fts MATCH :q "
-                    "ORDER BY score LIMIT :l"
+                    "ORDER BY score, chunk_id LIMIT :l"
                 ),
                 {"q": match, "l": limit},
             ).all()

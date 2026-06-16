@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trovato"
-version = "0.7.3"
+version = "0.8.0"
 description = "Trovato — local PDF indexing, OCR, image analysis, semantic search and chat over your documents. 100% local via LM Studio."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Varous 555", email = "varous555@gmail.com" }
+    { name = "Jörg Schmidt", email = "varous555@gmail.com" }
 ]
 license = { text = "MIT" }
 keywords = ["pdf", "rag", "ocr", "local-llm", "lm-studio", "semantic-search"]

@@ -84,6 +84,7 @@ async def rerank(query: str, hits: list[SearchHit], *, max_candidates: int = 12)
                 score=blended,
                 source=h.source,
                 tags=h.tags,
+                text=h.text,
             )
     out.sort(key=lambda h: h.score, reverse=True)
     return out

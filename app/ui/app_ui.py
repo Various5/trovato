@@ -6,6 +6,7 @@ HTTP roundtrips). Session-cookie auth is shared with the API.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC
 from typing import Any
 from urllib.parse import quote
@@ -522,6 +523,15 @@ def _apply_theme(theme_name: str = DEFAULT_THEME) -> None:
     # re-parsing it on every navigation. Served by /ldi/theme/{name}.css below.
     if theme_name not in THEMES and theme_name != "system":
         theme_name = DEFAULT_THEME
+    # Preload the primary body font (Inter latin) so the scanner fetches it
+    # early instead of waiting for layout to need a glyph — removes the FOUT
+    # text-reflow flash on navigation. crossorigin is mandatory for fonts even
+    # same-origin; the href is unversioned so it shares the @font-face cache
+    # entry (no double fetch).
+    ui.add_head_html(
+        '<link rel="preload" as="font" type="font/woff2" crossorigin '
+        'href="/ldi-static/fonts/inter-latin-wght-normal.woff2">'
+    )
     ui.add_head_html(f'<link rel="stylesheet" href="/ldi/theme/{theme_name}.css?v={quote(__version__)}">')
 
 
@@ -663,12 +673,25 @@ def _layout(user: User, current: str) -> bool:
         # Live scan indicator — visible on every page while jobs are running.
         scan_indicator = ui.row().classes("items-center gap-2 q-ml-md")
 
+        _scan_sig: dict[str, object] = {"v": None}
+
         def _refresh_scan_indicator() -> None:
             from app.models import ScanJob, ScanJobStatus
 
-            scan_indicator.clear()
             with session_scope() as session:
                 running = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
+            # Tiny fingerprint of exactly what this indicator renders. The header
+            # lives on every page, so without this guard every connected tab
+            # tears down + rebuilds the row (and its websocket diff) every 3s
+            # forever, even while idle. Skip when nothing visible changed.
+            sig = tuple(
+                (j.id, j.processed_files, max(j.total_files or 0, j.processed_files)) for j in running
+            )
+            if sig == _scan_sig["v"]:
+                return
+            _scan_sig["v"] = sig
+
+            scan_indicator.clear()
             if not running:
                 return
             j = running[0]
@@ -1556,12 +1579,23 @@ def register_ui(fastapi_app: FastAPI) -> None:
         from app.models import ScanJob, ScanJobStatus
 
         active_card = ui.card().classes("w-full p-3 q-mt-md")
+        _active_sig: dict[str, object] = {"v": None}
 
         def _refresh_active() -> None:
-            active_card.clear()
             with session_scope() as session:
                 running = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.running)).all()
                 paused = session.exec(select(ScanJob).where(ScanJob.status == ScanJobStatus.paused)).all()
+            # Skip the teardown/rebuild (and its 3s flicker + relayout) when
+            # nothing the card shows has changed.
+            sig = tuple(
+                (j.id, j.status, j.processed_files, j.total_files, j.current_file, j.error_count)
+                for j in running + paused
+            )
+            if sig == _active_sig["v"]:
+                return
+            _active_sig["v"] = sig
+
+            active_card.clear()
             with active_card:
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.icon("radio_button_checked").classes("ldi-accent")
@@ -2386,6 +2420,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 ).props("flat dense")
 
         sort_state = {"by": "newest"}
+        view_state = {"limit": 60}  # windowed render; grows via "Load more"
         _SOReq = {
             "newest": Document.id.desc(),
             "oldest": Document.id.asc(),
@@ -2404,8 +2439,14 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     like = f"%{q_input.value}%"
                     stmt = stmt.where(Document.filename.like(like))  # type: ignore
                 order = _SOReq.get(sort_state["by"], Document.id.desc())
-                stmt = stmt.order_by(order).limit(200)  # type: ignore
-                docs_list = session.exec(stmt).all()
+                # Windowed render with "Load more": rebuilding hundreds of heavy
+                # cards (thumbnail + tags + 6 buttons) on every sort/refresh
+                # hitches a large library. Fetch one extra row to tell whether
+                # more exist without a separate COUNT query.
+                _limit = int(view_state["limit"])
+                fetched = session.exec(stmt.order_by(order).limit(_limit + 1)).all()  # type: ignore
+                has_more = len(fetched) > _limit
+                docs_list = list(fetched[:_limit])
                 if not docs_list and q_input.value:
                     # Filter matched nothing — not an empty library.
                     empty_state("search_off", "search.no_results", "search.no_results_hint", lang)
@@ -2527,8 +2568,25 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                         on_click=_reocr,
                                     ).props("dense flat")
 
+                if has_more:
+
+                    def _load_more() -> None:
+                        view_state["limit"] = int(view_state["limit"]) + 60
+                        _refresh()
+
+                    with ui.row().classes("w-full justify-center q-mt-sm"):
+                        ui.button(
+                            t("docs.load_more", lang),
+                            icon="expand_more",
+                            on_click=_load_more,
+                        ).props("flat dense")
+
+        def _reset_and_refresh() -> None:
+            view_state["limit"] = 60  # new filter/sort starts back at the top
+            _refresh()
+
         with ui.row().classes("items-center gap-2"):
-            q_input.on("change", lambda _: _refresh())
+            q_input.on("change", lambda _: _reset_and_refresh())
             sort_sel = (
                 ui.select(
                     {
@@ -2548,15 +2606,17 @@ def register_ui(fastapi_app: FastAPI) -> None:
 
             def _on_sort() -> None:
                 sort_state["by"] = sort_sel.value or "newest"
-                _refresh()
+                _reset_and_refresh()
 
             sort_sel.on("update:model-value", lambda _e: _on_sort())
             ui.button(t("common.refresh", lang), icon="refresh", on_click=_refresh).props("dense")
 
             def _select_all() -> None:
                 with session_scope() as sess:
-                    docs = sess.exec(select(Document).limit(200)).all()
-                    for d in docs:
+                    stmt = select(Document)
+                    if q_input.value:
+                        stmt = stmt.where(Document.filename.like(f"%{q_input.value}%"))  # type: ignore
+                    for d in sess.exec(stmt.limit(200)).all():
                         if d.id is not None:
                             selection.add(d.id)
                 _refresh()
@@ -2812,7 +2872,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
             else:
                 universe = await _aio.to_thread(browse_documents, user=user, top_k=400)
                 browse = True
-            search_cache.update(key=key, universe=universe, facets=document_facets(universe), browse=browse)
+            # document_facets runs several blocking ORM queries — offload it so
+            # it doesn't stall the event loop (and every other client) right
+            # after each search the way the inline call did.
+            facets = await _aio.to_thread(document_facets, universe)
+            search_cache.update(key=key, universe=universe, facets=facets, browse=browse)
 
         def _filtered(limit: int) -> list:
             facets = search_cache["facets"]
@@ -3455,6 +3519,13 @@ def register_ui(fastapi_app: FastAPI) -> None:
                         sending_state["busy"] = True
                         md_el = md_card = footer = None
                         buffer: list[str] = []
+                        # Throttle the live markdown re-render: reassigning
+                        # md_el.content re-serialises the whole growing answer
+                        # over the websocket and re-parses it client-side, so
+                        # doing it per-token is O(n²) and stutters on long
+                        # answers. Flush ~10 fps; the 0.0 seed flushes the first
+                        # token immediately so the bubble fills right away.
+                        last_flush = 0.0
                         try:
                             if chat_state.get("chat_id") is None:
                                 _new_chat()
@@ -3478,8 +3549,11 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     cites_state = ev.get("citations", []) or []
                                 elif ev_t == "token":
                                     buffer.append(ev.get("text", ""))
-                                    md_el.content = "".join(buffer)
-                                    _scroll_msgs_to_bottom()
+                                    now = time.monotonic()
+                                    if now - last_flush >= 0.1:  # ~10 fps
+                                        md_el.content = "".join(buffer)
+                                        _scroll_msgs_to_bottom()
+                                        last_flush = now
                                 elif ev_t == "error":
                                     # stream_answer surfaces unrecoverable errors here
                                     # (e.g. chat not found); show them instead of
@@ -3488,7 +3562,10 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                     md_el.content = "".join(buffer)
                                     _scroll_msgs_to_bottom()
                                 elif ev_t == "done":
-                                    # remove streaming cursor & wire up sources
+                                    # remove streaming cursor & wire up sources.
+                                    # Always set the final content here — token
+                                    # flushes are throttled, so the last partial
+                                    # tail would otherwise be missing.
                                     md_card.classes(remove="ldi-stream-cursor")
                                     if cites_state:
                                         # Make [1], [2], … in the answer clickable links
@@ -3496,6 +3573,8 @@ def register_ui(fastapi_app: FastAPI) -> None:
                                             "".join(buffer), cites_state, query=question
                                         )
                                         _render_sources_footer(footer, cites_state, query=question)
+                                    else:
+                                        md_el.content = "".join(buffer)
                                     _refresh_chats()  # update timestamp on sidebar
                                     _scroll_msgs_to_bottom()
                         except Exception as e:
@@ -3694,7 +3773,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.label(f"{len(items)}").classes("ldi-pill text-caption opacity-70")
                 search = (
                     ui.input(placeholder=t("tags.search_ph", lang))
-                    .props("dense outlined clearable")
+                    # debounce so a large topic library doesn't clear+rebuild the
+                    # whole chip grid on every keystroke
+                    .props("dense outlined clearable debounce=250")
                     .classes("w-full max-w-xs q-mb-sm")
                 )
                 grid = ui.row().classes("items-center gap-2 flex-wrap")
@@ -4398,26 +4479,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
             tess_status = ui.label("").classes("text-caption opacity-80 q-mt-xs")
 
             def _detect_tesseract() -> None:
-                """Probe common install locations and PATH for tesseract.exe."""
-                import os
-                import shutil
-                from pathlib import Path as _P
+                """Probe common install locations and PATH for tesseract, save the
+                hit, then verify it actually runs (so this agrees with Diagnostics)."""
+                from app.ocr.tesseract import find_tesseract_binary, tesseract_available
 
-                candidates = [
-                    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-                    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
-                    os.path.expandvars(r"%USERPROFILE%\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
-                    shutil.which("tesseract") or "",
-                ]
-                for c in candidates:
-                    if c and _P(c).is_file():
-                        tcmd.set_value(c)
-                        save_user_settings({"tesseract_cmd": c})
-                        get_settings.cache_clear()
-                        tess_status.text = f"✓ Found and saved: {c}"
-                        ui.notify(f"Tesseract found: {c}", color="positive")
-                        return
+                found = find_tesseract_binary()
+                if found:
+                    tcmd.set_value(found)
+                    save_user_settings({"tesseract_cmd": found})
+                    get_settings.cache_clear()
+                    if tesseract_available(refresh=True):
+                        tess_status.text = f"✓ Found and saved: {found}"
+                        ui.notify(f"Tesseract found: {found}", color="positive")
+                    else:
+                        tess_status.text = f"⚠ Found {found}, but it failed to run — check the install."
+                        ui.notify("Tesseract found but did not run", color="warning")
+                    return
                 tess_status.text = (
                     "✗ Tesseract not found. Install from " "github.com/UB-Mannheim/tesseract/wiki"
                 )
@@ -4826,7 +4903,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 try:
                     from app.ocr.tesseract import tesseract_available
 
-                    tess_ok = tesseract_available()
+                    # refresh=True: re-probe on every visit so the page never
+                    # shows a stale "not found" cached from an earlier run.
+                    tess_ok = tesseract_available(refresh=True)
                 except Exception:
                     tess_ok = False
                 if tess_ok:
@@ -5295,7 +5374,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
         lang = _user_lang(user)
         page_header("about.title", lang)
         from app import __app_name__ as N
-        from app import __author__, __contact__, __handle__
+        from app import __author__, __contact__, __handle__, __lead_programmer__
         from app import __version__ as V
 
         with ui.card().classes("w-full p-4"):
@@ -5304,6 +5383,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
             ui.label(t("about.description", lang)).classes("q-mt-sm")
             ui.separator().classes("q-my-md")
             ui.label(f"{t('about.author', lang)}: {__author__}")
+            ui.label(f"{t('about.lead_programmer', lang)}: {__lead_programmer__}")
             ui.label(f"{t('about.contact', lang)}: {__contact__}")
             ui.label(f"{t('about.handle', lang)}: {__handle__}")
             ui.link(t("about.github", lang), "https://github.com/Various5/trovato", new_tab=True)

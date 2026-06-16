@@ -40,8 +40,10 @@ def test_broad_query_detection_de():
 
 
 def test_retrieval_plan_widens_for_broad():
+    # Broad queries widen the candidate pool but keep a 2-chunk-per-doc floor so
+    # a cited document's answer chunk isn't dropped (was 1, which lost answers).
     eff, per_doc = _retrieval_plan("which documents have a pool", 15)
-    assert eff >= 40 and per_doc == 1
+    assert eff >= 40 and per_doc == 2
     eff2, per_doc2 = _retrieval_plan("where is the pool plan", 15)
     assert eff2 == 15 and per_doc2 == 3
 
@@ -78,3 +80,20 @@ def test_max_per_doc_caps_chunks_for_breadth():
 def test_image_label_preserved_in_grouped_block():
     block, _ = _build_context_block([_hit(1, 4, "a pool", source="image_description")])
     assert "IMAGE" in block
+
+
+def test_context_uses_full_chunk_text_not_snippet():
+    # RAG-1 regression: the model must receive the full chunk body, not the
+    # ~220-char UI highlight preview — feeding the snippet caused "correct
+    # source cited as [1] but the answer is wrong/missing".
+    h = _hit(1, 1, "short highlight preview")
+    h.text = "FULL CHUNK BODY containing the actual answer the model needs"
+    block, _ = _build_context_block([h], max_chars=10000, max_per_doc=3)
+    assert "FULL CHUNK BODY containing the actual answer" in block
+    assert "short highlight preview" not in block
+
+
+def test_context_falls_back_to_snippet_when_text_missing():
+    # Hits without a populated `text` (e.g. browse results) still render.
+    block, _ = _build_context_block([_hit(1, 1, "only the snippet")], max_chars=10000)
+    assert "only the snippet" in block

@@ -182,11 +182,11 @@ _STATIC_CSS = """
                              to   { opacity: 1; transform: translateY(0); } }
 @keyframes ldi-scale-in    { from { opacity: 0; transform: scale(0.99); }
                              to   { opacity: 1; transform: scale(1); } }
-@keyframes ldi-shimmer     { from { background-position: -200% 0; }
-                             to   { background-position:  200% 0; } }
+@keyframes ldi-skel-pulse  { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes ldi-pulse-dot   { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 @keyframes ldi-blink       { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0.15; } }
-@keyframes ldi-indet       { 0% { left: -35%; } 100% { left: 100%; } }
+@keyframes ldi-indet       { 0% { transform: translateX(-100%); }
+                             100% { transform: translateX(286%); } }
 
 /* ------------------------------------------------------------------ */
 /*  Base                                                                */
@@ -394,10 +394,10 @@ pre {
 
 /* Skeleton shimmer for loading states */
 .ldi-skeleton {
-  background: linear-gradient(90deg,
-    var(--ldi-subtle-bg) 0%, var(--ldi-hover-bg) 50%, var(--ldi-subtle-bg) 100%);
-  background-size: 200% 100%;
-  animation: ldi-shimmer 1.5s ease infinite;
+  /* opacity pulse (compositor-only) instead of a background-position gradient
+     sweep, which repaints every frame for each on-screen placeholder. */
+  background: var(--ldi-hover-bg);
+  animation: ldi-skel-pulse 1.4s ease-in-out infinite;
   border-radius: var(--ldi-radius-sm);
   height: 16px;
   border: none !important;
@@ -428,9 +428,11 @@ pre {
 .ldi-progress-fill.indeterminate {
   width: 35% !important;
   position: absolute;
+  left: 0;
   background: var(--ldi-primary);
   opacity: 0.8;
   animation: ldi-indet 1.4s infinite ease-in-out;
+  will-change: transform;
 }
 
 /* ------------------------------------------------------------------ */
@@ -708,6 +710,10 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {
   background: #fff;
   box-shadow: var(--ldi-shadow);
   border-radius: 2px;
+  /* Skip layout/paint/decoding for off-screen pages (huge win on long PDFs).
+     The per-page contain-intrinsic-size is set in viewer.js so the scrollbar
+     doesn't jump before a page has been rendered. */
+  content-visibility: auto;
 }
 .ldi-pgwrap > img {
   display: block;

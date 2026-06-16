@@ -102,6 +102,7 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.open_pdf": "Open PDF",
         "common.download_pdf": "Download PDF",
         "common.download": "Download",
+        "docs.load_more": "Load more",
         "docs.sort_by": "Sort",
         "docs.sort_newest": "Newest first",
         "docs.sort_oldest": "Oldest first",
@@ -354,9 +355,10 @@ _DICT: dict[str, dict[str, str]] = {
         "about.title": "About",
         "about.version": "Version",
         "about.author": "Author",
+        "about.lead_programmer": "Lead programmer",
         "about.contact": "Contact",
         "about.handle": "Handle",
-        "about.github": "GitHub (placeholder)",
+        "about.github": "GitHub",
         "about.license": "License: MIT",
         "about.privacy_note": (
             "Privacy: all processing is local. No cloud requests are made unless you explicitly "
@@ -689,6 +691,7 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.viewer.open_pdf": "PDF öffnen",
         "common.download_pdf": "PDF herunterladen",
         "common.download": "Herunterladen",
+        "docs.load_more": "Mehr laden",
         "docs.sort_by": "Sortieren",
         "docs.sort_newest": "Neueste zuerst",
         "docs.sort_oldest": "Älteste zuerst",
@@ -943,9 +946,10 @@ _DICT: dict[str, dict[str, str]] = {
         "about.title": "Über",
         "about.version": "Version",
         "about.author": "Autor",
+        "about.lead_programmer": "Leitender Entwickler",
         "about.contact": "Kontakt",
         "about.handle": "Handle",
-        "about.github": "GitHub (Platzhalter)",
+        "about.github": "GitHub",
         "about.license": "Lizenz: MIT",
         "about.privacy_note": (
             "Datenschutz: Alle Verarbeitung läuft lokal. Es werden keine Cloud-Anfragen "

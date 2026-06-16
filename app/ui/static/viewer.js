@@ -27,13 +27,22 @@
     q: init.q || '',
     emitTimer: null,
     resizeTimer: null,
+    urlTimer: null,
     scrollPending: false,
     lastEmitted: null,
   };
 
+  // Memoize the stable host/pages/input lookups so the per-frame scroll hot
+  // path doesn't re-run getElementById. Lazy `_x || (_x = …)` only caches a
+  // truthy result, so a not-yet-mounted element is retried next call (keeps the
+  // startWhenReady boot polling intact).
+  let _host = null;
+  let _wrap = null;
+  let _input = null;
   const $ = (id) => document.getElementById(id);
-  const scrollEl = () => $('ldi-pdfscroll');
-  const pagesEl = () => $('ldi-pdfpages');
+  const scrollEl = () => _host || (_host = $('ldi-pdfscroll'));
+  const pagesEl = () => _wrap || (_wrap = $('ldi-pdfpages'));
+  const inputEl = () => _input || (_input = $('ldi-pginput'));
 
   function pageUrl(n, w) {
     let u = init.urlTpl.replace('{n}', String(n));
@@ -57,6 +66,13 @@
       div.id = 'ldi-pg-' + n;
       div.dataset.n = String(n);
       div.style.aspectRatio = pw + ' / ' + ph;
+      // Placeholder size for content-visibility:auto (see styles.py) so the
+      // scrollbar doesn't jump before an off-screen page first renders; `auto`
+      // lets the browser remember each page's real size afterwards. Geometry is
+      // derived from the same dims as the aspect-ratio, so there's no drift.
+      const estW = 960; // ~column max-width (980px minus padding)
+      div.style.containIntrinsicSize =
+        'auto ' + estW + 'px auto ' + Math.round((estW * ph) / pw) + 'px';
       const img = document.createElement('img');
       img.loading = 'lazy';
       img.decoding = 'async';
@@ -78,20 +94,25 @@
     host.tabIndex = 0; // PageUp/PageDown/Space/arrows scroll natively once focused
   }
 
+  function renderPageHighlights(page, rects) {
+    const ov = document.querySelector('#ldi-pg-' + page + ' .ldi-pgov');
+    if (!ov) return;
+    ov.innerHTML = '';
+    for (const r of rects) {
+      const d = document.createElement('div');
+      d.className = 'ldi-pghl';
+      d.style.left = r[0] * 100 + '%';
+      d.style.top = r[1] * 100 + '%';
+      d.style.width = r[2] * 100 + '%';
+      d.style.height = r[3] * 100 + '%';
+      ov.appendChild(d);
+    }
+  }
+
   function applyHighlights() {
     document.querySelectorAll('.ldi-pgov').forEach((ov) => (ov.innerHTML = ''));
     for (const [page, rects] of Object.entries(state.rects)) {
-      const ov = document.querySelector('#ldi-pg-' + page + ' .ldi-pgov');
-      if (!ov) continue;
-      for (const r of rects) {
-        const d = document.createElement('div');
-        d.className = 'ldi-pghl';
-        d.style.left = r[0] * 100 + '%';
-        d.style.top = r[1] * 100 + '%';
-        d.style.width = r[2] * 100 + '%';
-        d.style.height = r[3] * 100 + '%';
-        ov.appendChild(d);
-      }
+      renderPageHighlights(page, rects);
     }
   }
 
@@ -108,14 +129,17 @@
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data || !data.rects) return;
-        let added = false;
+        // Only the lazy path runs here and it only ADDS pages, so render just
+        // the new overlays instead of clearing + rebuilding the whole layer
+        // (which flashed/stuttered while scrolling through results).
+        const addedPages = [];
         for (const [page, rects] of Object.entries(data.rects)) {
           if (!state.rects[page]) {
             state.rects[page] = rects;
-            added = true;
+            addedPages.push(page);
           }
         }
-        if (added) applyHighlights();
+        for (const page of addedPages) renderPageHighlights(page, state.rects[page]);
       })
       .catch(() => {});
   }
@@ -138,17 +162,28 @@
     host.scrollTop += el.getBoundingClientRect().top - host.getBoundingClientRect().top - 6;
   }
 
+  function syncUrl() {
+    const url =
+      '/viewer?doc=' + init.doc + '&page=' + state.cur + (state.q ? '&q=' + encodeURIComponent(state.q) : '');
+    try {
+      history.replaceState(null, '', url);
+    } catch (e) {}
+  }
+
   function setCurrent(n, fromScroll) {
     n = clampPage(n);
     if (n === state.cur && fromScroll) return;
     state.cur = n;
-    const input = $('ldi-pginput');
+    const input = inputEl();
     if (input && document.activeElement !== input) input.value = String(n);
-    const url =
-      '/viewer?doc=' + init.doc + '&page=' + n + (state.q ? '&q=' + encodeURIComponent(state.q) : '');
-    try {
-      history.replaceState(null, '', url);
-    } catch (e) {}
+    // Coalesce a scroll fling into one URL write (WebKit throttles >100
+    // replaceState/30s); explicit jumps and ?q= refreshes write immediately.
+    clearTimeout(state.urlTimer);
+    if (fromScroll) {
+      state.urlTimer = setTimeout(syncUrl, 400);
+    } else {
+      syncUrl();
+    }
     fetchRectsFor(n);
     clearTimeout(state.emitTimer);
     state.emitTimer = setTimeout(() => {
@@ -161,7 +196,7 @@
 
   function jump(n) {
     const v = Math.round(Number(n));
-    const input = $('ldi-pginput');
+    const input = inputEl();
     if (!Number.isFinite(v) || String(n).trim() === '') {
       if (input) input.value = String(state.cur); // restore on garbage input
       return;
@@ -299,7 +334,7 @@
   }
 
   function bindInput() {
-    const input = $('ldi-pginput');
+    const input = inputEl();
     if (!input) return;
     input.value = String(state.cur);
     input.addEventListener('keydown', (e) => {
