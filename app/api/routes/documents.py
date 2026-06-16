@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -248,6 +249,35 @@ def _cache_file_ok(p: Path) -> bool:
         return False
 
 
+def _any_cached_render(cache_dir: Path, page_no: int) -> Path | None:
+    """Best existing cached render for a page at ANY width, for serving when the
+    original is unreachable (moved, on an offline drive, or the index was copied
+    to a machine without the source files). Prefers the widest bucket, then the
+    legacy un-bucketed png. Lets an already-rendered document stay viewable
+    offline even if the exact requested width was never cached."""
+    if not cache_dir.is_dir():
+        return None
+    best: Path | None = None
+    best_w = -1
+    for p in cache_dir.glob(f"page_{page_no:04d}_w*.png"):
+        m = re.search(r"_w(\d+)\.png$", p.name)
+        w = int(m.group(1)) if m else 0
+        if w > best_w and _cache_file_ok(p):
+            best, best_w = p, w
+    if best is not None:
+        return best
+    legacy = cache_dir / f"page_{page_no:04d}.png"
+    return legacy if _cache_file_ok(legacy) else None
+
+
+def _fallback_render(cache_dir: Path, page_no: int, page: DocumentPage | None) -> Path | None:
+    """Any app-generated render usable when the original PDF can't be read:
+    the scan's stored render pointer first, then any cached bucket."""
+    if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
+        return Path(page.rendered_image_path)
+    return _any_cached_render(cache_dir, page_no)
+
+
 def _media_file_response(request: Request, path: Path, media_type: str):
     """FileResponse with ETag + ``Cache-Control: private, no-cache``.
 
@@ -321,16 +351,16 @@ def get_page_image(
     if not _served_path_allowed(src_path, doc, session):
         # Never rasterize a file outside the document's source root (arbitrary
         # file read otherwise). Fall back to any app-generated render we have.
-        if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
-            return _media_file_response(request, Path(page.rendered_image_path), "image/png")
+        fb = _fallback_render(cache_dir, page_no, page)
+        if fb is not None:
+            return _media_file_response(request, fb, "image/png")
         raise HTTPException(status_code=403, detail="path outside the document's source")
     if not src_path.exists():
-        # Original offline: fall back to whatever other render exists.
-        if page and page.rendered_image_path and _cache_file_ok(Path(page.rendered_image_path)):
-            return _media_file_response(request, Path(page.rendered_image_path), "image/png")
-        legacy = cache_dir / f"page_{page_no:04d}.png"
-        if _cache_file_ok(legacy):
-            return _media_file_response(request, legacy, "image/png")
+        # Original offline / moved / on another machine: serve any cached render
+        # of this page so the document stays viewable instead of going blank.
+        fb = _fallback_render(cache_dir, page_no, page)
+        if fb is not None:
+            return _media_file_response(request, fb, "image/png")
         raise HTTPException(status_code=410, detail="original file missing")
 
     try:

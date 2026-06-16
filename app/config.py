@@ -18,17 +18,50 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "Trovato"
 APP_DISPLAY_NAME = "Trovato"
+# Pre-rename (≤ v0.6.x) app name. The v0.7.0 rename to Trovato shipped NO data
+# migration, so an existing install's library still lives under this name with
+# the old ``localdoc.db`` filename. We fall back to it (read in place, never
+# move) when the new-name dir has no database — otherwise the renamed build
+# silently opens an empty library next to the user's real one.
+LEGACY_APP_NAME = "LocalDocIntelligence"
+LEGACY_DB_NAME = "localdoc.db"
+DB_NAME = "trovato.db"
+
+
+def _appdata_root() -> Path:
+    """Per-user app-data root (without the app-name leaf)."""
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming"))
+    if os.uname().sysname == "Darwin":  # type: ignore[attr-defined]
+        return Path.home() / "Library" / "Application Support"
+    return Path(os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share"))
 
 
 def default_data_dir() -> Path:
-    """Resolve the default per-user data directory."""
-    if os.name == "nt":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / APP_NAME
-    if os.uname().sysname == "Darwin":  # type: ignore[attr-defined]
-        return Path.home() / "Library" / "Application Support" / APP_NAME
-    xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(xdg) / APP_NAME
+    """Resolve the default per-user data directory (current app name)."""
+    return _appdata_root() / APP_NAME
+
+
+def _dir_has_db(d: Path) -> bool:
+    return (d / DB_NAME).exists() or (d / LEGACY_DB_NAME).exists()
+
+
+@lru_cache(maxsize=1)
+def resolved_default_data_dir() -> Path:
+    """Default data dir, with a non-destructive fallback to the pre-rename
+    ``LocalDocIntelligence`` dir when the current ``Trovato`` dir holds no
+    database yet. A fresh install (neither has a db) uses the current dir.
+
+    Only consulted when no explicit ``data_dir``/``LDI_DATA_DIR`` is set, and it
+    never moves or writes anything — so it can't hide a current library, and an
+    already-migrated install is unaffected (its Trovato db wins)."""
+    current = default_data_dir()
+    if _dir_has_db(current):
+        return current
+    legacy = _appdata_root() / LEGACY_APP_NAME
+    if _dir_has_db(legacy):
+        return legacy
+    return current
 
 
 class Settings(BaseSettings):
@@ -114,11 +147,21 @@ class Settings(BaseSettings):
     # ---- Resolved at runtime (not env-bound) ----
     @property
     def data_path(self) -> Path:
-        return Path(self.data_dir) if self.data_dir else default_data_dir()
+        # Explicit data_dir (LDI_DATA_DIR) always wins; otherwise use the
+        # default with a non-destructive legacy fallback (see
+        # resolved_default_data_dir).
+        return Path(self.data_dir) if self.data_dir else resolved_default_data_dir()
 
     @property
     def db_path(self) -> Path:
-        return self.data_path / "trovato.db"
+        # Prefer the current name; fall back to the pre-rename localdoc.db that
+        # already exists in this dir. A fresh install creates trovato.db.
+        dp = self.data_path
+        if (dp / DB_NAME).exists():
+            return dp / DB_NAME
+        if (dp / LEGACY_DB_NAME).exists():
+            return dp / LEGACY_DB_NAME
+        return dp / DB_NAME
 
     @property
     def chroma_path(self) -> Path:
