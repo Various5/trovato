@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 # Embedded signing public key (hex of 32 raw bytes). Generated once by
 # scripts/gen_keypair.py; the matching private key never ships with the app.
-PUBLIC_KEY_HEX = "8322487ca522bd3d5f534cc49fe992e87edd9309af974a774348bca6c32b2874"
+PUBLIC_KEY_HEX = "b583ce7e452cfed9a117e4eb25bfb13310dccbcf39fbe1c983582e976aa5f18d"
 
 TOKEN_PREFIX = "TRV1"
 PAYLOAD_VERSION = 1
