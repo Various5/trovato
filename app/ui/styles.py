@@ -710,10 +710,6 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {
   background: #fff;
   box-shadow: var(--ldi-shadow);
   border-radius: 2px;
-  /* Skip layout/paint/decoding for off-screen pages (huge win on long PDFs).
-     The per-page contain-intrinsic-size is set in viewer.js so the scrollbar
-     doesn't jump before a page has been rendered. */
-  content-visibility: auto;
 }
 .ldi-pgwrap > img {
   display: block;

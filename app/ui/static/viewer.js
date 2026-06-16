@@ -66,13 +66,6 @@
       div.id = 'ldi-pg-' + n;
       div.dataset.n = String(n);
       div.style.aspectRatio = pw + ' / ' + ph;
-      // Placeholder size for content-visibility:auto (see styles.py) so the
-      // scrollbar doesn't jump before an off-screen page first renders; `auto`
-      // lets the browser remember each page's real size afterwards. Geometry is
-      // derived from the same dims as the aspect-ratio, so there's no drift.
-      const estW = 960; // ~column max-width (980px minus padding)
-      div.style.containIntrinsicSize =
-        'auto ' + estW + 'px auto ' + Math.round((estW * ph) / pw) + 'px';
       const img = document.createElement('img');
       img.loading = 'lazy';
       img.decoding = 'async';
