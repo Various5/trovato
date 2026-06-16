@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.security import login_required
 from app.models import User
@@ -17,7 +17,7 @@ router = APIRouter()
 
 class SearchBody(BaseModel):
     query: str
-    top_k: int = 15
+    top_k: int = Field(15, gt=0, le=1000)  # bound the fan-out (defence-in-depth)
     document_ids: list[int] | None = None
     source_ids: list[int] | None = None
     tags: list[str] | None = None

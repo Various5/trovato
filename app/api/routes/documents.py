@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import or_
 from sqlmodel import Session, select
@@ -88,8 +88,8 @@ def list_documents(
     q: str | None = None,
     source_id: int | None = None,
     status: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, gt=0, le=10000),
+    offset: int = Query(0, ge=0),
     user: User = Depends(login_required),
     session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:

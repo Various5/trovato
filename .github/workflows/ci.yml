@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, master]
 
+# Least privilege: CI only reads the repo. A malicious PR therefore can't use
+# the workflow token to write code, releases, packages, or issues. (No secrets
+# are referenced here, and pull_request runs in the fork's read-only context.)
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

@@ -39,6 +39,12 @@ def setup_logging() -> None:
                     " - {message}"
                 ),
                 enqueue=use_queue,
+                # diagnose=False: loguru's default would dump every local
+                # variable in an exception frame to the console — including
+                # passwords/keys bound as locals in the SFTP/SMB/WebDAV
+                # providers. Keep plain tracebacks, never variable values.
+                backtrace=False,
+                diagnose=False,
             )
         except Exception:
             # Better to lose console logging than to brick the boot.
@@ -56,7 +62,10 @@ def setup_logging() -> None:
             compression="zip",
             enqueue=use_queue,
             backtrace=False,
-            diagnose=s.debug,
+            # Never render local-variable values into the persistent log file,
+            # even when LDI_DEBUG=1 — they can contain credentials (SFTP/SMB/
+            # WebDAV) and logs get shared during troubleshooting.
+            diagnose=False,
         )
     except Exception as e:  # pragma: no cover — defensive
         try:

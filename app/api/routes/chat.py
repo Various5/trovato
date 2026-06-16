@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.auth.security import login_required
@@ -29,7 +29,7 @@ class MessageBody(BaseModel):
     content: str
     # Higher default so "in which documents…" (plural) questions retrieve enough
     # coverage across files; the prompt is still trimmed to the model's context.
-    top_k: int = 12
+    top_k: int = Field(12, gt=0, le=1000)  # bound the fan-out (defence-in-depth)
 
 
 class RenameBody(BaseModel):
