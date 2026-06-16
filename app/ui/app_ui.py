@@ -3775,8 +3775,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     ui.input(placeholder=t("tags.search_ph", lang))
                     # debounce so a large topic library doesn't clear+rebuild the
                     # whole chip grid on every keystroke
-                    .props("dense outlined clearable debounce=250")
-                    .classes("w-full max-w-xs q-mb-sm")
+                    .props("dense outlined clearable debounce=250").classes("w-full max-w-xs q-mb-sm")
                 )
                 grid = ui.row().classes("items-center gap-2 flex-wrap")
 

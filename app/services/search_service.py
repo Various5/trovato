@@ -386,9 +386,9 @@ def browse_documents(
             # duplicate rows; an unknown tag yields an empty set → no results.
             stmt = stmt.where(
                 Document.id.in_(  # type: ignore
-                    select(DocumentTagLink.document_id).join(
-                        Tag, Tag.id == DocumentTagLink.tag_id
-                    ).where(Tag.name.in_(list(tags)))
+                    select(DocumentTagLink.document_id)
+                    .join(Tag, Tag.id == DocumentTagLink.tag_id)
+                    .where(Tag.name.in_(list(tags)))
                 )
             )
         stmt = stmt.order_by(Document.id.desc()).limit(top_k)  # type: ignore
