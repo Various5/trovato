@@ -5358,6 +5358,15 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 "matchesTpl": matches_tpl,
                 "buckets": list(PAGE_WIDTH_BUCKETS),
                 "defaultW": 1024,
+                # Shown by viewer.js when a page image fails to load — almost
+                # always because the original file isn't reachable from THIS
+                # machine (index copied/synced without the source PDFs, source
+                # on an unplugged drive, or the file was moved). Translated here
+                # since viewer.js has no i18n.
+                "labels": {
+                    "pageUnavailable": t("viewer.page_unavailable", lang),
+                    "originalMissing": t("viewer.original_missing", lang).format(path=doc_path),
+                },
             }
         ).replace("<", "\\u003c")
         ui.add_body_html(f"<script>window.__ldiViewerInit = {init_payload};</script>")

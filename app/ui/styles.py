@@ -717,6 +717,27 @@ button:focus-visible, a:focus-visible, .q-btn:focus-visible {
   height: auto;
   border-radius: 2px;
 }
+/* A page whose image couldn't load (original not reachable from this machine):
+   hide the broken-image glyph and centre a placeholder in the page-sized box. */
+.ldi-pgwrap.ldi-pg-missing { display: flex; align-items: center; justify-content: center; }
+.ldi-pgwrap.ldi-pg-missing > img { display: none; }
+.ldi-pgmsg {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ldi-muted);
+}
+.ldi-viewer-banner {
+  margin: 0 auto 10px;
+  max-width: 980px;
+  padding: 10px 14px;
+  border-radius: var(--ldi-radius-sm);
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  color: var(--ldi-warn);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .ldi-pgov { position: absolute; inset: 0; pointer-events: none; }
 .ldi-pghl {
   position: absolute;

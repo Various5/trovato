@@ -93,6 +93,13 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.lang": "Lang",
         "docs.viewer.not_found": "Document not found.",
         "docs.viewer.not_found_hint": "This document may have been deleted, or the link is out of date.",
+        "viewer.page_unavailable": "Preview unavailable",
+        "viewer.original_missing": (
+            "The original file can't be reached from this machine, so pages can't be rendered. "
+            "It may have been moved or deleted, be on a drive that's not connected, or the index "
+            "was copied here without the source files. Expected location: {path}. Restore the file "
+            "(or update the source path) and re-scan to enable previews. Search still works."
+        ),
         "docs.viewer.page_text": "Page text",
         "docs.viewer.no_text": "(no extracted text on this page)",
         "docs.viewer.images": "Image descriptions on this page",
@@ -682,6 +689,14 @@ _DICT: dict[str, dict[str, str]] = {
         "docs.lang": "Sprache",
         "docs.viewer.not_found": "Dokument nicht gefunden.",
         "docs.viewer.not_found_hint": "Dieses Dokument wurde möglicherweise gelöscht oder der Link ist veraltet.",
+        "viewer.page_unavailable": "Vorschau nicht verfügbar",
+        "viewer.original_missing": (
+            "Die Originaldatei ist von diesem Gerät aus nicht erreichbar, daher können die Seiten "
+            "nicht gerendert werden. Sie wurde evtl. verschoben oder gelöscht, liegt auf einem nicht "
+            "verbundenen Laufwerk, oder der Index wurde ohne die Quelldateien hierher kopiert. "
+            "Erwarteter Pfad: {path}. Stelle die Datei wieder her (oder aktualisiere den Quellpfad) "
+            "und scanne neu, um Vorschauen zu aktivieren. Die Suche funktioniert weiterhin."
+        ),
         "docs.viewer.page_text": "Seitentext",
         "docs.viewer.no_text": "(kein extrahierter Text auf dieser Seite)",
         "docs.viewer.images": "Bildbeschreibungen auf dieser Seite",

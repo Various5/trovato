@@ -30,6 +30,7 @@
     urlTimer: null,
     scrollPending: false,
     lastEmitted: null,
+    bannerShown: false,
   };
 
   // Memoize the stable host/pages/input lookups so the per-frame scroll hot
@@ -73,6 +74,10 @@
       img.src = pageUrl(n, init.defaultW);
       img.srcset = srcset(n);
       img.sizes = '60vw';
+      // A failed render (original file not reachable from this machine, drive
+      // offline, etc.) otherwise leaves a silently blank page. Show a clear
+      // placeholder + a one-time banner instead.
+      img.addEventListener('error', () => markPageUnavailable(div, n));
       const ov = document.createElement('div');
       ov.className = 'ldi-pgov';
       const badge = document.createElement('div');
@@ -85,6 +90,30 @@
     }
     host.appendChild(wrap);
     host.tabIndex = 0; // PageUp/PageDown/Space/arrows scroll natively once focused
+  }
+
+  function markPageUnavailable(div, n) {
+    if (!div || div.classList.contains('ldi-pg-missing')) return;
+    div.classList.add('ldi-pg-missing');
+    const msg = document.createElement('div');
+    msg.className = 'ldi-pgmsg';
+    const label = (init.labels && init.labels.pageUnavailable) || 'Preview unavailable';
+    msg.textContent = label + ' · ' + n + ' / ' + init.total;
+    div.appendChild(msg);
+    showMissingBanner();
+  }
+
+  function showMissingBanner() {
+    if (state.bannerShown) return;
+    state.bannerShown = true;
+    const host = scrollEl();
+    if (!host || !host.parentElement) return;
+    const banner = document.createElement('div');
+    banner.className = 'ldi-viewer-banner';
+    banner.textContent =
+      (init.labels && init.labels.originalMissing) ||
+      "The original file can't be reached from this machine, so pages can't be rendered.";
+    host.parentElement.insertBefore(banner, host);
   }
 
   function renderPageHighlights(page, rects) {
