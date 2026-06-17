@@ -5174,7 +5174,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 icon="picture_as_pdf",
                 # Opens the original at the page currently in view (client-side).
                 on_click=lambda: ui.run_javascript(
-                    f"window.open({pdf_base!r} + '#page=' + ldiViewer.current(), '_blank')"
+                    f"window.open({pdf_base!r} + '#page=' + (window.ldiViewer?.current() || 1), '_blank')"
                 ),
             ).props("dense color=primary")
             ui.button(
@@ -5217,7 +5217,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     for _pn in pages[:40]:
                         ui.button(
                             str(_pn),
-                            on_click=lambda pn=_pn: ui.run_javascript(f"ldiViewer.jump({pn})"),
+                            on_click=lambda pn=_pn: ui.run_javascript(f"window.ldiViewer?.jump({pn})"),
                         ).props("dense flat size=sm")
                     ui.label(t("docs.viewer.hl_hint", lang)).classes("text-caption opacity-50 no-wrap")
                 else:
@@ -5236,7 +5236,7 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 with ui.row().classes("items-center gap-1 no-wrap w-full"):
                     ui.button(
                         icon="navigate_before",
-                        on_click=lambda: ui.run_javascript("ldiViewer.prev()"),
+                        on_click=lambda: ui.run_javascript("window.ldiViewer?.prev()"),
                     ).props("dense flat").tooltip(t("docs.viewer.prev", lang))
                     # Plain HTML input: viewer.js keeps it in sync while
                     # scrolling and jumps on Enter — zero server round-trips.
@@ -5250,22 +5250,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                     )
                     ui.button(
                         icon="navigate_next",
-                        on_click=lambda: ui.run_javascript("ldiViewer.next()"),
+                        on_click=lambda: ui.run_javascript("window.ldiViewer?.next()"),
                     ).props("dense flat").tooltip(t("docs.viewer.next", lang))
                     ui.space()
                     ui.button(
-                        icon="zoom_out", on_click=lambda: ui.run_javascript("ldiViewer.zoomOut()")
+                        icon="zoom_out", on_click=lambda: ui.run_javascript("window.ldiViewer?.zoomOut()")
                     ).props("dense flat").tooltip(t("docs.viewer.zoom_out", lang))
-                    ui.button(icon="fit_screen", on_click=lambda: ui.run_javascript("ldiViewer.fit()")).props(
-                        "dense flat"
-                    ).tooltip(t("docs.viewer.fit_width", lang))
-                    ui.button(icon="zoom_in", on_click=lambda: ui.run_javascript("ldiViewer.zoomIn()")).props(
-                        "dense flat"
-                    ).tooltip(t("docs.viewer.zoom_in", lang))
+                    ui.button(
+                        icon="fit_screen", on_click=lambda: ui.run_javascript("window.ldiViewer?.fit()")
+                    ).props("dense flat").tooltip(t("docs.viewer.fit_width", lang))
+                    ui.button(
+                        icon="zoom_in", on_click=lambda: ui.run_javascript("window.ldiViewer?.zoomIn()")
+                    ).props("dense flat").tooltip(t("docs.viewer.zoom_in", lang))
                     ui.space()
                     ui.button(
                         icon="fullscreen",
-                        on_click=lambda: ui.run_javascript("ldiViewer.fullscreen()"),
+                        on_click=lambda: ui.run_javascript("window.ldiViewer?.fullscreen()"),
                     ).props("dense flat").tooltip(
                         t("docs.viewer.read_mode", lang) + " — " + t("docs.viewer.read_mode_exit", lang)
                     )
@@ -5328,9 +5328,9 @@ def register_ui(fastapi_app: FastAPI) -> None:
             payload = _json.dumps({str(k): [list(r) for r in v] for k, v in rects.items()}).replace(
                 "<", "\\u003c"
             )
-            js = f"ldiViewer.setHighlights({payload}, {_json.dumps(term)}, {_json.dumps(pages)});"
+            js = f"window.ldiViewer?.setHighlights({payload}, {_json.dumps(term)}, {_json.dumps(pages)});"
             if pages:
-                js += f"ldiViewer.jump({pages[0]});"
+                js += f"window.ldiViewer?.jump({pages[0]});"
             ui.run_javascript(js)
             _render_chips(pages, term)
             _update_side(state["page"])
@@ -5393,8 +5393,22 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 },
             }
         ).replace("<", "\\u003c")
-        ui.add_body_html(f"<script>window.__ldiViewerInit = {init_payload};</script>")
-        ui.add_body_html(f'<script src="/ldi-static/viewer.js?v={quote(__version__)}" defer></script>')
+        # Emit the bootstrap via run_javascript (executed over the websocket on
+        # connect) instead of add_body_html <script> tags. When the user reaches
+        # the viewer through IN-APP navigation (a chat source / doc link),
+        # NiceGUI swaps the page body via the DOM and injected <script> tags do
+        # NOT execute — only a full page load runs them. That left
+        # window.__ldiViewerInit undefined and the viewer blank (ldiViewer
+        # undefined → toolbar/find calls threw) until a manual reload. This path
+        # runs on both full loads and in-app navigation; viewer.js is fetched
+        # once and re-booted via __ldiBootViewer on subsequent visits.
+        _viewer_src = f"/ldi-static/viewer.js?v={quote(__version__)}"
+        ui.run_javascript(
+            f"window.__ldiViewerInit = {init_payload};"
+            "if (window.__ldiBootViewer) { window.__ldiBootViewer(); }"
+            "else { var s = document.createElement('script'); s.src = "
+            f"{_viewer_src!r}; document.body.appendChild(s); }}"
+        )
 
     @ui.page("/about")
     def page_about() -> None:

@@ -12,31 +12,20 @@
  */
 (function () {
   'use strict';
-  const init = window.__ldiViewerInit;
-  if (!init) return;
+  // `init` and `state` are re-read on every boot(). NiceGUI runs the viewer
+  // bootstrap again for each in-app navigation (window.__ldiBootViewer), and
+  // once on a full page load — so these must be module-level (not consts read
+  // once) for all the helpers below to see the current document.
+  let init = null;
+  let state = null;
+  let started = false;
 
-  const clampPage = (n) => Math.min(Math.max(n, 1), init.total);
-
-  const state = {
-    cur: clampPage(init.page || 1),
-    anchor: clampPage(init.page || 1),
-    zoom: 1.0,
-    rects: init.rects || {},
-    matchPages: new Set(init.matchPages || []),
-    rectsFetched: new Set(),
-    q: init.q || '',
-    emitTimer: null,
-    resizeTimer: null,
-    urlTimer: null,
-    scrollPending: false,
-    lastEmitted: null,
-    bannerShown: false,
-  };
+  const clampPage = (n) => Math.min(Math.max(n, 1), (init && init.total) || 1);
 
   // Memoize the stable host/pages/input lookups so the per-frame scroll hot
   // path doesn't re-run getElementById. Lazy `_x || (_x = …)` only caches a
   // truthy result, so a not-yet-mounted element is retried next call (keeps the
-  // startWhenReady boot polling intact).
+  // startWhenReady boot polling intact). Reset on each boot (new page DOM).
   let _host = null;
   let _wrap = null;
   let _input = null;
@@ -325,34 +314,45 @@
     setCurrent(state.cur, false); // refresh the URL so ?q= reflects the new term
   }
 
-  function bindKeys() {
-    window.addEventListener('keydown', (e) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))
-        return;
-      if (e.key === '+' || e.key === '=') {
-        zoomTo(state.zoom + 0.25);
-        e.preventDefault();
-      } else if (e.key === '-') {
-        zoomTo(state.zoom - 0.25);
-        e.preventDefault();
-      } else if (e.key === '0') {
-        zoomTo(1);
-        e.preventDefault();
-      } else if (e.key === 'f' || e.key === 'F') {
-        toggleFullscreen();
-        e.preventDefault();
-      }
-    });
+  function onKeydown(e) {
+    if (!state) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))
+      return;
+    if (e.key === '+' || e.key === '=') {
+      zoomTo(state.zoom + 0.25);
+      e.preventDefault();
+    } else if (e.key === '-') {
+      zoomTo(state.zoom - 0.25);
+      e.preventDefault();
+    } else if (e.key === '0') {
+      zoomTo(1);
+      e.preventDefault();
+    } else if (e.key === 'f' || e.key === 'F') {
+      toggleFullscreen();
+      e.preventDefault();
+    }
+  }
+
+  function onResize() {
+    if (!state) return;
+    clearTimeout(state.resizeTimer);
+    state.resizeTimer = setTimeout(() => {
+      syncSizes();
+      computeCurrent();
+    }, 200);
+  }
+
+  // Global window/document listeners bind ONCE — in-app navigation re-runs the
+  // bootstrap, so binding per-boot would stack handlers. They read the
+  // module-level `state`, so they always act on the current document.
+  function bindGlobalsOnce() {
+    if (window.__ldiViewerGlobals) return;
+    window.__ldiViewerGlobals = true;
+    window.addEventListener('keydown', onKeydown);
     document.addEventListener('fullscreenchange', () => setTimeout(syncSizes, 120));
-    window.addEventListener('resize', () => {
-      clearTimeout(state.resizeTimer);
-      state.resizeTimer = setTimeout(() => {
-        syncSizes();
-        computeCurrent();
-      }, 200);
-    });
+    window.addEventListener('resize', onResize);
   }
 
   function bindInput() {
@@ -375,14 +375,12 @@
     });
   }
 
-  let started = false;
   function start() {
     if (started || !scrollEl()) return;
     started = true;
     buildDom();
     applyHighlights();
     bindInput();
-    bindKeys();
     bindScroll();
     syncSizes();
     if (state.cur > 1) jump(state.cur);
@@ -408,18 +406,49 @@
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
 
+  function boot() {
+    init = window.__ldiViewerInit;
+    if (!init) return;
+    // Fresh document (in-app navigation replaced the page DOM): reset the
+    // memoized elements, the started guard, and per-document state.
+    _host = null;
+    _wrap = null;
+    _input = null;
+    started = false;
+    state = {
+      cur: clampPage(init.page || 1),
+      anchor: clampPage(init.page || 1),
+      zoom: 1.0,
+      rects: init.rects || {},
+      matchPages: new Set(init.matchPages || []),
+      rectsFetched: new Set(),
+      q: init.q || '',
+      emitTimer: null,
+      resizeTimer: null,
+      urlTimer: null,
+      scrollPending: false,
+      lastEmitted: null,
+      bannerShown: false,
+    };
+    bindGlobalsOnce();
+    startWhenReady();
+  }
+
+  // Exposed so the server bootstrap can re-init on each in-app navigation
+  // without re-fetching the script (see the /viewer page in app_ui.py). The API
+  // methods read the module-level `state`, so they always drive the current doc.
+  window.__ldiBootViewer = boot;
   window.ldiViewer = {
-    jump,
-    next: () => jump(state.cur + 1),
-    prev: () => jump(state.cur - 1),
-    zoomIn: () => zoomTo(state.zoom + 0.25),
-    zoomOut: () => zoomTo(state.zoom - 0.25),
+    jump: (n) => jump(n),
+    next: () => state && jump(state.cur + 1),
+    prev: () => state && jump(state.cur - 1),
+    zoomIn: () => state && zoomTo(state.zoom + 0.25),
+    zoomOut: () => state && zoomTo(state.zoom - 0.25),
     fit: () => zoomTo(1),
-    fullscreen: toggleFullscreen,
-    setHighlights,
-    current: () => state.cur,
+    fullscreen: () => toggleFullscreen(),
+    setHighlights: (rects, q, pages) => setHighlights(rects, q, pages),
+    current: () => (state ? state.cur : 1),
   };
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startWhenReady);
-  else startWhenReady();
+  boot();
 })();
