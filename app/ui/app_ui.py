@@ -6,6 +6,7 @@ HTTP roundtrips). Session-cookie auth is shared with the API.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import UTC
 from typing import Any
@@ -3207,27 +3208,38 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return md_el, md_card, footer
 
         def _link_citations(text: str, sources: list[dict], query: str = "") -> str:
-            """Replace bracketed citation tokens like ``[1]`` with markdown
-            links to the viewer page for the cited document. ``query`` is carried
-            into the viewer (``&q=``) so the searched terms get highlighted —
-            without it, clicking a citation opened the page with nothing marked."""
+            """Turn inline citation markers — ``[1]`` OR ``(1)`` — into markdown
+            links to the viewer page for the cited document. Models don't reliably
+            use the bracket form the prompt asks for (many emit ``(1)``), so we
+            accept both. ``query`` is carried into the viewer (``&q=``) so the
+            searched terms get highlighted on arrival."""
             if not sources or not text:
                 return text
             qs = f"&q={quote(query)}" if query else ""
-            result = text
+            by_n: dict[int, tuple[int, int]] = {}
             for s in sources:
                 n = s.get("n")
                 did = s.get("document_id")
-                pg = s.get("page_from") or 1
                 if n is None or did is None:
                     continue
-                token = f"[{n}]"
-                # Wrap the brackets in a styled markdown link
-                replacement = f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg}{qs})"
-                # Replace, but only when not already linked (avoid double-wrap
-                # if the same N appears twice in the answer).
-                result = result.replace(token, replacement)
-            return result
+                by_n[int(n)] = (int(did), int(s.get("page_from") or 1))
+            if not by_n:
+                return text
+
+            def _repl(m: re.Match) -> str:
+                n = int(m.group(1))
+                hit = by_n.get(n)
+                if hit is None:
+                    return m.group(0)  # not a real source number → leave untouched
+                did, pg = hit
+                # Always display the bracket form, even if the model wrote (1).
+                return f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg}{qs})"
+
+            # Single pass (so we never rewrite inside an inserted link). Only a
+            # number that maps to a real source is linked — a year like (2024)
+            # is >3 digits and won't match, and an unknown small number is left
+            # as-is by _repl.
+            return re.sub(r"[\[(](\d{1,3})[\])]", _repl, text)
 
         def _render_sources_footer(footer_row, sources: list[dict], query: str = "") -> None:
             """Horizontal scroller of source cards beneath an assistant bubble.
