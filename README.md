@@ -7,7 +7,7 @@
 **Trovato** (Italian for *found*) is a local-first document intelligence
 desktop app.
 
-**Status: v0.8.11 (stable).** Feature-complete and stabilising toward 1.0. The
+**Status: v0.8.12 (stable).** Feature-complete and stabilising toward 1.0. The
 pipeline now **auto-tunes to your hardware** — see *Performance profiles* below.
 Unlocked with a signed key — see *Licensing / activation* below.
 

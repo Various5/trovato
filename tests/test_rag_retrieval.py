@@ -51,7 +51,7 @@ def test_retrieval_plan_widens_for_broad():
 # --- document-diversified context + citations ------------------------------
 
 
-def test_one_citation_per_document():
+def test_per_chunk_citation_carries_its_own_page():
     hits = [
         _hit(1, 3, "pool A"),
         _hit(1, 15, "pool B"),
@@ -59,22 +59,24 @@ def test_one_citation_per_document():
         _hit(2, 1, "meadow"),
     ]
     block, cites = _build_context_block(hits, max_chars=10000, max_per_doc=3)
-    # Two documents → exactly two citations, numbered 1 and 2.
-    assert [c.n for c in cites] == [1, 2]
-    assert [c.document_id for c in cites] == [1, 2]
-    # Doc 1's citation spans its included pages.
-    assert cites[0].page_from == 3 and cites[0].page_to == 22
-    # The block references both documents once each.
-    assert block.count("[1] doc1.pdf") == 1
-    assert block.count("[2] doc2.pdf") == 1
+    # ONE citation per CHUNK so each links to its OWN page (the user wants a
+    # citation click to land on the exact page the fact came from, not p.1).
+    assert [c.n for c in cites] == [1, 2, 3, 4]
+    assert [c.document_id for c in cites] == [1, 1, 1, 2]
+    assert [c.page_from for c in cites] == [3, 15, 22, 1]
+    # Document's chunks get consecutive numbers; the file is named per source.
+    assert block.count("doc1.pdf") == 3
+    assert block.count("doc2.pdf") == 1
 
 
 def test_max_per_doc_caps_chunks_for_breadth():
     hits = [_hit(1, p, f"chunk {p}") for p in range(1, 6)] + [_hit(2, 1, "other")]
     block, cites = _build_context_block(hits, max_chars=10000, max_per_doc=1)
-    # Only the best chunk of doc 1 is included → page span collapses to p.1.
+    # Only the best chunk of doc 1 survives the cap → its own page, page 1.
     assert cites[0].page_from == 1 and cites[0].page_to == 1
     assert "chunk 1" in block and "chunk 2" not in block
+    # doc 1 (capped to 1) + doc 2 → exactly two citations.
+    assert [c.n for c in cites] == [1, 2]
 
 
 def test_image_label_preserved_in_grouped_block():

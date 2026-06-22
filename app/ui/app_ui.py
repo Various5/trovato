@@ -3231,26 +3231,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
             if not by_n:
                 return text
 
-            # Single-source answers (e.g. "summarise this document") are common,
-            # and weak local models then invent citation numbers like [3]/[4]/[8]
-            # that don't exist — pulled from the document's own numbered steps,
-            # not the SOURCES list. With exactly one source there is only one
-            # place any marker could point, so link EVERY citation to it (and
-            # normalise the displayed number to [1]).
-            sole = next(iter(by_n.values())) if len(by_n) == 1 else None
-
             def _repl(m: re.Match) -> str:
                 # Pull every number out of the bracket group (handles "#1",
-                # "3, 4", "3;4"). Link the known ones; if none are known, leave
-                # the whole marker untouched.
+                # "3, 4", "3;4"). Link the known ones to their own page; if none
+                # are known, leave the whole marker untouched.
                 nums = re.findall(r"#?(\d{1,3})", m.group(0))
                 parts: list[str] = []
                 any_known = False
                 for ns in nums:
                     n = int(ns)
                     hit = by_n.get(n)
-                    if hit is None and sole is not None:
-                        hit, n = sole, 1  # remap any marker to the sole source
                     if hit is None:
                         parts.append(f"\\[{n}\\]")
                         continue

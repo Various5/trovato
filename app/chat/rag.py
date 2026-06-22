@@ -41,20 +41,22 @@ Rules:
 If they ask in German, answer in German; if in English, answer in English. Never switch \
 to another language on your own.
 2. Use ONLY the supplied context. If the answer is not in the context, say so plainly.
-3. Cite every fact with bracketed numbers, e.g. [1], that map to the SOURCES list. \
-The SOURCES are numbered [1] to [N] (N = the number of sources shown). ONLY cite numbers \
-in that range — NEVER invent a higher number, and NEVER copy a bracketed number that \
-appears inside the document text (footnotes, steps, references) as if it were a citation. \
-If only one SOURCE is provided, cite [1] for every fact.
+3. Cite every fact with the bracketed number of the SOURCE it came from, e.g. [2]. \
+SOURCES are numbered [1] to [N] (N = the number of sources shown); cite ONLY numbers in \
+that range, and pick the one whose excerpt actually contains the fact (each SOURCE shows \
+its page, so the citation links to the right page). NEVER invent a number outside the \
+range, and NEVER copy a bracketed number that appears inside the document text \
+(footnotes, steps, references) as if it were a citation.
 4. Some sources are marked "IMAGE" — that text is a description of an image that is \
 actually embedded in the document. Treat such a source as proof that the document \
 contains that image. When the user asks which documents contain a picture/photo/image \
 of something, answer from these IMAGE sources and cite them. Do NOT claim there are no \
 images when IMAGE sources are present.
-5. Each numbered SOURCE is ONE document (its relevant pages are listed under it). \
-For broad questions — "which documents…", "compare…", "list…", "how many…" — consider \
-ALL provided sources, synthesise across them, and name every relevant document with its \
-citation. Don't answer from just the first one or two.
+5. Each numbered SOURCE is one excerpt from a document at a specific page (shown as \
+"p.X"); the same document may appear as several consecutive SOURCES for its different \
+pages. For broad questions — "which documents…", "compare…", "list…", "how many…" — \
+consider ALL provided sources, synthesise across them, and name every relevant document \
+with its citation. Don't answer from just the first one or two.
 6. Prefer concise, accurate answers. Quote short snippets when helpful.
 7. If the user explicitly asks for opinions or summaries beyond the documents, make \
 clear that the answer is reasoning, not from sources.
@@ -246,12 +248,14 @@ def _chunk_label(kind: str, pages: str) -> str:
 def _build_context_block(
     hits: list[SearchHit], max_chars: int = 8000, *, max_per_doc: int = 3
 ) -> tuple[str, list[Citation]]:
-    """Group retrieved chunks by document and assign ONE citation number per
-    document (not per chunk), including up to ``max_per_doc`` of its chunks.
+    """Emit ONE citation per retrieved CHUNK, each carrying that chunk's OWN
+    page, so clicking a citation in the answer jumps to the exact page the fact
+    came from (not always the document's first page).
 
-    This gives the model breadth across the library and stops the same PDF being
-    cited as [1], [7], [13] with different snippets — each document is one source
-    with its pages listed. Documents are visited in best-hit-score order.
+    Chunks are grouped by document so one document's chunks get *consecutive*
+    citation numbers ([1][2] rather than [1][7][13]) and are capped at
+    ``max_per_doc`` per document for library breadth; documents are visited in
+    best-hit-score order.
     """
     by_doc: dict[int, list[SearchHit]] = {}
     order: list[int] = []
@@ -263,46 +267,42 @@ def _build_context_block(
 
     # Feed the model the actual chunk body, not the 220-char UI highlight
     # preview — otherwise the right document is cited but its answer text is
-    # invisible to the model. Focused questions (max_per_doc > 1) want depth, so
-    # take nearly the whole ~1100-token chunk; broad "which documents…" queries
-    # (max_per_doc == 1, now 2) want many documents, so cap each chunk shorter
-    # to fit more sources in the budget.
-    per_chunk_cap = 1200 if max_per_doc <= 1 else 3600
+    # invisible to the model. Broad "which documents…" queries (max_per_doc ≤ 2)
+    # want many sources, so cap each chunk shorter to fit more in the budget;
+    # focused questions take nearly the whole ~1100-token chunk.
+    per_chunk_cap = 1500 if max_per_doc <= 2 else 3600
 
     parts: list[str] = []
     cites: list[Citation] = []
     used = 0
+    stop = False
     for did in order:
-        doc_hits = by_doc[did][:max_per_doc]
-        best = doc_hits[0]
-        seg_lines: list[str] = []
-        pages_used: list[int] = []
-        for h in doc_hits:
+        if stop:
+            break
+        for h in by_doc[did][:max_per_doc]:
+            num = len(cites) + 1
             pages = f"p.{h.page_from}" + (f"-{h.page_to}" if h.page_to != h.page_from else "")
             kind = getattr(h, "source", "") or ""
             body = ((getattr(h, "text", "") or h.snippet) or "")[:per_chunk_cap]
-            seg_lines.append(f"  {_chunk_label(kind, pages)}: {body}")
-            pages_used.append(h.page_from)
-            if h.page_to:
-                pages_used.append(h.page_to)
-        num = len(cites) + 1
-        block = f"[{num}] {best.filename}\n" + "\n".join(seg_lines) + "\n"
-        if used + len(block) > max_chars and cites:
-            break
-        parts.append(block)
-        used += len(block)
-        cites.append(
-            Citation(
-                n=num,
-                document_id=did,
-                chunk_id=best.chunk_id,
-                filename=best.filename,
-                path=best.path,
-                page_from=min(pages_used),
-                page_to=max(pages_used),
-                snippet=best.snippet,
+            # One numbered SOURCE per chunk, with its own page in the header.
+            block = f"[{num}] {h.filename} {_chunk_label(kind, pages)}\n{body}\n"
+            if used + len(block) > max_chars and cites:
+                stop = True
+                break
+            parts.append(block)
+            used += len(block)
+            cites.append(
+                Citation(
+                    n=num,
+                    document_id=did,
+                    chunk_id=h.chunk_id,
+                    filename=h.filename,
+                    path=h.path,
+                    page_from=h.page_from,
+                    page_to=h.page_to or h.page_from,
+                    snippet=h.snippet,
+                )
             )
-        )
     return "\n".join(parts), cites
 
 
