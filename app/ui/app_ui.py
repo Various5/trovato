@@ -3208,11 +3208,16 @@ def register_ui(fastapi_app: FastAPI) -> None:
             return md_el, md_card, footer
 
         def _link_citations(text: str, sources: list[dict], query: str = "") -> str:
-            """Turn inline citation markers — ``[1]`` OR ``(1)`` — into markdown
-            links to the viewer page for the cited document. Models don't reliably
-            use the bracket form the prompt asks for (many emit ``(1)``), so we
-            accept both. ``query`` is carried into the viewer (``&q=``) so the
-            searched terms get highlighted on arrival."""
+            """Turn inline citation markers into markdown links to the cited
+            document's viewer page. Local models are inconsistent about the
+            format, so accept all the common shapes:
+
+              ``[1]``  ``(1)``  ``[#1]``  ``(#1)``  ``[3, 4]``  ``[3;4]``
+
+            ``query`` is carried into the viewer (``&q=``) so the searched terms
+            get highlighted on arrival. Only numbers that map to a real source
+            are linked — a year like ``(2024)`` (>3 digits) won't match, and an
+            unknown citation number is left as plain text."""
             if not sources or not text:
                 return text
             qs = f"&q={quote(query)}" if query else ""
@@ -3227,19 +3232,32 @@ def register_ui(fastapi_app: FastAPI) -> None:
                 return text
 
             def _repl(m: re.Match) -> str:
-                n = int(m.group(1))
-                hit = by_n.get(n)
-                if hit is None:
-                    return m.group(0)  # not a real source number → leave untouched
-                did, pg = hit
-                # Always display the bracket form, even if the model wrote (1).
-                return f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg}{qs})"
+                # Pull every number out of the bracket group (handles "#1",
+                # "3, 4", "3;4"). Link the known ones; if none are known, leave
+                # the whole marker untouched.
+                nums = re.findall(r"#?(\d{1,3})", m.group(0))
+                parts: list[str] = []
+                any_known = False
+                for ns in nums:
+                    n = int(ns)
+                    hit = by_n.get(n)
+                    if hit is None:
+                        parts.append(f"\\[{n}\\]")
+                        continue
+                    any_known = True
+                    did, pg = hit
+                    # Always render the bracket form, even if the model wrote (1).
+                    parts.append(f"[**\\[{n}\\]**](/viewer?doc={did}&page={pg}{qs})")
+                return " ".join(parts) if any_known else m.group(0)
 
-            # Single pass (so we never rewrite inside an inserted link). Only a
-            # number that maps to a real source is linked — a year like (2024)
-            # is >3 digits and won't match, and an unknown small number is left
-            # as-is by _repl.
-            return re.sub(r"[\[(](\d{1,3})[\])]", _repl, text)
+            # A [...] or (...) group of one or more optionally #-prefixed numbers,
+            # comma/semicolon separated. Single pass so we never rewrite inside an
+            # inserted link.
+            return re.sub(
+                r"[\[(]\s*#?\d{1,3}(?:\s*[,;]\s*#?\d{1,3})*\s*[\])]",
+                _repl,
+                text,
+            )
 
         def _render_sources_footer(footer_row, sources: list[dict], query: str = "") -> None:
             """Horizontal scroller of source cards beneath an assistant bubble.
