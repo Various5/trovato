@@ -223,16 +223,22 @@ def _is_broad_query(question: str) -> bool:
 
 
 def _retrieval_plan(question: str, base_top_k: int) -> tuple[int, int]:
-    """(effective_top_k, max_chunks_per_doc). Broad questions retrieve far more
-    candidates and take *fewer* chunks per document → maximum library coverage.
+    """(effective_top_k, max_chunks_per_doc).
 
+    Broad questions ("which documents…", "compare…") retrieve far more
+    candidates but cap each document to 2 chunks → maximum library breadth.
     The broad cap is 2 (not 1): one chunk per document is so aggressive that a
-    cited document's actual answer chunk is often dropped, so two phrasings of
-    the same intent return disjoint sources. Two keeps breadth while leaving
-    enough depth that the answer chunk survives."""
+    cited document's actual answer chunk is often dropped.
+
+    Focused questions (incl. single-document summaries) take DEPTH: no
+    per-document cap (max_chunks_per_doc = effective_top_k), so every retrieved
+    chunk of the relevant document becomes its own numbered SOURCE. This matters
+    for clickable citations — if the model cites [5] but the document only
+    produced 3 sources, [5] links to nothing; lifting the cap means the cited
+    numbers have real sources to point at (the char budget is the real limiter)."""
     if _is_broad_query(question):
         return max(base_top_k, 40), 2
-    return base_top_k, 3
+    return base_top_k, base_top_k
 
 
 def _chunk_label(kind: str, pages: str) -> str:
@@ -267,10 +273,12 @@ def _build_context_block(
 
     # Feed the model the actual chunk body, not the 220-char UI highlight
     # preview — otherwise the right document is cited but its answer text is
-    # invisible to the model. Broad "which documents…" queries (max_per_doc ≤ 2)
-    # want many sources, so cap each chunk shorter to fit more in the budget;
-    # focused questions take nearly the whole ~1100-token chunk.
-    per_chunk_cap = 1500 if max_per_doc <= 2 else 3600
+    # invisible to the model. Cap each chunk so that several sources fit the
+    # model's context budget: an 8k-token model has only ~20k chars of room, and
+    # if a chunk eats 3.6k then a 6-source answer can't fit, so the model cites
+    # [5]/[6] that have no source to link to. ~2.4k keeps most of a 1100-token
+    # chunk while leaving room for ~8 sources. Broad queries cap shorter still.
+    per_chunk_cap = 1500 if max_per_doc <= 2 else 2400
 
     parts: list[str] = []
     cites: list[Citation] = []

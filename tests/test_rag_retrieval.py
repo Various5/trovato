@@ -40,12 +40,14 @@ def test_broad_query_detection_de():
 
 
 def test_retrieval_plan_widens_for_broad():
-    # Broad queries widen the candidate pool but keep a 2-chunk-per-doc floor so
-    # a cited document's answer chunk isn't dropped (was 1, which lost answers).
+    # Broad queries widen the candidate pool but cap each doc to 2 chunks → many
+    # documents represented (breadth).
     eff, per_doc = _retrieval_plan("which documents have a pool", 15)
     assert eff >= 40 and per_doc == 2
+    # Focused queries take depth: NO per-doc cap (= effective_top_k), so every
+    # retrieved chunk of the relevant document becomes its own citable source.
     eff2, per_doc2 = _retrieval_plan("where is the pool plan", 15)
-    assert eff2 == 15 and per_doc2 == 3
+    assert eff2 == 15 and per_doc2 == 15
 
 
 # --- document-diversified context + citations ------------------------------
